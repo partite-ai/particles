@@ -1,10 +1,13 @@
 # Particle — top-level build orchestrator.
 #
 #   make            build every component to dist/   (default)
-#   make deno-npm   build dist/deno-npm.wasm
-#   make runtime    build dist/particle-runtime.wasm
-#   make typecheck  build dist/particle-typecheck.wasm
-#   make clean      wipe dist/ and intermediate build dirs
+#   make deno-npm    build dist/deno-npm.wasm
+#   make runtime     build dist/particle-runtime.wasm
+#   make introspect  build dist/particle-introspect.wasm
+#   make typecheck   build dist/particle-typecheck.wasm
+#   make embed       build the build-pipeline wasms and copy into
+#                    internal/build/wacogo/embed/ for go:embed
+#   make clean       wipe dist/ and intermediate build dirs
 #
 # Targets are .PHONY because cargo/esbuild/wasm-rquickjs each handle their
 # own incremental rebuilds — re-running them when nothing changed is fast,
@@ -16,17 +19,30 @@ DIST_DIR := dist
 # /workspace. rquickjs-sys's build script unpacks the WASI SDK tarball with
 # utime() calls, which virtiofs (the workspace mount on this dev container)
 # blocks.
-RUNTIME_CARGO_TARGET   := $(HOME)/cargo-target/runtime
-TYPECHECK_CARGO_TARGET := $(HOME)/cargo-target/typecheck
+RUNTIME_CARGO_TARGET    := $(HOME)/cargo-target/runtime
+INTROSPECT_CARGO_TARGET := $(HOME)/cargo-target/introspect
+TYPECHECK_CARGO_TARGET  := $(HOME)/cargo-target/typecheck
 
 # `npm install --no-bin-links` skips the .bin/ symlink dir creation; that's
 # the only npm step virtiofs blocks (chmod on the symlink targets fails).
 # The package source itself extracts fine and is what we actually bundle.
 NPM_INSTALL := npm install --no-bin-links --no-audit --no-fund
 
-.PHONY: all deno-npm runtime typecheck go-test test clean
+EMBED_DIR := internal/build/wacogo/embed
 
-all: deno-npm runtime typecheck
+.PHONY: all deno-npm runtime introspect typecheck embed go-test test clean
+
+all: deno-npm runtime introspect typecheck
+
+# `go generate ./...` runs this from the wacogo package via the
+# //go:generate directive in wacogo.go. Builds the three wasm artifacts
+# the build pipeline embeds and copies them into the embed/ dir.
+embed: deno-npm introspect typecheck
+	@mkdir -p $(EMBED_DIR)
+	cp $(DIST_DIR)/deno-npm.wasm           $(EMBED_DIR)/
+	cp $(DIST_DIR)/particle-introspect.wasm $(EMBED_DIR)/
+	cp $(DIST_DIR)/particle-typecheck.wasm  $(EMBED_DIR)/
+	@printf '✓  embedded:\n'; ls -lh $(EMBED_DIR)/*.wasm | awk '{print "    "$$5"  "$$NF}'
 
 # Run Go tests for the build-time libraries (internal/importscan, internal/bundle).
 test: go-test
@@ -66,6 +82,31 @@ runtime:
 	   $(DIST_DIR)/particle-runtime.wasm
 	@printf '✓  '; ls -lh $(DIST_DIR)/particle-runtime.wasm | awk '{print $$5"  "$$NF}'
 
+# ---- particle-introspect.wasm ------------------------------------------
+# Build-time component (Phase 5 of the build pipeline). Same toolchain as
+# the runtime — TS → JS bundle → wasm-rquickjs wrapper crate → cargo build
+# — but a separate artifact so the runtime image stays free of build-time
+# logic and the two evolve independently.
+
+introspect:
+	@mkdir -p $(DIST_DIR) $(INTROSPECT_CARGO_TARGET) components/introspect/build
+	@echo '[1/3] esbuild  src/introspect.ts  →  build/introspect.js'
+	cd components/introspect && esbuild src/introspect.ts \
+	  --bundle --format=esm --target=es2022 --platform=neutral \
+	  '--external:wasi:*' '--external:particle:*' '--external:node:*' \
+	  --outfile=build/introspect.js
+	@echo '[2/3] wasm-rquickjs generate-wrapper-crate'
+	rm -rf components/introspect/build/crate
+	cd components/introspect && wasm-rquickjs generate-wrapper-crate \
+	  --js build/introspect.js --wit wit --output build/crate
+	@echo '[3/3] cargo build --target wasm32-wasip2 --release  (target dir: $(INTROSPECT_CARGO_TARGET))'
+	CARGO_TARGET_DIR=$(INTROSPECT_CARGO_TARGET) cargo build \
+	  --manifest-path components/introspect/build/crate/Cargo.toml \
+	  --target wasm32-wasip2 --release -j 1
+	cp $(INTROSPECT_CARGO_TARGET)/wasm32-wasip2/release/component.wasm \
+	   $(DIST_DIR)/particle-introspect.wasm
+	@printf '✓  '; ls -lh $(DIST_DIR)/particle-introspect.wasm | awk '{print $$5"  "$$NF}'
+
 # ---- particle-typecheck.wasm -------------------------------------------
 # Same shape as runtime, but bundles the `typescript` package (~10MB) into
 # the JS so the compiler runs inside QuickJS. esbuild --platform=node lets
@@ -76,16 +117,18 @@ typecheck:
 	@mkdir -p $(DIST_DIR) $(TYPECHECK_CARGO_TARGET) components/typecheck/build
 	@test -d components/typecheck/node_modules/typescript || \
 	  (cd components/typecheck && $(NPM_INSTALL))
-	@echo '[1/3] esbuild  src/typecheck.ts  →  build/typecheck.js  (bundles typescript)'
+	@echo '[1/4] generate src/lib-bundle.ts (lib.*.d.ts → ESM map)'
+	cd components/typecheck && node build-lib-bundle.mjs
+	@echo '[2/4] esbuild  src/typecheck.ts  →  build/typecheck.js  (bundles typescript)'
 	cd components/typecheck && esbuild src/typecheck.ts \
 	  --bundle --format=esm --platform=node --target=es2022 \
 	  '--external:wasi:*' '--external:particle:*' \
 	  --outfile=build/typecheck.js
-	@echo '[2/3] wasm-rquickjs generate-wrapper-crate'
+	@echo '[3/4] wasm-rquickjs generate-wrapper-crate'
 	rm -rf components/typecheck/build/crate
 	cd components/typecheck && wasm-rquickjs generate-wrapper-crate \
 	  --js build/typecheck.js --wit wit --output build/crate
-	@echo '[3/3] cargo build --target wasm32-wasip2 --release  (target dir: $(TYPECHECK_CARGO_TARGET))'
+	@echo '[4/4] cargo build --target wasm32-wasip2 --release  (target dir: $(TYPECHECK_CARGO_TARGET))'
 	CARGO_TARGET_DIR=$(TYPECHECK_CARGO_TARGET) cargo build \
 	  --manifest-path components/typecheck/build/crate/Cargo.toml \
 	  --target wasm32-wasip2 --release -j 1
@@ -97,5 +140,6 @@ clean:
 	rm -rf $(DIST_DIR)
 	rm -rf components/deno-npm/target
 	rm -rf components/runtime/build
+	rm -rf components/introspect/build
 	rm -rf components/typecheck/build components/typecheck/node_modules
-	rm -rf $(RUNTIME_CARGO_TARGET) $(TYPECHECK_CARGO_TARGET)
+	rm -rf $(RUNTIME_CARGO_TARGET) $(INTROSPECT_CARGO_TARGET) $(TYPECHECK_CARGO_TARGET)

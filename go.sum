@@ -1,4 +1,9 @@
 github.com/evanw/esbuild v0.28.0 h1:V96ghtc5p5JnNUQIUsc5H3kr+AcFcMqOJll2ZmJW6Lo=
 github.com/evanw/esbuild v0.28.0/go.mod h1:D2vIQZqV/vIf/VRHtViaUtViZmG7o+kKmlBfVQuRi48=
-golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8 h1:0A+M6Uqn+Eje4kHMK80dtF3JCXC4ykBgQG4Fe06QRhQ=
+github.com/partite-ai/wacogo v0.0.0-20260506150521-f9bb8697aeac h1:kgPjUqa4VhUT8niCTCNeK/NC+Q0YiGpjuH6q0Nlt2a4=
+github.com/partite-ai/wacogo v0.0.0-20260506150521-f9bb8697aeac/go.mod h1:vDlg+bviIMZpet+FO5rh5mhrmclG4IixNw0XFgxwPOg=
+github.com/tetratelabs/wazero v1.11.1-0.20260418165552-5cb4bb3ec0c1 h1:EzfzRz7tk71X13orvuP/TsYSnod46/AyuyBQ1WX1Rgs=
+github.com/tetratelabs/wazero v1.11.1-0.20260418165552-5cb4bb3ec0c1/go.mod h1:3ghOSSWYnzX0zd/3Ns4ni2tKxcXDE9/QgkwuH1PW3Rs=
 golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.43.0 h1:Rlag2XtaFTxp19wS8MXlJwTvoh8ArU6ezoyFsMyCTNI=
+golang.org/x/sys v0.43.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=

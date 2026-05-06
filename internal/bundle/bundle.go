@@ -258,14 +258,18 @@ func (r *fsResolver) onResolve(args api.OnResolveArgs) (api.OnResolveResult, err
 }
 
 func (r *fsResolver) onLoad(args api.OnLoadArgs) (api.OnLoadResult, error) {
-	data, err := fs.ReadFile(r.fsys, args.Path)
+	// path.Clean strips the leading "./" esbuild may add when it
+	// normalizes entry-point paths. os.DirFS rejects "./..." via
+	// fs.ValidPath; fstest.MapFS accepts both. Clean here so both work.
+	p := path.Clean(args.Path)
+	data, err := fs.ReadFile(r.fsys, p)
 	if err != nil {
-		return api.OnLoadResult{}, fmt.Errorf("read %s: %w", args.Path, err)
+		return api.OnLoadResult{}, fmt.Errorf("read %s: %w", p, err)
 	}
 	contents := string(data)
 	return api.OnLoadResult{
 		Contents: &contents,
-		Loader:   loaderForExt(path.Ext(args.Path)),
+		Loader:   loaderForExt(path.Ext(p)),
 	}, nil
 }
 

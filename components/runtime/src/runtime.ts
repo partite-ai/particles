@@ -2,10 +2,13 @@
  * Particle runtime — TypeScript source compiled to a single ESM file
  * consumed by `wasm-rquickjs generate-wrapper-crate`.
  *
- * The generated component exports three interfaces (see wit/runtime.wit):
- *   - particle:host/tools       — list-tools, call-tool   (host calls per request)
- *   - particle:host/health      — ping                    (operator liveness check)
- *   - particle:host/introspect  — manifest                (build-time, Phase 5)
+ * The generated component exports two interfaces (see wit/runtime.wit):
+ *   - particle:runtime/tools    — list-tools, call-tool   (host calls per request)
+ *   - particle:runtime/health   — ping                    (operator liveness check)
+ *
+ * Build-time manifest extraction lives in a separate component
+ * (`particle-introspect.wasm` — see components/introspect) so the two
+ * artifacts can evolve independently.
  *
  * Naming convention (from wasm-rquickjs README): WIT interface names → JS
  * exports in camelCase, methods in camelCase. Async methods are awaited.
@@ -45,10 +48,6 @@ type PingResult = {
 type HealthError =
   | { tag: "not-implemented" }
   | { tag: "handler-error"; val: string };
-
-type IntrospectError =
-  | { tag: "bundle-load-error"; val: string }
-  | { tag: "invalid-manifest"; val: string };
 
 // -----------------------------------------------------------------------------
 // Particle module shape — what the user's bundle.js default-exports.
@@ -216,39 +215,3 @@ export const health = {
   },
 };
 
-/// `particle:host/introspect` — build-time manifest extraction (Phase 5).
-/// Run with no-op stubs wired to every capability; only reads the default
-/// export's metadata, never invokes a handler.
-export const introspect = {
-  async manifest(): Promise<Result<string, IntrospectError>> {
-    let particle: UserParticle;
-    try {
-      particle = await loadParticle();
-    } catch (e) {
-      return {
-        tag: "err",
-        val: { tag: "bundle-load-error", val: errMessage(e) },
-      };
-    }
-
-    try {
-      const manifest = {
-        name: particle.name,
-        description: particle.description,
-        version: particle.version,
-        capabilities: particle.capabilities,
-        tools: Object.entries(particle.tools).map(([name, def]) => ({
-          name,
-          description: def.description,
-          inputSchema: def.inputSchema,
-        })),
-      };
-      return { tag: "ok", val: JSON.stringify(manifest) };
-    } catch (e) {
-      return {
-        tag: "err",
-        val: { tag: "invalid-manifest", val: errMessage(e) },
-      };
-    }
-  },
-};

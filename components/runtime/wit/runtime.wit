@@ -58,24 +58,14 @@ interface health {
   ping: func() -> result<ping-result, health-error>;
 }
 
-/// Build-time helper. The host instantiates the runtime in "introspect mode"
-/// with no-op stubs for every capability and the freshly bundled JS mounted,
-/// then calls `manifest()` to extract the particle's manifest from the
-/// default export. Used by Phase 5 of the build pipeline.
-interface introspect {
-  variant introspect-error {
-    bundle-load-error(string),
-    invalid-manifest(string),
-  }
-
-  /// Returns the manifest as JSON: { name, description, version,
-  /// capabilities, tools: [{ name, description, inputSchema }] }.
-  manifest: func() -> result<string, introspect-error>;
-}
-
 // -----------------------------------------------------------------------------
 // World
 // -----------------------------------------------------------------------------
+//
+// Build-time manifest extraction lives in a separate component
+// (particle-introspect.wasm) — its boot/serve logic is fundamentally
+// different and the two artifacts evolve independently. See
+// components/introspect and docs/initial-design.md §3.
 
 world runtime {
   // Capability imports — host provides these. Env vars are NOT here; they
@@ -89,5 +79,4 @@ world runtime {
   // Outward exports — host calls these.
   export tools;
   export health;
-  export introspect;
 }

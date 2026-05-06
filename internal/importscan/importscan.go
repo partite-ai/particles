@@ -186,9 +186,14 @@ func (s *scanState) plugin() api.Plugin {
 
 			// Read source from fsys for files in our namespace.
 			b.OnLoad(api.OnLoadOptions{Filter: ".*", Namespace: namespace}, func(args api.OnLoadArgs) (api.OnLoadResult, error) {
-				data, err := fs.ReadFile(s.fsys, args.Path)
+				// path.Clean strips the leading "./" esbuild adds when
+				// it normalizes entry-point paths. fstest.MapFS
+				// accepts both forms; os.DirFS rejects "./..."  via
+				// fs.ValidPath.
+				p := path.Clean(args.Path)
+				data, err := fs.ReadFile(s.fsys, p)
 				if err != nil {
-					return api.OnLoadResult{}, fmt.Errorf("read %s from fs.FS: %w", args.Path, err)
+					return api.OnLoadResult{}, fmt.Errorf("read %s from fs.FS: %w", p, err)
 				}
 				contents := string(data)
 				return api.OnLoadResult{

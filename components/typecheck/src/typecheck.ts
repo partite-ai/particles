@@ -11,7 +11,13 @@
  * routes through `ts.sys` → wasm-rquickjs's `node:fs` shims → wasi:filesystem.
  */
 
+// `./polyfill` MUST come before `typescript` — it sets `__filename` /
+// `__dirname` globals that typescript's CommonJS bundle reads at
+// module-init time. ESM hoists all imports, but execution order
+// follows source order: polyfill runs, then typescript loads.
+import "./polyfill";
 import ts from "typescript";
+import { TS_LIB_FILES } from "./lib-bundle";
 
 type Severity = "error" | "warning" | "info";
 
@@ -34,7 +40,16 @@ type CheckError =
   | { tag: "config-error"; val: string }
   | { tag: "internal-error"; val: string };
 
-type Result<T, E> = { tag: "ok"; val: T } | { tag: "err"; val: E };
+// wasm-rquickjs convention for `result<T, E>`: return T directly for
+// the ok arm; throw a value matching E for the err arm. There is no
+// `{ tag: "ok" | "err", val: ... }` wrapping.
+function configError(message: string): CheckError {
+  return { tag: "config-error", val: message };
+}
+
+function internalError(message: string): CheckError {
+  return { tag: "internal-error", val: message };
+}
 
 // -----------------------------------------------------------------------------
 // Mappings
@@ -74,21 +89,21 @@ function scriptTargetOf(name: string): ts.ScriptTarget | undefined {
 // -----------------------------------------------------------------------------
 
 export const typecheck = {
-  check(opts: CheckOptions): Result<Diagnostic[], CheckError> {
+  check(opts: CheckOptions): Diagnostic[] {
     const target = scriptTargetOf(opts.target);
     if (target === undefined) {
-      return {
-        tag: "err",
-        val: {
-          tag: "config-error",
-          val: `unknown TypeScript target: ${opts.target}`,
-        },
-      };
+      throw configError(`unknown TypeScript target: ${opts.target}`);
     }
 
     const compilerOptions: ts.CompilerOptions = {
       strict: opts.strict,
       target,
+      // No explicit `lib`: when omitted, TypeScript derives the default
+      // lib from `target` and asks the CompilerHost for it via
+      // `readFile(getDefaultLibFilePath(...))`. Our libBundleHost
+      // serves every `lib.*.d.ts` from TS_LIB_FILES regardless of the
+      // queried path, which keeps lib resolution working without
+      // host filesystem access.
       module: ts.ModuleKind.ESNext,
       moduleResolution: ts.ModuleResolutionKind.Bundler,
       noEmit: true,
@@ -100,20 +115,14 @@ export const typecheck = {
 
     let program: ts.Program;
     try {
-      const host = ts.createCompilerHost(compilerOptions);
+      const host = libBundleHost(compilerOptions);
       program = ts.createProgram({
         rootNames: opts.rootFiles,
         options: compilerOptions,
         host,
       });
     } catch (e) {
-      return {
-        tag: "err",
-        val: {
-          tag: "internal-error",
-          val: `program creation failed: ${errMessage(e)}`,
-        },
-      };
+      throw internalError(`program creation failed: ${errMessage(e)}`);
     }
 
     let raw: readonly ts.Diagnostic[];
@@ -126,37 +135,169 @@ export const typecheck = {
         ...program.getSemanticDiagnostics(),
       ];
     } catch (e) {
-      return {
-        tag: "err",
-        val: {
-          tag: "internal-error",
-          val: `diagnostic collection failed: ${errMessage(e)}`,
-        },
-      };
+      throw internalError(`diagnostic collection failed: ${errMessage(e)}`);
     }
 
-    const diagnostics: Diagnostic[] = raw.map((d) => {
-      let line = 0;
-      let column = 0;
-      if (d.file && typeof d.start === "number") {
-        const pos = d.file.getLineAndCharacterOfPosition(d.start);
-        line = pos.line + 1;       // TS is 0-based; design doc reports 1-based.
-        column = pos.character + 1;
-      }
-      return {
-        file: d.file?.fileName ?? "",
-        line,
-        column,
-        severity: severityOf(d.category),
-        code: d.code,
-        message: ts.flattenDiagnosticMessageText(d.messageText, "\n"),
-      };
-    });
-
-    return { tag: "ok", val: diagnostics };
+    return raw
+      .filter(suppressNpmImplicitAny)
+      .map((d) => {
+        let line = 0;
+        let column = 0;
+        if (d.file && typeof d.start === "number") {
+          const pos = d.file.getLineAndCharacterOfPosition(d.start);
+          line = pos.line + 1; // TS is 0-based; design doc reports 1-based.
+          column = pos.character + 1;
+        }
+        return {
+          file: d.file?.fileName ?? "",
+          line,
+          column,
+          severity: severityOf(d.category),
+          code: d.code,
+          message: ts.flattenDiagnosticMessageText(d.messageText, "\n"),
+        };
+      });
   },
 };
 
+// suppressNpmImplicitAny drops TS7016 ("Could not find a declaration
+// file for module X.  '<path>' implicitly has an 'any' type.") when X
+// is an `npm:` specifier. Reasoning: npm packages routinely ship no
+// `.d.ts` files; particle authors can't be expected to write declaration
+// files for every untyped dep. We let those imports be `any` silently —
+// TypeScript still flags implicit-any in the user's own code, just not
+// at the boundary with untyped npm packages.
+//
+// Mirrors how Deno and modern bundlers handle the same case.
+function suppressNpmImplicitAny(d: ts.Diagnostic): boolean {
+  if (d.code !== 7016) return true;
+  const msg = ts.flattenDiagnosticMessageText(d.messageText, "\n");
+  // The message embeds the original specifier in single quotes.
+  return !msg.includes("'npm:");
+}
+
 function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+// libBundleHost wraps the default CompilerHost with two pieces of
+// particle-specific behavior:
+//
+//  1. lib.*.d.ts files are served from TS_LIB_FILES (bundled into the
+//     wasm at build time) instead of the wasi:filesystem preopens.
+//     TypeScript's `getDefaultLibFilePath` returns paths like
+//     `/typecheck.js/../lib/lib.es2022.d.ts` which would otherwise
+//     need to live on the host's filesystem.
+//
+//  2. `npm:foo@range[/sub]` import specifiers are rewritten to bare
+//     `foo[/sub]` before being handed to TypeScript's standard
+//     resolver. The bundle phase rewrites the same way at JS-emit time
+//     (see internal/bundle); without the type-side rewrite TypeScript
+//     reports `Cannot find module 'npm:foo@range'` for every npm import.
+//
+// Everything else delegates to the default host.
+function libBundleHost(opts: ts.CompilerOptions): ts.CompilerHost {
+  const base = ts.createCompilerHost(opts);
+  const lookup = (p: string): string | undefined => {
+    const slash = p.lastIndexOf("/");
+    const basename = slash >= 0 ? p.slice(slash + 1) : p;
+    return TS_LIB_FILES[basename];
+  };
+  return {
+    ...base,
+    fileExists(p: string): boolean {
+      if (lookup(p) !== undefined) return true;
+      return base.fileExists(p);
+    },
+    readFile(p: string): string | undefined {
+      const bundled = lookup(p);
+      if (bundled !== undefined) return bundled;
+      return base.readFile(p);
+    },
+    getSourceFile(
+      fileName: string,
+      languageVersionOrOptions: ts.ScriptTarget | ts.CreateSourceFileOptions,
+      onError?: (message: string) => void,
+      shouldCreateNewSourceFile?: boolean,
+    ): ts.SourceFile | undefined {
+      const bundled = lookup(fileName);
+      if (bundled !== undefined) {
+        const target =
+          typeof languageVersionOrOptions === "object"
+            ? languageVersionOrOptions.languageVersion
+            : languageVersionOrOptions;
+        return ts.createSourceFile(fileName, bundled, target, /*setParentNodes*/ false);
+      }
+      return base.getSourceFile(
+        fileName,
+        languageVersionOrOptions,
+        onError,
+        shouldCreateNewSourceFile,
+      );
+    },
+    resolveModuleNameLiterals(
+      moduleLiterals: readonly ts.StringLiteralLike[],
+      containingFile: string,
+      _redirectedReference: ts.ResolvedProjectReference | undefined,
+      options: ts.CompilerOptions,
+      _containingSourceFile: ts.SourceFile,
+      _reusedNames: readonly ts.StringLiteralLike[] | undefined,
+    ): readonly ts.ResolvedModuleWithFailedLookupLocations[] {
+      return moduleLiterals.map((lit) => {
+        const cleaned = stripNpmPrefix(lit.text);
+        return ts.resolveModuleName(cleaned, containingFile, options, base);
+      });
+    },
+  };
+}
+
+// stripNpmPrefix maps `npm:foo@range[/sub]` → `foo[/sub]`, leaving any
+// other specifier untouched. Mirrors the rewrite the bundle phase does
+// in internal/bundle for runtime resolution.
+//
+//   "npm:lodash@^4.17.0"      → "lodash"
+//   "npm:lodash@^4.17.0/get"  → "lodash/get"
+//   "npm:@scope/pkg@1"        → "@scope/pkg"
+//   "npm:@scope/pkg@1/sub"    → "@scope/pkg/sub"
+//   "npm:foo"                 → "foo"   (missing version is rejected
+//                                        earlier in the import-scan
+//                                        phase; we only see well-formed
+//                                        specifiers here)
+function stripNpmPrefix(spec: string): string {
+  if (!spec.startsWith("npm:")) return spec;
+  const s = spec.slice(4);
+  if (s.length === 0) return spec;
+
+  // Find the end of the package name (handles @scope/name).
+  let nameEnd: number;
+  if (s.startsWith("@")) {
+    const firstSlash = s.indexOf("/", 1);
+    if (firstSlash < 0) return s; // malformed; let TS surface it
+    const afterScope = firstSlash + 1;
+    const next = nextDelim(s, afterScope);
+    nameEnd = next < 0 ? s.length : next;
+  } else {
+    const next = nextDelim(s, 0);
+    nameEnd = next < 0 ? s.length : next;
+  }
+
+  const name = s.slice(0, nameEnd);
+  const rest = s.slice(nameEnd);
+
+  // rest is either empty, "/<sub>", or "@<version>[/<sub>]".
+  if (rest.startsWith("@")) {
+    const slash = rest.indexOf("/");
+    return slash < 0 ? name : name + rest.slice(slash);
+  }
+  return name + rest;
+}
+
+// nextDelim returns the index of the first '@' or '/' in s at/after
+// `from`, or -1 if none.
+function nextDelim(s: string, from: number): number {
+  for (let i = from; i < s.length; i++) {
+    const c = s[i];
+    if (c === "@" || c === "/") return i;
+  }
+  return -1;
 }

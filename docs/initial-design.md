@@ -27,7 +27,7 @@ Particle is a Go library (with a CLI built on it) that builds and runs **particl
 
 ### Architectural anchor: one runtime, many particles
 
-There is **one** built WASM Component artifact in the system: `particle-runtime.wasm`. It contains rquickjs, the host-import stubs, the boot sequence, and nothing particle-specific. Built once, distributed once.
+There is **one** runtime artifact in the system: `particle-runtime.wasm`. It contains rquickjs, the host-import stubs, the boot sequence, and nothing particle-specific. Built once, distributed once. (Build-time manifest extraction lives in a separate component, `particle-introspect.wasm` — see §3.)
 
 To run a particle, the Go host **instantiates** this runtime image and **mounts** the particle's code into it as a virtual filesystem (`wasi:filesystem`). Multiple instances of the same image run concurrently, each with a different mounted FS. No per-particle WASM compilation. No per-particle composition.
 
@@ -299,22 +299,22 @@ The build pipeline turns a source directory into a particle tarball. It's orches
 
 ```
 build-time WASM components:
-  deno-npm.wasm            (Rust → WASM)        npm dep resolve + fetch
-  particle-typecheck.wasm  (QuickJS+tsc → WASM) TypeScript type checking
+  deno-npm.wasm              (Rust → WASM)        npm dep resolve + fetch
+  particle-typecheck.wasm    (QuickJS+tsc → WASM) TypeScript type checking
+  particle-introspect.wasm   (QuickJS → WASM)     extracts manifest from bundle
 
 build-time Go libraries:
-  esbuild                                       JS bundling
-  import-scan                                   parses npm: specs (uses esbuild's parser API)
-
-reused at build time:
-  particle-runtime.wasm    (in introspect mode) extracts manifest from bundle
+  esbuild                                         JS bundling
+  import-scan                                     parses npm: specs (uses esbuild's parser API)
 ```
 
 ### Why this split
 
-A piece becomes its own WASM component when it's most naturally written in a non-Go language, **or** when it's a different program — even if it's JS-on-QuickJS, like both the runtime and tsc are. Components are per-purpose, not per-language.
+A piece becomes its own WASM component when it's most naturally written in a non-Go language, **or** when it's a different program — even if it's JS-on-QuickJS, like the runtime, the typechecker, and the introspect component all are. Components are per-purpose, not per-language.
 
 esbuild has a stable Go API and is written in Go; wrapping it in WASM adds bridging tax for no benefit. Orchestration in Go gives natural access to file I/O, caching, parallelism, and stable Go interfaces for plugging in alternate implementations.
+
+`particle-introspect.wasm` is its own component rather than a "mode" of `particle-runtime.wasm` because the two have fundamentally different boot/serve logic. Introspect never invokes a tool handler — it reads the bundle's default-export metadata, validates it, and returns the manifest JSON. Splitting it out keeps the hot-path runtime image free of build-time logic and lets the two evolve independently. The two share the QuickJS toolchain (wasm-rquickjs) but the introspect component imports *no* `particle:host/*` interfaces: since handlers are never called, the bundle's `import { credentials } from "particle:credentials"` statements only need to *resolve*, not work. The introspect component registers JS-level no-op stubs for every `particle:*` module before evaluating the bundle, so resolution happens entirely inside QuickJS without any host wiring.
 
 ### `deno-npm.wasm` — Rust component
 
@@ -385,16 +385,42 @@ Imports: `wasi:filesystem` (source + node_modules). Nothing else.
 
 A future Go-native implementation (e.g., `tsgo` once it stabilizes) would expose the same Go-side `TypeChecker` interface; swap is mechanical and the build pipeline stays unchanged.
 
-### Manifest extraction via runtime
+### `particle-introspect.wasm` — QuickJS-hosted manifest extractor
 
-The runtime artifact does double duty. In **introspect mode**, the host:
+A separate QuickJS-hosted component, built with the same wasm-rquickjs toolchain as the runtime but a distinct artifact. Its job is to evaluate the freshly built `bundle.js` and return the manifest JSON.
 
-- Instantiates the runtime
+```wit
+package particle:introspect@0.1.0;
+
+interface introspect {
+  variant introspect-error {
+    bundle-load-error(string),
+    invalid-manifest(string),
+  }
+
+  /// Returns the manifest as JSON: { name, description, version,
+  /// capabilities, tools: [{ name, description, inputSchema }] }.
+  manifest: func() -> result<string, introspect-error>;
+}
+
+world component {
+  // No particle:host/* imports. The component stubs particle:*
+  // modules inside QuickJS — see explanation below.
+  export introspect;
+}
+```
+
+For each call:
+
+- The host instantiates the component (only standard wasi:* imports needed)
 - Mounts the freshly bundled JS as the virtual FS (`bundle.js` only)
-- Wires no-op stub implementations of all capabilities
-- Invokes a built-in `manifest()` function the runtime exposes, which evaluates `bundle.js`, reads `default` export, and returns name/description/capabilities and the tools list (with `inputSchema` serialized)
+- Calls `manifest()`, which registers no-op stubs for every `particle:*` module specifier inside QuickJS, then evaluates `bundle.js`, reads the `default` export, validates the structure, and returns name/description/capabilities and the tools list (with `inputSchema` serialized)
 
-Why use the runtime for this rather than a separate parser? Fidelity (the runtime is the only thing that knows for sure how the bundle parses and what its default export contains) and reuse (no new component to maintain).
+Why a separate component, not "introspect mode" of the runtime? The boot/serve logic is fundamentally different — the runtime dispatches tool calls and runs handler code; introspect never invokes a handler. Keeping them split means the hot-path runtime image stays free of build-time logic, the two evolve independently, and each gets a tighter contract.
+
+Why no `particle:host/*` imports? The introspect component is fully self-contained: it never invokes a handler, so the `particle:*` modules in the user's bundle never *run* — they only need to *resolve*. The component's JS source registers a permissive no-op stub for each `particle:*` specifier before evaluating the bundle, so resolution succeeds entirely inside QuickJS. The host wires only standard wasi:* imports.
+
+Why use a QuickJS component at all rather than a Go-side AST walker? Fidelity. The bundle is real ESM with potential dynamic computation in the default-export object; the only thing that reliably knows what the export contains is a JS engine evaluating it. Sharing the wasm-rquickjs toolchain with the runtime keeps that fidelity essentially free.
 
 ### Build artifacts
 
@@ -596,7 +622,7 @@ Phase 1: import-scan          (Go)         — extract npm: specs from sources
 Phase 2: resolve-and-fetch    (deno-npm.wasm) — resolve transitive deps, fetch tarballs
 Phase 3: typecheck            (particle-typecheck.wasm) — tsc, default-on
 Phase 4: bundle               (esbuild Go lib) — produce bundle.js
-Phase 5: manifest-extract     (particle-runtime.wasm in introspect mode)
+Phase 5: manifest-extract     (particle-introspect.wasm) — extract manifest from bundle
 Phase 6: pack                 (Go)         — tar { manifest.json, bundle.js, lockfile, info }
 ```
 
@@ -618,7 +644,7 @@ Cache key: SHA-256 of (source-tree-hash + lockfile-hash).
 
 Cache key: same as typecheck.
 
-**Phase 5: manifest-extract (particle-runtime.wasm, introspect mode).** The orchestrator instantiates the runtime with `bundle.js` mounted, all `particle:*` host imports stubbed to no-ops, and a boot flag indicating introspect mode. The runtime imports the bundle, reads `default` export, validates structure, validates each `inputSchema` against the JSON Schema meta-schema, cross-references declared capabilities against imports actually used. Returns the manifest as JSON.
+**Phase 5: manifest-extract (particle-introspect.wasm).** The orchestrator instantiates `particle-introspect.wasm` with `bundle.js` mounted at `/particle/bundle.js`. The component registers JS-level no-op stubs for every `particle:*` module specifier (so the bundle's `import { credentials } from "particle:credentials"` resolves without ever crossing the WIT boundary), evaluates the bundle, reads `default` export, validates structure, validates each `inputSchema` against the JSON Schema meta-schema, cross-references declared capabilities against imports actually used. Returns the manifest as JSON. No `particle:host/*` imports needed — the host wires only standard wasi:*.
 
 Cache key: SHA-256 of bundle.js.
 
@@ -1161,7 +1187,8 @@ Run the build pipeline and write the tarball to disk. Useful for CI, distributio
 
 **Phase 1 (this design):**
 
-- `particle-runtime.wasm` (rquickjs, with introspect mode)
+- `particle-runtime.wasm` (rquickjs)
+- `particle-introspect.wasm` (rquickjs, build-time manifest extraction)
 - `deno-npm.wasm`
 - `particle-typecheck.wasm`
 - `particle-core` Go library (build pipeline + runtime hosting + WIT bridge)
@@ -1202,6 +1229,7 @@ Run the build pipeline and write the tarball to disk. Useful for CI, distributio
 - **Tool.** A named, JSON-Schema-described function exposed by a particle.
 - **Capability.** A category of host functionality (credentials, kv, env, http, sockets) that a particle declares it needs in its manifest.
 - **Runtime.** `particle-runtime.wasm` — the rquickjs-based WASM Component that executes particles. One artifact, many instances.
+- **Introspect component.** `particle-introspect.wasm` — a separate rquickjs-based component used at build time (Phase 5) to evaluate the bundle and extract its manifest.
 - **Host.** The Go process (CLI or library consumer) that instantiates the runtime, provides capability implementations, and orchestrates building and execution.
 - **Adapter.** A small layer that wraps the runtime's `tools` interface for a specific transport (`particle-mcp`, `particle-cli`).
 - **Sealed credential.** A credential whose actual value is never returned to JS — only an opaque placeholder, substituted at the wasi:http boundary.
