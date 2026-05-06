@@ -1,3 +1,7 @@
 .claude
 .devcontainer
 notes.txt
+
+# Build artifacts
+target/
+dist/

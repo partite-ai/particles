@@ -1,0 +1,47 @@
+[package]
+name = "deno-npm-component"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Wraps deno_npm as a WASI Preview 2 component for npm dep resolution + tarball fetch."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# WIT bindings (export trait generation only — wasi:http imports come from wstd/wasip2)
+wit-bindgen = "0.39"
+
+# npm resolver (pure logic, no HTTP). Pin deno_semver to the exact version
+# deno_npm asks for ("=0.9.1") so we don't end up with two semver crates and
+# `PackageReq` types that don't unify.
+deno_npm = "0.59"
+deno_semver = "=0.9.1"
+
+# HTTP / async stack on top of wasi:http
+wstd = { version = "0.5", default-features = false }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async trait used by deno_npm's NpmRegistryApi
+async-trait = "0.1"
+
+# Tarball extraction (for package.json)
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = { version = "0.4", default-features = false }
+
+# Integrity verification
+sha2 = "0.10"
+sha1 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

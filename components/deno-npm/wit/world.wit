@@ -1,0 +1,36 @@
+package particle:build@0.1.0;
+
+interface installer {
+  record dep-request {
+    name: string,
+    version-range: string,
+  }
+
+  record resolved-dep {
+    name: string,
+    version: string,
+    integrity: string,
+    tarball-bytes: list<u8>,
+    package-json: string,
+    transitive: list<u32>,
+  }
+
+  variant installer-error {
+    network-error(string),
+    resolution-error(string),
+    integrity-mismatch(string),
+  }
+
+  resolve-and-fetch: func(deps: list<dep-request>)
+    -> result<list<resolved-dep>, installer-error>;
+}
+
+/// World for the deno-npm build-time component.
+///
+/// Exports `installer` (the only thing the host calls). Imports wasi:http
+/// through the `wstd` / `wasip2` crates linked in the Rust source — those
+/// pull in the appropriate wasi:http calls, so the produced component
+/// declares them automatically.
+world component {
+  export installer;
+}
