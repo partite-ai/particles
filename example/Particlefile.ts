@@ -9,7 +9,9 @@ export default {
     is_odd: {
       description: "Check whether the input is an odd number",
       inputSchema: { type: "object", properties: { value: { type: "number" } } },
-      handler: async ({ value }: { value: number }) => ({ result: isOdd(value) }),
+      handler: async ({ value }: { value: number }) => { 
+        return { result: isOdd(value) };
+      },
     },
   },
 };

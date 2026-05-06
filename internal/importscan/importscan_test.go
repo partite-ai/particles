@@ -140,11 +140,61 @@ func TestScanOutsideTree(t *testing.T) {
 	}
 }
 
-// TODO: detection for computed dynamic imports (`import(name + ".js")`).
-// Current esbuild doesn't emit a warning for this case via the public API,
-// so the metafile-driven scan can't see it. A small source-text scan for
-// `import(` followed by non-string-literal arguments would catch it; defer
-// until we hit a real particle that wants to do this.
+// Computed dynamic imports surface via esbuild's
+// `unsupported-dynamic-import` message (default level: debug). The
+// scan promotes that ID to "warning" via LogOverride so it lands in
+// build.Warnings and we can convert it to an ErrComputedImport.
+func TestScanComputedDynamicImport_Concat(t *testing.T) {
+	fsys := mapfs(map[string]string{
+		"Particlefile.ts": `const name = "foo"; const m = await import(name + ".js"); export default m;`,
+	})
+	r, err := Scan(fsys)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(r.Errors) != 1 || r.Errors[0].Kind != ErrComputedImport {
+		t.Fatalf("want one ErrComputedImport, got %#v", r.Errors)
+	}
+	if r.Errors[0].File != "Particlefile.ts" {
+		t.Errorf("file = %q, want Particlefile.ts", r.Errors[0].File)
+	}
+	if r.Errors[0].Line == 0 {
+		t.Errorf("expected non-zero line, got %d", r.Errors[0].Line)
+	}
+}
+
+func TestScanComputedDynamicImport_TemplateLiteral(t *testing.T) {
+	fsys := mapfs(map[string]string{
+		"Particlefile.ts": "const name = 'foo'; const m = await import(`./${name}.js`); export default m;",
+	})
+	r, err := Scan(fsys)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(r.Errors) != 1 || r.Errors[0].Kind != ErrComputedImport {
+		t.Fatalf("want one ErrComputedImport, got %#v", r.Errors)
+	}
+}
+
+func TestScanStringLiteralDynamicImport_OK(t *testing.T) {
+	// Static string-literal dynamic imports are fine; esbuild bundles
+	// them just like static `import` declarations. The scan should
+	// classify the target as a local import without raising
+	// ErrComputedImport.
+	fsys := mapfs(map[string]string{
+		"Particlefile.ts": `const m = await import("./helper.ts"); export default m;`,
+		"helper.ts":       `export const x = 1;`,
+	})
+	r, err := Scan(fsys)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, e := range r.Errors {
+		if e.Kind == ErrComputedImport {
+			t.Errorf("unexpected ErrComputedImport for string-literal dynamic import: %v", e)
+		}
+	}
+}
 
 func TestScanUnknownPrefix(t *testing.T) {
 	fsys := mapfs(map[string]string{

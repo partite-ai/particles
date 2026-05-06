@@ -106,6 +106,26 @@ func Scan(fsys fs.FS) (*Result, error) {
 		// Outdir/Outfile is required when Bundle is true; nothing is
 		// actually written (Write: false).
 		Outdir: "/dev/null/importscan-noop",
+		// Promote esbuild diagnostic IDs that flag dynamic-import
+		// patterns particles must not use. Default level is "debug" /
+		// "info"; the Go API drops those on the floor unless they
+		// reach "warning" or higher.
+		//
+		//   unsupported-dynamic-import — `import(name + ".js")` and
+		//     similar non-literal arguments. esbuild can't bundle
+		//     these and leaves them as runtime calls.
+		//   empty-glob — `import(`./${name}.js`)` style template
+		//     literals are treated as glob patterns by esbuild. We
+		//     treat *any* template-literal-with-interpolation as
+		//     unsupported; the empty-glob message catches the common
+		//     case where the inferred glob matches no files. (A glob
+		//     that *does* match silently bundles whatever was on disk
+		//     at build time — a known gap, addressed if it ever
+		//     bites a real particle.)
+		LogOverride: map[string]api.LogLevel{
+			"unsupported-dynamic-import": api.LogLevelWarning,
+			"empty-glob":                 api.LogLevelWarning,
+		},
 	})
 
 	r := &Result{}
@@ -135,18 +155,19 @@ func Scan(fsys fs.FS) (*Result, error) {
 	}
 
 	for _, w := range build.Warnings {
-		if isComputedImportWarning(w.Text) {
-			e := Error{
-				Kind:    ErrComputedImport,
-				Message: "dynamic import() must use a string literal — computed specifiers are not supported",
-			}
-			if w.Location != nil {
-				e.File = strings.TrimPrefix(w.Location.File, namespacePrefix)
-				e.Line = w.Location.Line
-				e.Column = w.Location.Column
-			}
-			r.Errors = append(r.Errors, e)
+		if !isComputedImportWarning(w.ID) {
+			continue
 		}
+		e := Error{
+			Kind:    ErrComputedImport,
+			Message: "dynamic import() must use a string literal — computed specifiers are not supported",
+		}
+		if w.Location != nil {
+			e.File = strings.TrimPrefix(w.Location.File, namespacePrefix)
+			e.Line = w.Location.Line
+			e.Column = w.Location.Column
+		}
+		r.Errors = append(r.Errors, e)
 	}
 
 	finalize(r, seenCap)
@@ -402,10 +423,15 @@ func parseNpmSpec(spec string) (name, version, subpath string, ok bool) {
 	return name, version, subpath, true
 }
 
-func isComputedImportWarning(text string) bool {
-	t := strings.ToLower(text)
-	return strings.Contains(t, "argument is not a string literal") ||
-		strings.Contains(t, "could not be statically analyzed")
+// isComputedImportWarning matches esbuild's stable message IDs for the
+// dynamic-import patterns we forbid. Matching on the ID is robust
+// against esbuild's user-facing message text changing between releases.
+func isComputedImportWarning(id string) bool {
+	switch id {
+	case "unsupported-dynamic-import", "empty-glob":
+		return true
+	}
+	return false
 }
 
 func finalize(r *Result, seenCap map[string]struct{}) {
