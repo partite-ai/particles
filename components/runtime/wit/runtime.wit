@@ -1,0 +1,93 @@
+/// Particle runtime component world.
+///
+/// One image, many instances. Each instance is wired by the host with:
+///   - the particle's tarball mounted (the JS engine picks this up via its
+///     own filesystem layer)
+///   - `particle:host/*` bound to the host's capability impls
+///
+/// Built via `wasm-rquickjs generate-wrapper-crate`. The generated wrapper
+/// adds whatever `wasi:*` imports the QuickJS engine and its JS APIs need
+/// (fetch → wasi:http, console → wasi:logging, file reads → wasi:filesystem,
+/// etc.) — we only declare what *our* JS source explicitly imports.
+///
+/// Spec: docs/initial-design.md §2.
+package particle:runtime@0.1.0;
+
+// -----------------------------------------------------------------------------
+// Outward interfaces — the runtime implements these; the host calls them.
+// -----------------------------------------------------------------------------
+
+interface tools {
+  record tool-def {
+    name: string,
+    description: string,
+    /// JSON Schema, encoded as UTF-8 JSON. Object-rooted.
+    input-schema-json: string,
+  }
+
+  variant tool-error {
+    not-found,
+    invalid-arguments(string),
+    handler-error(string),
+    capability-denied(string),
+  }
+
+  list-tools: func() -> list<tool-def>;
+
+  /// `arguments-json` is JSON pre-validated against the tool's input schema.
+  /// Returns the handler's return value as JSON.
+  call-tool: func(name: string, arguments-json: string) -> result<string, tool-error>;
+}
+
+interface health {
+  enum status { ok, degraded, unhealthy }
+
+  record ping-result {
+    status: status,
+    message: option<string>,
+    /// JSON, free-form.
+    details: option<string>,
+  }
+
+  variant health-error {
+    /// Particle did not declare `ping`.
+    not-implemented,
+    handler-error(string),
+  }
+
+  ping: func() -> result<ping-result, health-error>;
+}
+
+/// Build-time helper. The host instantiates the runtime in "introspect mode"
+/// with no-op stubs for every capability and the freshly bundled JS mounted,
+/// then calls `manifest()` to extract the particle's manifest from the
+/// default export. Used by Phase 5 of the build pipeline.
+interface introspect {
+  variant introspect-error {
+    bundle-load-error(string),
+    invalid-manifest(string),
+  }
+
+  /// Returns the manifest as JSON: { name, description, version,
+  /// capabilities, tools: [{ name, description, inputSchema }] }.
+  manifest: func() -> result<string, introspect-error>;
+}
+
+// -----------------------------------------------------------------------------
+// World
+// -----------------------------------------------------------------------------
+
+world runtime {
+  // Capability imports — host provides these. Env vars are NOT here; they
+  // come in via standard wasi:cli/environment (surfaced as process.env in
+  // the JS engine), filtered by the host based on the manifest.
+  import particle:host/credentials@0.1.0;
+  import particle:host/oauth@0.1.0;
+  import particle:host/signing@0.1.0;
+  import particle:host/kv@0.1.0;
+
+  // Outward exports — host calls these.
+  export tools;
+  export health;
+  export introspect;
+}

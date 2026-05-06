@@ -1,0 +1,13 @@
+{
+  "name": "@particle/typecheck",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "QuickJS-hosted TypeScript compiler — TS source for the wasm-rquickjs wrapper.",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "typescript": "^5.6.0"
+  }
+}

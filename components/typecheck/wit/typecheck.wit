@@ -1,0 +1,39 @@
+/// QuickJS-hosted TypeScript compiler component.
+///
+/// Build-time helper used by Phase 3 of the particle build pipeline:
+/// the orchestrator mounts the source tree and resolved node_modules at
+/// /src/ and /node_modules/, then calls `check()` and surfaces diagnostics
+/// to the user.
+///
+/// Spec: docs/initial-design.md §3 (`particle-typecheck.wasm`).
+package particle:build@0.1.0;
+
+interface typecheck {
+  enum severity { error, warning, info }
+
+  record diagnostic {
+    file: string,
+    line: u32,
+    column: u32,
+    severity: severity,
+    code: u32,
+    message: string,
+  }
+
+  record check-options {
+    root-files: list<string>,
+    strict: bool,
+    target: string,         // e.g. "ES2022"
+  }
+
+  variant check-error {
+    config-error(string),
+    internal-error(string),
+  }
+
+  check: func(opts: check-options) -> result<list<diagnostic>, check-error>;
+}
+
+world component {
+  export typecheck;
+}

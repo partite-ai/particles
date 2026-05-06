@@ -64,10 +64,10 @@ The Go host extracts this tarball, exposes its contents via wasi:filesystem to t
                         ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  particle-runtime.wasm (one image, many instances)          │
-│  Imports: particle:credentials, particle:kv, particle:env,  │
+│  Imports: particle:credentials, particle:kv,                │
 │           particle:oauth, particle:signing,                 │
 │           wasi:http, wasi:sockets, wasi:filesystem,         │
-│           wasi:cli/stderr                                   │
+│           wasi:cli/environment, wasi:cli/stderr             │
 │  Exports: particle:tools, particle:health                   │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -111,7 +111,8 @@ particle-runtime.wasm ◄────────────────── 
                                            │   particle:oauth         │
                                            │   particle:signing       │
                                            │   particle:kv            │
-                                           │   particle:env           │
+                                           │   wasi:cli/environment   │
+                                           │     (manifest-filtered)  │
                                            │   wasi:filesystem (FS    │
                                            │     view of tarball)     │
                                            │   wasi:http (with policy)│
@@ -260,15 +261,9 @@ interface kv {
 
 KV is per-particle scoped: the host namespaces keys internally by particle ID. The JS sees a flat keyspace. String values only.
 
-#### `particle:env` (host exports)
+#### Env vars (no custom interface — standard WASI)
 
-```wit
-interface env {
-  get: func(name: string) -> option<string>;
-}
-```
-
-Read-only. No `list` — particles read what they ask for.
+Particles read env vars via `process.env` (which the QuickJS engine routes through `wasi:cli/environment`). The host's `wasi:cli/environment` implementation filters what gets exposed based on the manifest's `capabilities.env` declaration — undeclared vars don't reach the particle. No custom `particle:env` WIT interface; one less WIT to version.
 
 #### `wasi:http` (host exports)
 
@@ -539,7 +534,7 @@ A capability that doesn't appear in the manifest is denied. Importing a `particl
 Every import in particle source resolves to exactly one of:
 
 1. **`npm:pkg@version`** — npm package. Version range required. Subpath supported (`npm:lodash@4/get`).
-2. **`particle:<capability>`** — host-provided capability. One of `particle:credentials`, `particle:oauth`, `particle:signing`, `particle:kv`, `particle:env`.
+2. **`particle:<capability>`** — host-provided capability. One of `particle:credentials`, `particle:oauth`, `particle:signing`, `particle:kv`. Env vars are not in this namespace; particles read them via `process.env`.
 3. **`./relative/path.js`** — local file in the particle source tree.
 4. **`/absolute/in-bundle/path`** — discouraged for human authors, but esbuild will resolve them.
 
@@ -563,7 +558,7 @@ No bare specifiers. The `npm:` prefix is mandatory.
 
 ### TypeScript
 
-esbuild handles `.ts` files natively (syntax stripping). Particles can use `.ts` or `.js` freely. Type-checking runs as a separate phase via `particle-typecheck.wasm` (default-on, opt-out via `--no-type-check`). We ship `.d.ts` files for `particle:credentials`, `particle:oauth`, `particle:signing`, `particle:kv`, `particle:env`, and a `Particle` / `ToolDef` types package.
+esbuild handles `.ts` files natively (syntax stripping). Particles can use `.ts` or `.js` freely. Type-checking runs as a separate phase via `particle-typecheck.wasm` (default-on, opt-out via `--no-type-check`). We ship `.d.ts` files for `particle:credentials`, `particle:oauth`, `particle:signing`, `particle:kv`, and a `Particle` / `ToolDef` types package.
 
 ### Build-time validation
 
@@ -694,7 +689,8 @@ This section describes what happens *inside* the runtime when a particle is load
 
 1. **Load.** Runtime image is instantiated. The host wires imports:
    - `wasi:filesystem` → virtual FS backed by the particle tarball, mounted at `/particle/`
-   - `particle:credentials`, `particle:oauth`, `particle:signing`, `particle:kv`, `particle:env` → host-provided implementations
+   - `particle:credentials`, `particle:oauth`, `particle:signing`, `particle:kv` → host-provided implementations
+   - `wasi:cli/environment` → host-provided impl that filters env vars per the manifest
    - `wasi:http` → host implementation that consults HTTPPolicy
    - `wasi:sockets` → host implementation that consults SocketsPolicy (deny-all when not declared)
    - `wasi:cli/stderr`, `wasi:clocks`, `wasi:random` → standard WASI
