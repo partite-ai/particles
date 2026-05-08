@@ -92,12 +92,6 @@ func (c *Components) TypeCheck(ctx context.Context, source, nodeModules fs.FS) (
 	}
 	defer inst.Close(ctx)
 
-	if fn := inst.ExportedFunc("wizer-initialize"); fn != nil {
-		if _, err := fn.Call(ctx); err != nil {
-			return nil, withStderr(err, stderrBuf, "wizer-initialize")
-		}
-	}
-
 	iface := inst.ExportedInstance(typecheckInterface)
 	if iface == nil {
 		return nil, fmt.Errorf("typecheck component does not export instance %q", typecheckInterface)

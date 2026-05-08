@@ -1,0 +1,127 @@
+// Type declarations for the host-provided `particle:*` namespaces.
+//
+// The typecheck wasm injects this file into every program as a
+// synthetic root, so user particles get type-checking on
+// `credentials.fetcher(...)`, `kv.set(...)`, etc. without needing
+// to import any external types package.
+//
+// The runtime adapters live in:
+//   - components/runtime/src/runtime.ts    (JS side, particle imports here)
+//   - credentials/, kv/                    (Go side, host implementations)
+//
+// Spec: docs/initial-design.md §2.
+
+declare module "particle:credentials" {
+  /**
+   * Per-particle credential access. The particle's
+   * `capabilities.credentials` map declares which names are valid;
+   * calling `fetcher` / `getRaw` for an undeclared name throws
+   * `not-configured`.
+   */
+  export const credentials: {
+    /**
+     * Returns a fetch-shaped function bound to the named credential.
+     * Each request through it receives the credential at the
+     * configured location (Authorization header, custom header, or
+     * query param) before the request leaves the host.
+     *
+     * Available for `basic`, `oauth2`, and `apikey` credentials.
+     * For `signing-key` / `raw`, use `signing.sign` / `getRaw`
+     * instead — calling `fetcher` on those throws `type-mismatch`.
+     */
+    fetcher(name: string): Promise<(input: string | URL, init?: RequestInit) => Promise<Response>>;
+
+    /**
+     * Returns the raw value of a `raw`-typed credential. Importing
+     * this function requires at least one `type: "raw"` credential
+     * in the manifest — making raw access auditable in code review.
+     */
+    getRaw(name: string): Promise<string>;
+
+    /**
+     * Returns the name of the credential method the user configured
+     * at setup, or `null` when no method is configured. Particles
+     * whose manifest declares multiple alternative auth methods
+     * (e.g. oauth2 + apikey for the same provider) call this to
+     * discover which one to pass to `fetcher` / `getRaw`.
+     *
+     * Synchronous — the result is fixed at setup time and resolves
+     * via a single host call without any I/O on the hot path.
+     */
+    getConfiguredMethod(): string | null;
+  };
+
+  /**
+   * Discriminated error thrown from the credentials API. Use a
+   * type switch on `tag` to disambiguate.
+   */
+  export type CredentialError =
+    | { tag: "not-configured" }
+    | { tag: "not-found" }
+    | { tag: "type-mismatch"; val: string }
+    | { tag: "storage-error"; val: string };
+}
+
+declare module "particle:oauth" {
+  /**
+   * OAuth-specific operations on top of `credentials`. Importing
+   * this requires at least one `type: "oauth2"` credential in the
+   * manifest.
+   */
+  export const oauth: {
+    /**
+     * Force a refresh regardless of cached expiry. Use this when
+     * an upstream returns 401/403 on a token you thought was still
+     * valid; the next `fetcher` call will use the rotated token.
+     */
+    refresh(name: string): Promise<void>;
+  };
+
+  export type OAuthError =
+    | { tag: "not-configured" }
+    | { tag: "not-oauth" }
+    | { tag: "refresh-failed"; val: string };
+}
+
+declare module "particle:signing" {
+  /**
+   * Cryptographic operations against a host-stored key. The key
+   * material never enters JS; sign / verify happen entirely on the
+   * host side. Importing this requires at least one
+   * `type: "signing-key"` credential in the manifest.
+   */
+  export const signing: {
+    /** Returns the signature of `data` under the named key. */
+    sign(name: string, data: Uint8Array): Promise<Uint8Array>;
+    /** Returns whether `signature` matches `data` under the named key. */
+    verify(name: string, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+  };
+
+  export type SigningError =
+    | { tag: "not-configured" }
+    | { tag: "not-signing-key" }
+    | { tag: "invalid-input"; val: string };
+}
+
+declare module "particle:kv" {
+  /**
+   * Per-particle key/value store. Strings only — base64-encode
+   * binary if you must. Keys and values are scoped by particle
+   * name; two particles using the same key see independent
+   * values.
+   */
+  export const kv: {
+    /** Returns the stored string, or null if no entry exists. */
+    get(key: string): Promise<string | null>;
+    /** Replaces or creates the entry. */
+    set(key: string, value: string): Promise<void>;
+    /** Idempotent — removing an absent key is fine. */
+    delete(key: string): Promise<void>;
+    /** Returns keys with the given prefix, in unspecified order. */
+    list(prefix: string): Promise<string[]>;
+  };
+
+  export type KVError =
+    | { tag: "storage-error"; val: string }
+    | { tag: "quota-exceeded" };
+}

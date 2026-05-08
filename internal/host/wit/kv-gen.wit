@@ -1,0 +1,9 @@
+package particle:host@0.1.0;
+
+/// `kv-gen` is the synthetic world wacogo-witgen generates the kv
+/// capability bindings from. It imports just the kv interface so
+/// the produced binding tree is scoped to kv and doesn't drag in
+/// credentials/oauth/signing types.
+world kv-gen {
+  import kv;
+}

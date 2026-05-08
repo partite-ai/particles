@@ -1,0 +1,9 @@
+package particle:host@0.1.0;
+
+/// `oauth-gen` is the synthetic world wacogo-witgen generates the
+/// oauth capability bindings from. It imports just the oauth
+/// interface so the produced binding tree is scoped to oauth and
+/// doesn't drag in credentials/signing/kv types.
+world oauth-gen {
+  import oauth;
+}

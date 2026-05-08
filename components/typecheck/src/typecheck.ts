@@ -17,7 +17,13 @@
 // follows source order: polyfill runs, then typescript loads.
 import "./polyfill";
 import ts from "typescript";
-import { TS_LIB_FILES } from "./lib-bundle";
+import { TS_LIB_FILES, PARTICLE_GLOBALS_DTS } from "./lib-bundle";
+
+// Synthetic path the libBundleHost serves the particle:* module
+// declarations from. The leading "/" keeps it absolute (TS
+// canonicalizes paths and a relative one would resolve against
+// CWD, which doesn't exist in the wasm sandbox).
+const PARTICLE_GLOBALS_PATH = "/__particle_globals__.d.ts";
 
 type Severity = "error" | "warning" | "info";
 
@@ -98,12 +104,20 @@ export const typecheck = {
     const compilerOptions: ts.CompilerOptions = {
       strict: opts.strict,
       target,
-      // No explicit `lib`: when omitted, TypeScript derives the default
-      // lib from `target` and asks the CompilerHost for it via
-      // `readFile(getDefaultLibFilePath(...))`. Our libBundleHost
-      // serves every `lib.*.d.ts` from TS_LIB_FILES regardless of the
-      // queried path, which keeps lib resolution working without
-      // host filesystem access.
+      // Explicit lib. Particles run in QuickJS-on-WASM with the
+      // wasm-rquickjs web-platform polyfills (fetch, Request,
+      // Response, Headers, URL, URLSearchParams, Blob, FormData,
+      // TextEncoder/Decoder, AbortController, ReadableStream,
+      // crypto.subtle). lib.webworker.d.ts is the closest TS-native
+      // description of that environment — no Window/Document
+      // cruft, but every web-fetch type a server-side particle
+      // actually uses.
+      lib: [
+        "lib.es2022.d.ts",
+        "lib.webworker.d.ts",
+        "lib.webworker.iterable.d.ts",
+        "lib.webworker.asynciterable.d.ts",
+      ],
       module: ts.ModuleKind.ESNext,
       moduleResolution: ts.ModuleResolutionKind.Bundler,
       noEmit: true,
@@ -117,7 +131,11 @@ export const typecheck = {
     try {
       const host = libBundleHost(compilerOptions);
       program = ts.createProgram({
-        rootNames: opts.rootFiles,
+        // Inject particle:* module declarations as a synthetic
+        // root so users get type-checking on `import { credentials
+        // } from "particle:credentials"` without an external
+        // types package. libBundleHost serves the file's contents.
+        rootNames: [...opts.rootFiles, PARTICLE_GLOBALS_PATH],
         options: compilerOptions,
         host,
       });
@@ -199,6 +217,7 @@ function errMessage(e: unknown): string {
 function libBundleHost(opts: ts.CompilerOptions): ts.CompilerHost {
   const base = ts.createCompilerHost(opts);
   const lookup = (p: string): string | undefined => {
+    if (p === PARTICLE_GLOBALS_PATH) return PARTICLE_GLOBALS_DTS;
     const slash = p.lastIndexOf("/");
     const basename = slash >= 0 ? p.slice(slash + 1) : p;
     return TS_LIB_FILES[basename];

@@ -48,10 +48,7 @@ func runIn(t *testing.T, bin, cwd string, args ...string) (string, string, int) 
 	return stdout.String(), stderr.String(), 0
 }
 
-func TestParticleBuild_HappyPath(t *testing.T) {
-	bin := buildCLI(t)
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "Particlefile.ts"), []byte(`export default {
+const sourceNoCredentials = `export default {
   name: "yaml-tools",
   description: "Parse and format YAML.",
   version: "0.1.0",
@@ -64,15 +61,53 @@ func TestParticleBuild_HappyPath(t *testing.T) {
     },
   },
 };
-`), 0o644); err != nil {
+`
+
+func writeSource(t *testing.T, dir, source string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "Particlefile.ts"), []byte(source), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
 
-	stdout, stderr, code := runIn(t, bin, dir, "build")
+// Default `particle build` registers the particle in --db. The
+// happy path uses a particle without declared credentials so the
+// keychain (which we can't mock from a CLI subprocess) never gets
+// touched.
+func TestParticleBuild_RegistersByDefault(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	writeSource(t, dir, sourceNoCredentials)
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+
+	stdout, stderr, code := runIn(t, bin, dir, "build", "--db", dbPath)
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr:\n%s", code, stderr)
 	}
+	if got, want := stdout, "registered yaml-tools@0.1.0\n"; got != want {
+		t.Errorf("stdout = %q, want %q", got, want)
+	}
+	// No tarball produced on register.
+	if matches, _ := filepath.Glob(filepath.Join(dir, "*.particle")); len(matches) != 0 {
+		t.Errorf("register path should not produce .particle file: %v", matches)
+	}
+	// Re-running registration is idempotent — same (name, version) replaces.
+	if _, _, code := runIn(t, bin, dir, "build", "--db", dbPath); code != 0 {
+		t.Errorf("second build exit = %d (re-register should succeed)", code)
+	}
+}
 
+// `--pack` recovers the pre-registry behavior: write a deterministic
+// tarball to CWD, no DB touched.
+func TestParticleBuild_Pack_WritesTarball(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	writeSource(t, dir, sourceNoCredentials)
+
+	stdout, stderr, code := runIn(t, bin, dir, "build", "--pack")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr:\n%s", code, stderr)
+	}
 	want := "yaml-tools-0.1.0.particle\n"
 	if stdout != want {
 		t.Errorf("stdout = %q, want %q", stdout, want)
@@ -94,14 +129,12 @@ func TestParticleBuild_HappyPath(t *testing.T) {
 func TestParticleBuild_FailureGoesToStderr(t *testing.T) {
 	bin := buildCLI(t)
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "Particlefile.ts"), []byte(
-		`import _ from "lodash";
+	writeSource(t, dir, `import _ from "lodash";
 export default { name: "x", description: "x", version: "0.1.0", capabilities: {}, tools: {} };
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+`)
+	dbPath := filepath.Join(t.TempDir(), "state.db")
 
-	stdout, stderr, code := runIn(t, bin, dir, "build")
+	stdout, stderr, code := runIn(t, bin, dir, "build", "--db", dbPath)
 	if code == 0 {
 		t.Fatal("expected non-zero exit on bare specifier import")
 	}
@@ -123,9 +156,12 @@ export default { name: "x", description: "x", version: "0.1.0", capabilities: {}
 func TestParticleBuild_RejectsArgs(t *testing.T) {
 	bin := buildCLI(t)
 	dir := t.TempDir()
-	_, _, code := runIn(t, bin, dir, "build", "extra-arg")
-	if code != 2 {
-		t.Errorf("exit code = %d, want 2 for usage error", code)
+	_, stderr, code := runIn(t, bin, dir, "build", "extra-arg")
+	if code == 0 {
+		t.Errorf("exit code = %d, want non-zero for usage error", code)
+	}
+	if !strings.Contains(stderr, "unknown command") && !strings.Contains(stderr, "accepts 0 arg") {
+		t.Errorf("stderr should explain the arg error: %s", stderr)
 	}
 }
 

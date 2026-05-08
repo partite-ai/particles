@@ -36,6 +36,13 @@ interface credentials {
 
   /// Only for type: "raw" credentials. Returns the actual stored value.
   get-raw: func(name: string) -> result<string, credential-error>;
+
+  /// Returns the name of the credential method the user configured at
+  /// setup, or `none` when no method is set. Particles whose manifest
+  /// declares multiple alternative authentication methods (e.g.
+  /// `oauth2` + `apikey` for the same provider) use this to find out
+  /// which one to call `fetcher` / `getRaw` against.
+  get-configured-method: func() -> result<option<string>, credential-error>;
 }
 
 interface oauth {

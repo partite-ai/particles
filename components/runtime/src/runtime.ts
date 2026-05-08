@@ -10,17 +10,24 @@
  * (`particle-introspect.wasm` — see components/introspect) so the two
  * artifacts can evolve independently.
  *
- * Naming convention (from wasm-rquickjs README): WIT interface names → JS
- * exports in camelCase, methods in camelCase. Async methods are awaited.
- *
- * This file is a SKELETON. The bundle-loading and handler-dispatch logic is
- * stubbed; what's locked down is the export shape, the WIT-bridged tool/error
- * types, and the boot lifecycle (lazy-load on first call, cache result).
+ * wasm-rquickjs WIT-to-JS convention:
+ *   - WIT interface names → JS exports in camelCase, methods in
+ *     camelCase. Async methods are awaited.
+ *   - `result<T, E>` is implicit: the ok arm is the function's
+ *     return value; the err arm is produced by *throwing* a value
+ *     matching E (for variant E, that's `{ tag: "case-name", val: payload }`).
  */
 
+// host-shim MUST come before the dynamic import of the user
+// bundle. It registers the user-facing `particle:*` JS modules
+// (credentials, oauth, signing, kv) by wrapping the WIT-imported
+// `particle:host/*@0.1.0` modules — without this, a bundle that
+// `import`s `particle:credentials` errors out at load time.
+import "./host-shim";
+
 // -----------------------------------------------------------------------------
-// Types mirroring the WIT records/variants. These match what wasm-rquickjs
-// produces from the WIT bindings — see the type-mapping table in its README.
+// Types mirroring the WIT records / variants. These only document what the
+// JS side returns / throws — wasm-rquickjs handles the canonical-ABI lift.
 // -----------------------------------------------------------------------------
 
 type ToolDef = {
@@ -35,7 +42,13 @@ type ToolError =
   | { tag: "handler-error"; val: string }
   | { tag: "capability-denied"; val: string };
 
-type Result<T, E> = { tag: "ok"; val: T } | { tag: "err"; val: E };
+function notFoundError(): ToolError {
+  return { tag: "not-found" };
+}
+
+function handlerError(message: string): ToolError {
+  return { tag: "handler-error", val: message };
+}
 
 type PingStatus = "ok" | "degraded" | "unhealthy";
 
@@ -48,6 +61,14 @@ type PingResult = {
 type HealthError =
   | { tag: "not-implemented" }
   | { tag: "handler-error"; val: string };
+
+function notImplementedError(): HealthError {
+  return { tag: "not-implemented" };
+}
+
+function healthHandlerError(message: string): HealthError {
+  return { tag: "handler-error", val: message };
+}
 
 // -----------------------------------------------------------------------------
 // Particle module shape — what the user's bundle.js default-exports.
@@ -72,13 +93,11 @@ type UserParticle = {
 };
 
 // -----------------------------------------------------------------------------
-// Bundle loader — reads /particle/bundle.js via wasi:filesystem and evaluates
-// it. Cached per-instance: the bundle is immutable for the instance lifetime.
-//
-// STUB: the wasi:filesystem dance is non-trivial (descriptor walking,
-// stream reads). For now, throw with a clear message. The shape — async,
-// idempotent, returns the parsed default export — is the contract the rest
-// of this file builds on.
+// Bundle loader — reads /particle/bundle.js via dynamic import (which
+// wasm-rquickjs routes through the wasi:filesystem preopens the host
+// mounted before instantiation) and captures its default export.
+// Cached for the instance lifetime: the bundle is immutable and a hot-
+// path tool call shouldn't pay re-evaluation cost.
 // -----------------------------------------------------------------------------
 
 let cachedParticle: UserParticle | null = null;
@@ -89,28 +108,18 @@ async function loadParticle(): Promise<UserParticle> {
   if (loadError) throw loadError;
 
   try {
-    // TODO: read /particle/bundle.js (the host mounts the particle tarball
-    // before instantiating us) via wasm-rquickjs's `node:fs` shim, evaluate
-    // the module, and capture its default export. Sketch:
-    //   const { readFile } = await import("node:fs/promises");
-    //   const code = await readFile("/particle/bundle.js", "utf8");
-    //   // esbuild produces ESM; need a way to evaluate it as a module and
-    //   // grab its default export. QuickJS-side approach to confirm —
-    //   // likely `eval` won't suffice for ESM and we'll want a synthetic
-    //   // module URL or a small CJS-flavoured bundle output instead.
-    //   cachedParticle = bundle.default;
-    throw new Error(
-      "particle bundle loader not yet implemented — see runtime.ts loadParticle()",
-    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mod = await (import("/particle/bundle.js") as Promise<any>);
+    if (!mod || typeof mod.default === "undefined") {
+      throw new Error("bundle has no default export");
+    }
+    cachedParticle = mod.default as UserParticle;
+    return cachedParticle;
   } catch (e) {
     loadError = e instanceof Error ? e : new Error(String(e));
     throw loadError;
   }
 }
-
-// -----------------------------------------------------------------------------
-// Helpers
-// -----------------------------------------------------------------------------
 
 function errMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -130,7 +139,7 @@ function logStack(e: unknown): void {
 // Exports
 // -----------------------------------------------------------------------------
 
-/// `particle:host/tools` — what the host calls for every tool invocation.
+/// `particle:runtime/tools` — what the host calls for every tool invocation.
 export const tools = {
   async listTools(): Promise<ToolDef[]> {
     const particle = await loadParticle();
@@ -141,19 +150,16 @@ export const tools = {
     }));
   },
 
-  async callTool(
-    name: string,
-    argumentsJson: string,
-  ): Promise<Result<string, ToolError>> {
+  async callTool(name: string, argumentsJson: string): Promise<string> {
     let particle: UserParticle;
     try {
       particle = await loadParticle();
     } catch (e) {
-      return { tag: "err", val: { tag: "handler-error", val: errMessage(e) } };
+      throw handlerError(errMessage(e));
     }
 
     const tool = particle.tools[name];
-    if (!tool) return { tag: "err", val: { tag: "not-found" } };
+    if (!tool) throw notFoundError();
 
     // Args are pre-validated host-side against the tool's JSON Schema
     // (design doc §6 "Argument validation: host-side only"). Trust them.
@@ -161,57 +167,45 @@ export const tools = {
     try {
       args = JSON.parse(argumentsJson);
     } catch (e) {
-      // Should not happen — host serialized it. Treat as handler error
-      // rather than invalid-arguments (which is the host's domain).
-      return {
-        tag: "err",
-        val: { tag: "handler-error", val: `argument JSON parse: ${errMessage(e)}` },
-      };
+      // Should not happen — host serialized it. Treat as handler
+      // error rather than invalid-arguments (which is the host's
+      // domain).
+      throw handlerError(`argument JSON parse: ${errMessage(e)}`);
     }
 
     try {
       const result = await tool.handler(args);
-      return { tag: "ok", val: JSON.stringify(result ?? null) };
+      return JSON.stringify(result ?? null);
     } catch (e) {
       logStack(e);
-      // TODO: the host adapter remaps host-emitted denial signals (HTTP
-      // policy, missing credential) to capability-denied; bare throws
-      // surface here as handler-error.
-      return {
-        tag: "err",
-        val: { tag: "handler-error", val: errMessage(e) },
-      };
+      // TODO: a future host adapter can recognize denial signals
+      // (HTTP policy, missing credential) and remap to
+      // capability-denied. For now bare throws surface as
+      // handler-error.
+      throw handlerError(errMessage(e));
     }
   },
 };
 
-/// `particle:host/health` — operator-facing liveness check, optional.
+/// `particle:runtime/health` — operator-facing liveness check, optional.
 export const health = {
-  async ping(): Promise<Result<PingResult, HealthError>> {
+  async ping(): Promise<PingResult> {
     let particle: UserParticle;
     try {
       particle = await loadParticle();
     } catch (e) {
-      return {
-        tag: "err",
-        val: { tag: "handler-error", val: errMessage(e) },
-      };
+      throw healthHandlerError(errMessage(e));
     }
 
     if (typeof particle.ping !== "function") {
-      return { tag: "err", val: { tag: "not-implemented" } };
+      throw notImplementedError();
     }
 
     try {
-      const result = await particle.ping();
-      return { tag: "ok", val: result };
+      return await particle.ping();
     } catch (e) {
       logStack(e);
-      return {
-        tag: "err",
-        val: { tag: "handler-error", val: errMessage(e) },
-      };
+      throw healthHandlerError(errMessage(e));
     }
   },
 };
-

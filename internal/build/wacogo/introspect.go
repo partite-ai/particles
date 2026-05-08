@@ -83,12 +83,6 @@ func (c *Components) Introspect(ctx context.Context, bundleJS []byte) (*Introspe
 	}
 	defer inst.Close(ctx)
 
-	if fn := inst.ExportedFunc("wizer-initialize"); fn != nil {
-		if _, err := fn.Call(ctx); err != nil {
-			return nil, withStderr(err, stderrBuf, "wizer-initialize")
-		}
-	}
-
 	iface := inst.ExportedInstance(introspectInterface)
 	if iface == nil {
 		return nil, fmt.Errorf("introspect component does not export instance %q", introspectInterface)

@@ -271,7 +271,7 @@ Standard wasi:http. Policy enforcement is invisible to JS: a denied URL produces
 
 #### `wasi:sockets` (host exports, gated)
 
-Standard wasi:sockets, gated by capability declaration. If a particle does not declare `capabilities.sockets`, the host wires up a deny-all SocketsPolicy implementation. If it does declare it, the policy enforces an allowlist. Listening sockets are denied by default even when sockets are declared (separate sub-capability `sockets.allowListen: true` if ever needed).
+Standard wasi:sockets, gated by capability declaration. If a particle does not declare `capabilities.sockets`, the host wires up a deny-all SocketsPolicy implementation. If it does declare it, the policy enforces an allowlist. Listening sockets are not supported.
 
 #### `wasi:filesystem` (host exports)
 
@@ -545,7 +545,6 @@ type Capabilities = {
   http?:        { allowedHosts?: string[] };
   sockets?:     {
     allowedEndpoints: { host: string; port: number }[];
-    allowListen?: boolean;
   };
   credentials?: Record<string, CredentialDecl>;   // see §7
   kv?:          {};                       // presence enables the import

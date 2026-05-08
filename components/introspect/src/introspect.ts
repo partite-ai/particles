@@ -76,13 +76,53 @@ type UserParticle = {
 // Cached: introspect is a one-shot in practice, but the contract is
 // idempotent in case the host calls manifest() more than once.
 //
-// `particle:*` stub note: a future iteration needs to register no-op
-// modules for `particle:credentials` etc. so user bundles that import
-// them resolve at evaluation time. For the end-to-end build path that
-// only handles particles WITHOUT those imports today; bundles that
-// reference `particle:*` will surface the QuickJS module-resolution
-// error here.
+// Before the bundle is evaluated, we register no-op JS modules for
+// every `particle:*` namespace through wasm-rquickjs's module-mock
+// API. The bundle's top-level `import { credentials } from
+// "particle:credentials"` (etc.) resolves to one of these stubs, so
+// the user's source loads even though no host instance is wired —
+// per design doc §3, introspect never calls a handler, so the
+// stubbed methods are never invoked.
 // -----------------------------------------------------------------------------
+
+declare const __wasm_rquickjs_register_module_mock: (
+  specifier: string,
+  options: { namedExports?: Record<string, unknown>; defaultExport?: unknown },
+) => unknown;
+
+const PARTICLE_NAMESPACE_STUBS: Record<string, string[]> = {
+  "particle:credentials": ["fetcher", "getRaw"],
+  "particle:oauth":       ["refresh"],
+  "particle:signing":     ["sign", "verify"],
+  "particle:kv":          ["get", "set", "delete", "list"],
+};
+
+let stubsRegistered = false;
+
+function registerParticleStubs(): void {
+  if (stubsRegistered) return;
+  stubsRegistered = true;
+  // The mock methods exist solely to satisfy module resolution.
+  // If a handler ever ran during introspect (it shouldn't), it'd
+  // hit one of these and the thrown error makes the contract
+  // violation loud — quieter than letting handlers see no-op
+  // values that look "successful".
+  const trap = () => {
+    throw new Error("particle:* APIs are not callable during introspect");
+  };
+  for (const [specifier, methods] of Object.entries(PARTICLE_NAMESPACE_STUBS)) {
+    const namespaceObject: Record<string, unknown> = {};
+    for (const m of methods) {
+      namespaceObject[m] = trap;
+    }
+    // The named export key matches the namespace's last segment —
+    // e.g., `particle:credentials` exports `credentials`.
+    const exportName = specifier.split(":")[1];
+    __wasm_rquickjs_register_module_mock(specifier, {
+      namedExports: { [exportName]: namespaceObject },
+    });
+  }
+}
 
 let cachedParticle: UserParticle | null = null;
 let loadError: Error | null = null;
@@ -92,6 +132,7 @@ async function loadParticle(): Promise<UserParticle> {
   if (loadError) throw loadError;
 
   try {
+    registerParticleStubs();
     // wasm-rquickjs resolves dynamic imports against wasi:filesystem
     // preopens — the host mounts the bundle at /particle/bundle.js.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -28,21 +28,28 @@ TYPECHECK_CARGO_TARGET  := $(HOME)/cargo-target/typecheck
 # The package source itself extracts fine and is what we actually bundle.
 NPM_INSTALL := npm install --no-bin-links --no-audit --no-fund
 
-EMBED_DIR := internal/build/wacogo/embed
+BUILD_EMBED_DIR   := internal/build/wacogo/embed
+RUNTIME_EMBED_DIR := runtime/embed
 
-.PHONY: all deno-npm runtime introspect typecheck embed go-test test clean
+.PHONY: all deno-npm runtime introspect typecheck embed runtime-embed go-test test clean
 
 all: deno-npm runtime introspect typecheck
 
-# `go generate ./...` runs this from the wacogo package via the
-# //go:generate directive in wacogo.go. Builds the three wasm artifacts
-# the build pipeline embeds and copies them into the embed/ dir.
+# `go generate ./internal/build/wacogo/` runs this. Builds the three
+# build-pipeline wasms and copies them into internal/build/wacogo/embed/.
 embed: deno-npm introspect typecheck
-	@mkdir -p $(EMBED_DIR)
-	cp $(DIST_DIR)/deno-npm.wasm           $(EMBED_DIR)/
-	cp $(DIST_DIR)/particle-introspect.wasm $(EMBED_DIR)/
-	cp $(DIST_DIR)/particle-typecheck.wasm  $(EMBED_DIR)/
-	@printf '✓  embedded:\n'; ls -lh $(EMBED_DIR)/*.wasm | awk '{print "    "$$5"  "$$NF}'
+	@mkdir -p $(BUILD_EMBED_DIR)
+	cp $(DIST_DIR)/deno-npm.wasm           $(BUILD_EMBED_DIR)/
+	cp $(DIST_DIR)/particle-introspect.wasm $(BUILD_EMBED_DIR)/
+	cp $(DIST_DIR)/particle-typecheck.wasm  $(BUILD_EMBED_DIR)/
+	@printf '✓  embedded:\n'; ls -lh $(BUILD_EMBED_DIR)/*.wasm | awk '{print "    "$$5"  "$$NF}'
+
+# `go generate ./runtime/` runs this. Builds the runtime wasm and
+# copies it into runtime/embed/ for go:embed pickup.
+runtime-embed: runtime
+	@mkdir -p $(RUNTIME_EMBED_DIR)
+	cp $(DIST_DIR)/particle-runtime.wasm $(RUNTIME_EMBED_DIR)/
+	@printf '✓  embedded:\n'; ls -lh $(RUNTIME_EMBED_DIR)/*.wasm | awk '{print "    "$$5"  "$$NF}'
 
 # Run Go tests for the build-time libraries (internal/importscan, internal/bundle).
 test: go-test
@@ -65,21 +72,23 @@ deno-npm:
 
 runtime:
 	@mkdir -p $(DIST_DIR) $(RUNTIME_CARGO_TARGET) components/runtime/build
-	@echo '[1/3] esbuild  src/runtime.ts  →  build/runtime.js'
+	@echo '[1/4] esbuild  src/runtime.ts  →  build/runtime.js'
 	cd components/runtime && esbuild src/runtime.ts \
 	  --bundle --format=esm --target=es2022 --platform=neutral \
 	  '--external:wasi:*' '--external:particle:*' '--external:node:*' \
 	  --outfile=build/runtime.js
-	@echo '[2/3] wasm-rquickjs generate-wrapper-crate'
+	@echo '[2/4] wasm-rquickjs generate-wrapper-crate'
 	rm -rf components/runtime/build/crate
 	cd components/runtime && wasm-rquickjs generate-wrapper-crate \
 	  --js build/runtime.js --wit wit --output build/crate
-	@echo '[3/3] cargo build --target wasm32-wasip2 --release  (target dir: $(RUNTIME_CARGO_TARGET))'
+	@echo '[3/4] cargo build --target wasm32-wasip2 --release  (target dir: $(RUNTIME_CARGO_TARGET))'
 	CARGO_TARGET_DIR=$(RUNTIME_CARGO_TARGET) cargo build \
 	  --manifest-path components/runtime/build/crate/Cargo.toml \
 	  --target wasm32-wasip2 --release -j 1
-	cp $(RUNTIME_CARGO_TARGET)/wasm32-wasip2/release/runtime.wasm \
-	   $(DIST_DIR)/particle-runtime.wasm
+	@echo '[4/4] wasm-rquickjs optimize  (Wizer pre-init: bake QuickJS startup into the artifact)'
+	wasm-rquickjs optimize \
+	  --input  $(RUNTIME_CARGO_TARGET)/wasm32-wasip2/release/runtime.wasm \
+	  --output $(DIST_DIR)/particle-runtime.wasm
 	@printf '✓  '; ls -lh $(DIST_DIR)/particle-runtime.wasm | awk '{print $$5"  "$$NF}'
 
 # ---- particle-introspect.wasm ------------------------------------------
@@ -103,6 +112,10 @@ introspect:
 	CARGO_TARGET_DIR=$(INTROSPECT_CARGO_TARGET) cargo build \
 	  --manifest-path components/introspect/build/crate/Cargo.toml \
 	  --target wasm32-wasip2 --release -j 1
+	# Skip `wasm-rquickjs optimize` here: introspect runs once per
+	# particle build, so saving the ~100 ms QuickJS warmup isn't
+	# worth the ~6 MB pre-init bloat. The wrapper crate's
+	# get_js_state lazy-inits on first export call.
 	cp $(INTROSPECT_CARGO_TARGET)/wasm32-wasip2/release/component.wasm \
 	   $(DIST_DIR)/particle-introspect.wasm
 	@printf '✓  '; ls -lh $(DIST_DIR)/particle-introspect.wasm | awk '{print $$5"  "$$NF}'
@@ -132,6 +145,11 @@ typecheck:
 	CARGO_TARGET_DIR=$(TYPECHECK_CARGO_TARGET) cargo build \
 	  --manifest-path components/typecheck/build/crate/Cargo.toml \
 	  --target wasm32-wasip2 --release -j 1
+	# Skip `wasm-rquickjs optimize` here: pre-initializing snapshots
+	# the entire TypeScript compiler heap (~75 MB on top of the
+	# unoptimized 15 MB), which we'd then ship inside every binary
+	# that runs typechecks. Lazy init on first call costs a small
+	# fraction of the actual type-check work, so it isn't worth it.
 	cp $(TYPECHECK_CARGO_TARGET)/wasm32-wasip2/release/component.wasm \
 	   $(DIST_DIR)/particle-typecheck.wasm
 	@printf '✓  '; ls -lh $(DIST_DIR)/particle-typecheck.wasm | awk '{print $$5"  "$$NF}'

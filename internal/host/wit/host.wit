@@ -1,0 +1,89 @@
+/// Host-facing capability interfaces — implemented by the host, imported
+/// by the particle runtime. Versioned together so capability bumps stay
+/// coherent.
+///
+/// Spec: docs/initial-design.md §2.
+package particle:host@0.1.0;
+
+interface credentials {
+  variant credential-error {
+    not-configured,
+    storage-error(string),
+    type-mismatch(string),       // wrong API for credential type
+  }
+
+  enum apply-kind {
+    basic,                       // -> Authorization: Basic <placeholder>
+    bearer,                      // -> Authorization: Bearer <placeholder>
+    header,                      // -> <name>: <placeholder>
+    auth-scheme,                 // -> Authorization: <scheme> <placeholder>
+    query-param,                 // -> ?<name>=<placeholder>
+  }
+
+  record apply-spec {
+    kind: apply-kind,
+    name: option<string>,
+    scheme: option<string>,
+  }
+
+  record placeholder-info {
+    placeholder: string,
+    apply: apply-spec,
+  }
+
+  /// For basic, oauth2, apikey (substitution-based types).
+  get-placeholder: func(name: string) -> result<placeholder-info, credential-error>;
+
+  /// Only for type: "raw" credentials. Returns the actual stored value.
+  get-raw: func(name: string) -> result<string, credential-error>;
+
+  /// Returns the name of the credential method the user configured at
+  /// setup, or `none` when no method is set. Particles whose manifest
+  /// declares multiple alternative authentication methods (e.g.
+  /// `oauth2` + `apikey` for the same provider) use this to find out
+  /// which one to call `fetcher` / `getRaw` against.
+  get-configured-method: func() -> result<option<string>, credential-error>;
+}
+
+interface oauth {
+  variant oauth-error {
+    not-configured,
+    not-oauth,
+    refresh-failed(string),
+  }
+
+  /// Force a refresh regardless of cached expiry. Used when upstream
+  /// returns 401/403 on a token we thought was still valid.
+  refresh: func(name: string) -> result<_, oauth-error>;
+}
+
+interface signing {
+  variant signing-error {
+    not-configured,
+    not-signing-key,
+    invalid-input(string),
+  }
+
+  sign: func(name: string, data: list<u8>) -> result<list<u8>, signing-error>;
+  verify: func(name: string, data: list<u8>, signature: list<u8>)
+    -> result<bool, signing-error>;
+}
+
+interface kv {
+  variant kv-error {
+    storage-error(string),
+    quota-exceeded,
+  }
+
+  get: func(key: string) -> result<option<string>, kv-error>;
+  set: func(key: string, value: string) -> result<_, kv-error>;
+  delete: func(key: string) -> result<_, kv-error>;
+  // `list` is a WIT reserved keyword; escape with `%` (still callable as
+  // `list` from JS — the camelCase mapping strips the prefix).
+  %list: func(prefix: string) -> result<list<string>, kv-error>;
+}
+
+// `env` lives in WASI. Particles read env vars via `process.env` (which
+// the QuickJS engine routes through `wasi:cli/environment`), and the host
+// filters what gets exposed based on the manifest's `capabilities.env`
+// declaration. No custom particle:host interface is needed.

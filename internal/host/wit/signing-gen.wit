@@ -1,0 +1,8 @@
+package particle:host@0.1.0;
+
+/// `signing-gen` is the synthetic world wacogo-witgen generates the
+/// signing capability bindings from. It imports just the signing
+/// interface so the produced binding tree is scoped to signing.
+world signing-gen {
+  import signing;
+}
