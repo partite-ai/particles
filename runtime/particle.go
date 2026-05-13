@@ -297,7 +297,7 @@ func (p *Particle) Manifest() Manifest { return p.manifest }
 func (p *Particle) Close(ctx context.Context) error {
 	var first error
 	if p.inst != nil {
-		if err := p.inst.Close(ctx); err != nil && first == nil {
+		if err := p.inst.Close(ctx); err != nil {
 			first = err
 		}
 		p.inst = nil

@@ -1,8 +1,8 @@
-# Particle
+# Particles
 
-Particle lets you write small, self-contained, capability-sandboxed programs ("particles") that expose typed tools to an LLM. The common case: you want to plug a remote system into an LLM, but it has no MCP server, or it has one that dumps so much into the model's context that the rest of the conversation suffers. A particle ships just the handful of tools you actually want exposed, with hard isolation between the LLM-facing API and the credentials behind it — so you can wire a polished adapter into your harness instead of an off-the-shelf MCP you can't trim.
+Particles lets you write small, self-contained, capability-sandboxed programs ("particles") that expose typed tools to an LLM. The common case: you want to plug a remote system into an LLM, but it has no MCP server, or it has one that dumps so much into the model's context that the rest of the conversation suffers. A `particle` ships just the handful of tools you actually want exposed, with hard isolation between the LLM-facing API and the credentials behind it — so you can wire a polished adapter into your harness instead of an off-the-shelf MCP you can't trim.
 
-A particle is one ESM module: a manifest, a few tools, and an explicit list of capabilities (HTTP hosts it can reach, credentials it needs). The same artifact works two ways: drop it into Claude Desktop / Cursor / any MCP client via `particle serve-mcp`, or call its tools straight from the shell with `particle run` — useful for Claude Code skills and ad-hoc scripts. Every particle also gets a per-particle key/value store out of the box — no declaration needed.
+A `particle` is one ESM module: a manifest, a few tools, and an explicit list of capabilities (HTTP hosts it can reach, credentials it needs). The same artifact works two ways: drop it into Claude Desktop / Cursor / any MCP client via `particle serve-mcp`, or call its tools straight from the shell with `particle run` — useful for Claude Code skills and ad-hoc scripts. Every particle also gets a per-particle key/value store out of the box — no declaration needed.
 
 Six things make it different from "just a script":
 
@@ -10,7 +10,7 @@ Six things make it different from "just a script":
 - **Sandboxed by capability.** Particles run in a WebAssembly sandbox with no implicit access to anything — not the network, not the filesystem, not environment variables. If the manifest doesn't list `http.allowedHosts: ["api.github.com"]`, neither your code nor a transitive npm dep can reach `api.github.com`. The host grants only what the manifest declares; everything else is denied. This is meaningful supply-chain protection: a compromised package upstream of your particle can't exfiltrate anything it doesn't already have explicit permission to touch.
 - **Secure credential storage.** Secrets are encrypted at rest with a key held in the OS keychain, and never made available to code running inside the particle. For OAuth, API keys, and Basic auth, the host fills in the real value as the request leaves the sandbox — your handler only ever sees an opaque placeholder. Signing keys work the same way: `signing.sign(name, data)` returns a signature without the key ever reaching JS. A malicious npm dep scanning memory or `process.env` gets nothing. Setup is a one-time CLI prompt.
 - **No local toolchain.** The CLI bundles npm resolution, TypeScript typechecking, and esbuild. No Node install, no `node_modules`, no build config — `particle build` reads `Particlefile.ts`, resolves every `npm:` import declared in source, and produces a single self-contained artifact.
-- **Easy for an LLM to write.** A particle is one file with one default export and a small set of fields (`name`, `capabilities`, `tools`). An agent that hits "I need a tool to do X" mid-task can write a `Particlefile.ts`, run `particle build`, and have that tool available through its own MCP or CLI surface for the rest of the session — and every session after. The sandbox means a hastily-written particle can't reach beyond what its manifest declared, even if the model misjudged what it was writing.
+- **Easy for an LLM to write.** A `particle` is one file with one default export and a small set of fields (`name`, `capabilities`, `tools`). An agent that hits "I need a tool to do X" mid-task can write a `Particlefile.ts`, run `particle build`, and have that tool available through its own MCP or CLI surface for the rest of the session — and every session after. The sandbox means a hastily-written particle can't reach beyond what its manifest declared, even if the model misjudged what it was writing.
 - **Easy to share.** `particle build --pack` produces a self-contained `.particle` tarball; the receiver installs it with `particle import <file-or-url>`. Before anything runs, they see exactly which capabilities the particle requests — hosts, credentials — and either accept or decline. The sandbox enforces those capabilities at runtime, so installing someone else's particle doesn't require trusting their code — just trusting that the manifest accurately describes the worst case.
 
 ## A particle, top to bottom
@@ -153,10 +153,10 @@ handler: async ({ owner, repo }: { owner: string; repo: string }) => { /* ... */
 
 Particles are in active development. On the roadmap:
 
-- **Filesystem access** as a capability, scoped to a host-nominated directory.
-- **Outbound sockets** with a declared endpoint allow-list, mirroring the HTTP model.
+- **Filesystem access** exposed as a mount.
+- **Outbound sockets** with a declared allow-list, mirroring the HTTP model.
 - **Python particles** via a CPython-on-WASI runtime.
-- **Any language that compiles to a WebAssembly Component** — Rust, Go, C, etc. The capability model and runtime contract are guest-language-agnostic; JavaScript is where we started, not where we stop.
+- **Any language that compiles to a WebAssembly Component** — Rust, Go, C, etc. The capability model and runtime contract are guest-language-agnostic, so should be able to support any language - but probably with a worse DX than JS/Python.
 
 ## Building the project
 
