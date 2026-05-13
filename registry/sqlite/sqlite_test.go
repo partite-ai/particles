@@ -143,6 +143,45 @@ func TestPut_ReplacesAndDoesNotLeaveOrphans(t *testing.T) {
 	}
 }
 
+// Put accepts every shape of valid SemVer 2.0.0 and rejects the
+// common invalid forms. The semver gate runs at registration so
+// the registry's "highest version" lookups and on-disk format
+// can rely on every stored version being parseable.
+func TestPut_VersionMustBeValidSemver(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	for _, v := range []string{
+		"0.1.0",
+		"1.2.3",
+		"10.0.0",
+		"1.0.0-rc.1",
+		"1.0.0-alpha+build.7",
+		"0.0.0",
+	} {
+		t.Run("ok/"+v, func(t *testing.T) {
+			if err := s.Put(ctx, "p-"+v, v, sampleParticle()); err != nil {
+				t.Errorf("Put rejected valid semver %q: %v", v, err)
+			}
+		})
+	}
+	for _, v := range []string{
+		"",            // empty
+		"v1.2.3",      // leading 'v' isn't manifest convention
+		"1.2",         // missing patch
+		"1.2.3.4",     // too many segments
+		"01.0.0",      // leading-zero in numeric identifier
+		"latest",      // non-numeric
+		"1.2.3-",      // dangling prerelease
+		"1.2.3+",      // dangling build
+	} {
+		t.Run("bad/"+v, func(t *testing.T) {
+			if err := s.Put(ctx, "p-bad", v, sampleParticle()); err == nil {
+				t.Errorf("Put accepted invalid semver %q", v)
+			}
+		})
+	}
+}
+
 func TestPut_RejectsEmptyArgs(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
@@ -287,182 +326,44 @@ func TestNew_RejectsNilDB(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// SelectedAuthenticationMethod
+// Schema-migration: the legacy particle_settings table is dropped
+// on open; pre-existing rows aren't migrated anywhere — they're
+// already mirrored in the credentials store (the new home for
+// "which method is configured"). This test confirms the
+// destructive part of the migration runs without complaint.
 // -----------------------------------------------------------------------------
 
-func TestSetSelectedAuthenticationMethod_RoundTrip(t *testing.T) {
-	s := newStore(t)
-	ctx := context.Background()
-	if err := s.Put(ctx, "p", "1.0.0", sampleParticle()); err != nil {
-		t.Fatal(err)
-	}
-	// Default: no method selected.
-	got, err := s.Get(ctx, "p", "1.0.0")
+func TestMigrate_DropsLegacyParticleSettings(t *testing.T) {
+	dsn := "file:" + t.Name() + "?mode=memory&cache=shared"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("sql.Open: %v", err)
 	}
-	if got.SelectedAuthenticationMethod != "" {
-		t.Errorf("fresh entry SelectedAuthenticationMethod = %q, want empty", got.SelectedAuthenticationMethod)
+	t.Cleanup(func() { _ = db.Close() })
+
+	// Seed the legacy table BEFORE Store.New runs migrations.
+	if _, err := db.Exec(`CREATE TABLE particle_settings (
+		name                            TEXT PRIMARY KEY,
+		selected_authentication_method  TEXT
+	)`); err != nil {
+		t.Fatalf("seed legacy table: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO particle_settings VALUES ('p', 'oauth')`); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
 	}
 
-	// Set, read back.
-	if err := s.SetSelectedAuthenticationMethod(ctx, "p", "oauth"); err != nil {
-		t.Fatal(err)
-	}
-	got, _ = s.Get(ctx, "p", "1.0.0")
-	if got.SelectedAuthenticationMethod != "oauth" {
-		t.Errorf("after Set, SelectedAuthenticationMethod = %q", got.SelectedAuthenticationMethod)
+	// New should drop the table silently.
+	if _, err := sqlite.New(context.Background(), db); err != nil {
+		t.Fatalf("sqlite.New: %v", err)
 	}
 
-	// Update to a different method.
-	if err := s.SetSelectedAuthenticationMethod(ctx, "p", "pat"); err != nil {
-		t.Fatal(err)
+	var count int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='particle_settings'`).Scan(&count); err != nil {
+		t.Fatalf("probe sqlite_master: %v", err)
 	}
-	got, _ = s.Get(ctx, "p", "1.0.0")
-	if got.SelectedAuthenticationMethod != "pat" {
-		t.Errorf("after second Set, SelectedAuthenticationMethod = %q", got.SelectedAuthenticationMethod)
-	}
-
-	// Clear.
-	if err := s.SetSelectedAuthenticationMethod(ctx, "p", ""); err != nil {
-		t.Fatal(err)
-	}
-	got, _ = s.Get(ctx, "p", "1.0.0")
-	if got.SelectedAuthenticationMethod != "" {
-		t.Errorf("after clear, SelectedAuthenticationMethod = %q, want empty", got.SelectedAuthenticationMethod)
-	}
-}
-
-func TestSetSelectedAuthenticationMethod_MissingEntry(t *testing.T) {
-	s := newStore(t)
-	if err := s.SetSelectedAuthenticationMethod(context.Background(), "absent", "oauth"); !errors.Is(err, registry.ErrNotFound) {
-		t.Errorf("err = %v, want ErrNotFound", err)
-	}
-}
-
-// Re-Put doesn't touch SelectedAuthenticationMethod (it lives in
-// particle_settings, not particle_registry). Re-builds for the
-// same (name, version) leave the auth-method choice in place.
-func TestPut_PreservesSelectedAuthenticationMethod(t *testing.T) {
-	s := newStore(t)
-	ctx := context.Background()
-	_ = s.Put(ctx, "p", "1.0.0", sampleParticle())
-	_ = s.SetSelectedAuthenticationMethod(ctx, "p", "oauth")
-
-	// Re-Put with new bytes.
-	updated := fstest.MapFS{}
-	for k, v := range sampleParticle().(fstest.MapFS) {
-		updated[k] = v
-	}
-	updated["new-file.txt"] = &fstest.MapFile{Data: []byte("hi")}
-	if err := s.Put(ctx, "p", "1.0.0", updated); err != nil {
-		t.Fatal(err)
-	}
-
-	got, _ := s.Get(ctx, "p", "1.0.0")
-	if got.SelectedAuthenticationMethod != "oauth" {
-		t.Errorf("after re-Put, SelectedAuthenticationMethod = %q, want oauth (preserved)", got.SelectedAuthenticationMethod)
-	}
-}
-
-// When the last version of a particle is deleted, the per-name
-// settings row (which had no other version to belong to) is
-// cleared. A re-import then doesn't carry stale state from the
-// previous incarnation.
-func TestDelete_LastVersion_ClearsSelectedAuthenticationMethod(t *testing.T) {
-	s := newStore(t)
-	ctx := context.Background()
-	_ = s.Put(ctx, "p", "0.1.0", sampleParticle())
-	_ = s.SetSelectedAuthenticationMethod(ctx, "p", "oauth")
-
-	if err := s.Delete(ctx, "p", "0.1.0"); err != nil {
-		t.Fatal(err)
-	}
-
-	// Re-register and read back: the selection must be empty.
-	if err := s.Put(ctx, "p", "0.1.0", sampleParticle()); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := s.Get(ctx, "p", "0.1.0")
-	if got.SelectedAuthenticationMethod != "" {
-		t.Errorf("after delete-and-reimport, SelectedAuthenticationMethod = %q, want empty",
-			got.SelectedAuthenticationMethod)
-	}
-}
-
-// Deleting one version with siblings still in place leaves the
-// selection alone — every remaining version still benefits from
-// the saved auth choice.
-func TestDelete_OneOfManyVersions_PreservesSelection(t *testing.T) {
-	s := newStore(t)
-	ctx := context.Background()
-	_ = s.Put(ctx, "p", "0.1.0", sampleParticle())
-	_ = s.Put(ctx, "p", "0.2.0", sampleParticle())
-	_ = s.SetSelectedAuthenticationMethod(ctx, "p", "oauth")
-
-	if err := s.Delete(ctx, "p", "0.1.0"); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := s.Get(ctx, "p", "0.2.0")
-	if got.SelectedAuthenticationMethod != "oauth" {
-		t.Errorf("after deleting one version, surviving version's SelectedAuthenticationMethod = %q",
-			got.SelectedAuthenticationMethod)
-	}
-}
-
-// List reports the per-name selection on every row of the same
-// name (since selection is per-name).
-func TestList_IncludesSelectedAuthenticationMethod(t *testing.T) {
-	s := newStore(t)
-	ctx := context.Background()
-	_ = s.Put(ctx, "p", "0.1.0", sampleParticle())
-	_ = s.Put(ctx, "p", "0.2.0", sampleParticle())
-	_ = s.Put(ctx, "q", "0.1.0", sampleParticle())
-	_ = s.SetSelectedAuthenticationMethod(ctx, "p", "oauth")
-
-	got, _ := s.List(ctx)
-	want := map[string]string{
-		"p@0.1.0": "oauth",
-		"p@0.2.0": "oauth",
-		"q@0.1.0": "",
-	}
-	for _, e := range got {
-		key := e.Name + "@" + e.Version
-		if w, ok := want[key]; ok && w != e.SelectedAuthenticationMethod {
-			t.Errorf("%s SelectedAuthenticationMethod = %q, want %q", key, e.SelectedAuthenticationMethod, w)
-		}
-	}
-}
-
-// Selection is per-particle-name: every registered version of the
-// same particle reads back the same value. (The credentials store
-// is keyed by name only, so a per-version selection wouldn't be
-// meaningful.)
-func TestSelectedAuthenticationMethod_SharedAcrossVersions(t *testing.T) {
-	s := newStore(t)
-	ctx := context.Background()
-	_ = s.Put(ctx, "p", "0.1.0", sampleParticle())
-	_ = s.Put(ctx, "p", "0.2.0", sampleParticle())
-	if err := s.SetSelectedAuthenticationMethod(ctx, "p", "oauth"); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, v := range []string{"0.1.0", "0.2.0"} {
-		got, err := s.Get(ctx, "p", v)
-		if err != nil {
-			t.Fatalf("Get %s: %v", v, err)
-		}
-		if got.SelectedAuthenticationMethod != "oauth" {
-			t.Errorf("%s SelectedAuthenticationMethod = %q, want oauth", v, got.SelectedAuthenticationMethod)
-		}
-	}
-
-	// Updating once propagates everywhere.
-	_ = s.SetSelectedAuthenticationMethod(ctx, "p", "pat")
-	for _, v := range []string{"0.1.0", "0.2.0"} {
-		got, _ := s.Get(ctx, "p", v)
-		if got.SelectedAuthenticationMethod != "pat" {
-			t.Errorf("%s after update SelectedAuthenticationMethod = %q, want pat", v, got.SelectedAuthenticationMethod)
-		}
+	if count != 0 {
+		t.Errorf("particle_settings still present after migration; want dropped")
 	}
 }

@@ -48,8 +48,8 @@ func readManifest(particleFS fs.FS) (Manifest, error) {
 }
 
 // declares reports whether the manifest declares the given capability
-// category (one of "credentials", "oauth", "signing", "kv", "http",
-// "sockets", "env"). Presence is enough — values vary per category.
+// category (one of "credentials", "oauth", "signing", "http",
+// "sockets"). Presence is enough — values vary per category.
 func (m Manifest) declares(capability string) bool {
 	_, ok := m.Capabilities[capability]
 	return ok

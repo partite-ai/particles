@@ -1,7 +1,7 @@
 // Package kv defines the host-side per-particle key/value store
 // contract.
 //
-// Particles import `particle:kv` and call get / set / delete / list
+// Particles import `@partite-ai/particle-kv` and call get / set / delete / list
 // to persist small bits of state across tool invocations. The host
 // supplies a [Store] implementation; this package wires it to the
 // runtime via the `particle:host/kv@0.1.0` WIT interface.
@@ -14,7 +14,7 @@
 // for an in-process map-backed Store. There are no implementations
 // in this package.
 //
-// Spec: docs/initial-design.md §2 (`particle:kv`).
+// Spec: docs/initial-design.md §2 (`@partite-ai/particle-kv`).
 package kv
 
 import (

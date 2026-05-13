@@ -132,6 +132,43 @@ func TestRuntime_HTTP_DisallowedHostBlocked(t *testing.T) {
 	}
 }
 
+// allowedHosts comparisons are case-insensitive. DNS treats
+// "Example.COM" and "example.com" as the same host, so a particle
+// author whose manifest uses one casing but whose code uses
+// another shouldn't be tripped up by the policy layer. We use a
+// disallowed-target test here (rather than spinning up a server)
+// so the test is independent of the loopback hostname.
+func TestRuntime_HTTP_AllowedHostsCaseInsensitive(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	host := mustHost(t, srv.URL)
+	// Manifest declares the UPPERCASE form; request URL uses the
+	// lowercase form (whatever httptest.Server returned). The
+	// policy must still treat them as equal.
+	caps := fmt.Sprintf(`{ "http": { "allowedHosts": [%q] } }`, strings.ToUpper(host))
+	res := buildParticle(t, fetchParticleSource("http-case", caps))
+
+	rt, _, _, cleanup := newRuntime(t, ctx)
+	defer cleanup()
+	p, err := rt.NewParticle(ctx, res.Particle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close(ctx)
+
+	got, err := p.CallTool(ctx, "fetch_url", []byte(fmt.Sprintf(`{"url":%q}`, srv.URL)))
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !strings.Contains(string(got), `"status":200`) {
+		t.Errorf("uppercase-declared host should match lowercase request: %s", got)
+	}
+}
+
 // A particle that never declares the http capability at all has
 // every outbound request denied, even to localhost.
 func TestRuntime_HTTP_NoCapability_AllDenied(t *testing.T) {

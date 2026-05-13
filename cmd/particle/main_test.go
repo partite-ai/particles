@@ -5,11 +5,16 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // buildCLI compiles cmd/particle into the test's temp dir and returns
@@ -162,6 +167,145 @@ func TestParticleBuild_RejectsArgs(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "unknown command") && !strings.Contains(stderr, "accepts 0 arg") {
 		t.Errorf("stderr should explain the arg error: %s", stderr)
+	}
+}
+
+// SIGINT during an in-flight import must cancel the HTTP fetch
+// and let the subprocess exit promptly — proving the
+// signal.NotifyContext → ExecuteContext wiring in main reaches
+// loadParticleFromHTTP. The test server signals the moment it
+// receives the GET, blocks on its request context (so it doesn't
+// leak if the test ends abnormally), and the test sends SIGINT
+// to the child. A wired-up handler returns within seconds; an
+// unwired one would only die when Go's default SIGINT handler
+// killed the process — also fast, but we'd see a different exit
+// signature.
+func TestParticleImport_SIGINT_CancelsFetch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Interrupt to a child process is not supported on Windows")
+	}
+	bin := buildCLI(t)
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+
+	var once sync.Once
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(started) })
+		// Block until the client cancels (or the test server
+		// shuts down). Either way the response goes nowhere —
+		// the point is to keep the subprocess waiting on the
+		// body so SIGINT has something to interrupt.
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	cmd := exec.Command(bin, "import", "--db", dbPath, srv.URL+"/p.particle")
+	var stderr bytes.Buffer
+	cmd.Stdout = io.Discard
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start subprocess: %v", err)
+	}
+	// Kill if anything below times out — avoids leaking the
+	// process across test runs.
+	defer func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("subprocess never reached the HTTP GET; stderr:\n%s", stderr.String())
+	}
+
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("send SIGINT: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		// The wired-up path: NotifyContext cancels the context,
+		// the HTTP client returns context.Canceled, cobra
+		// surfaces it, main exits via os.Exit(1) — i.e. a
+		// normal exit with code 1. The unwired path would be
+		// Go's default SIGINT handler killing the process, in
+		// which case ProcessState reports a signal-killed
+		// status. We assert "exited normally" specifically so a
+		// regression that drops ExecuteContext gets caught even
+		// though both paths produce non-zero. We don't pin the
+		// error string — it can surface as "context canceled",
+		// "operation was canceled", or a wrapped variant
+		// depending on which read was suspended.
+		if err == nil {
+			t.Fatalf("subprocess exited 0; SIGINT should produce a non-zero exit. stderr:\n%s", stderr.String())
+		}
+		ps := cmd.ProcessState
+		if !ps.Exited() {
+			t.Fatalf("subprocess was killed by signal rather than unwinding via context (signal wiring missing?). stderr:\n%s", stderr.String())
+		}
+		if code := ps.ExitCode(); code != 1 {
+			t.Errorf("exit code = %d, want 1", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("subprocess did not exit within 10s of SIGINT — signal handling likely not wired. stderr:\n%s", stderr.String())
+	}
+}
+
+// resolveDBPath must leave the state DB file at 0600 — anything
+// looser exposes (sealed) credential ciphertexts and cleartext
+// provider metadata to co-tenant users. We run the full CLI
+// (instead of poking resolveDBPath internally) because that's the
+// real entry point users hit.
+func TestParticleBuild_StateDBIs0600(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes not enforced on Windows")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	writeSource(t, dir, sourceNoCredentials)
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+
+	if _, _, code := runIn(t, bin, dir, "build", "--db", dbPath); code != 0 {
+		t.Fatalf("build exited %d", code)
+	}
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("stat state.db: %v", err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Errorf("state.db mode = %o, want %o (no group/world bits)", got, want)
+	}
+}
+
+// A pre-existing state DB created with loose perms (a prior run
+// under a permissive umask, or an admin who hand-rolled the file)
+// must be tightened on the next CLI invocation. Otherwise a
+// single sloppy create leaves the file world-readable forever.
+func TestParticleBuild_StateDB_TightensExistingLoosePerms(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes not enforced on Windows")
+	}
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	writeSource(t, dir, sourceNoCredentials)
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+
+	// Plant a world-readable empty file at dbPath.
+	if err := os.WriteFile(dbPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, code := runIn(t, bin, dir, "build", "--db", dbPath); code != 0 {
+		t.Fatalf("build exited %d", code)
+	}
+	info, _ := os.Stat(dbPath)
+	if got, want := info.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Errorf("after build, state.db mode = %o, want %o", got, want)
 	}
 }
 

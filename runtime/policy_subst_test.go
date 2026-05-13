@@ -327,25 +327,28 @@ func TestSubstitute_UndeclaredInManifest_LeavesPlaceholder(t *testing.T) {
 	}
 }
 
-// Multiple credentials, multiple placeholders, all at their right
-// locations — everything substituted in one Do call.
-func TestSubstitute_MixedKinds_OneRequest(t *testing.T) {
+// When a manifest declares multiple credential methods but only
+// one is configured (the steady-state invariant — Put enforces
+// "one credential per particle"), a request carrying placeholders
+// for both methods has the CONFIGURED one substituted and the
+// declared-but-unconfigured placeholder passed through literally.
+// Catches a class of "selected method got dropped from
+// substitution because the policy iterated by declaration order"
+// regressions.
+func TestSubstitute_OneOfMultipleDeclared_Substituted(t *testing.T) {
 	pol, store, rec := newPolicyWithStore(t, "p", "key", "gh")
 
-	apikey, _ := store.Put(context.Background(), "p", "key",
-		credentials.APIKeyMeta{Location: credentials.ApplySpec{
-			Kind: credentials.ApplyHeader, Name: "X-API-Key",
-		}},
-		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte("api-key-value")},
-	)
+	// Only "gh" is configured. The user picked OAuth.
 	oauth, _ := store.Put(context.Background(), "p", "gh",
 		credentials.OAuth2Meta{},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: credentials.AccessToken{Token: "oauth-token"}.Marshal()},
 	)
-
-	apikeyPH := credentials.PlaceholderPrefix + apikey.ID
 	oauthPH := credentials.PlaceholderPrefix + oauth.ID
 
+	// Plant placeholders for both. "key" wasn't configured, so
+	// its descriptor doesn't exist — anything in X-API-Key looks
+	// like an opaque value to the substituter and stays literal.
+	const apikeyPH = credentials.PlaceholderPrefix + "no-such-id-aaaaaaaaaaaaaaaa"
 	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
 		"X-API-Key":     {apikeyPH},
 		"Authorization": {"Bearer " + oauthPH},
@@ -353,11 +356,11 @@ func TestSubstitute_MixedKinds_OneRequest(t *testing.T) {
 	if _, err := pol.Do(req); err != nil {
 		t.Fatal(err)
 	}
-	if got := rec.got.Header.Get("X-API-Key"); got != "api-key-value" {
-		t.Errorf("X-API-Key = %q", got)
-	}
 	if got := rec.got.Header.Get("Authorization"); got != "Bearer oauth-token" {
-		t.Errorf("Authorization = %q", got)
+		t.Errorf("Authorization = %q, want substituted", got)
+	}
+	if got := rec.got.Header.Get("X-API-Key"); got != apikeyPH {
+		t.Errorf("X-API-Key = %q, want unchanged (no configured credential)", got)
 	}
 }
 

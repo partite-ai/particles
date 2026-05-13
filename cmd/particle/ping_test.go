@@ -49,9 +49,6 @@ func (r *stubRegistry) Get(context.Context, string, string) (registry.Entry, err
 }
 func (r *stubRegistry) Put(context.Context, string, string, fs.FS) error { panic("unused") }
 func (r *stubRegistry) Delete(context.Context, string, string) error      { panic("unused") }
-func (r *stubRegistry) SetSelectedAuthenticationMethod(context.Context, string, string) error {
-	panic("unused")
-}
 
 func TestResolveLatestVersion_Unique(t *testing.T) {
 	reg := &stubRegistry{entries: []registry.ListEntry{

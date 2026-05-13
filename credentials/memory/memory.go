@@ -128,10 +128,13 @@ func (s *Store) List(_ context.Context, particle string) ([]credentials.ListEntr
 	return out, nil
 }
 
-// Put writes metadata + the listed secrets atomically. Roles not
-// listed are preserved on overwrite (the OAuth-refresh path: write
-// new ExpiresAt + new access token, don't touch refresh token or
-// client secret).
+// Put sets the particle's credential, enforcing the "one
+// credential per particle" invariant: any existing credential
+// under a name OTHER than `name` is evicted in the same critical
+// section as the new write. Re-Putting under the same name
+// preserves the entry's ID and untouched secrets (the
+// OAuth-refresh path: write new ExpiresAt + new access token,
+// don't touch refresh token or client secret).
 func (s *Store) Put(_ context.Context, particle, name string, meta credentials.Metadata, secrets ...credentials.Secret) (credentials.Descriptor, error) {
 	if meta == nil {
 		return credentials.Descriptor{}, fmt.Errorf("memory: Put requires a non-nil Metadata")
@@ -149,6 +152,16 @@ func (s *Store) Put(_ context.Context, particle, name string, meta credentials.M
 	defer s.mu.Unlock()
 
 	slot := s.slotFor(particle)
+	// Evict any other credential for this particle so the
+	// "one credential per particle" invariant holds. Walk
+	// byName since byID may diverge under future changes.
+	for otherName, other := range slot.byName {
+		if otherName == name {
+			continue
+		}
+		delete(slot.byID, other.id)
+		delete(slot.byName, otherName)
+	}
 	rec, isUpdate := slot.byName[name]
 	if !isUpdate {
 		rec = &record{
@@ -168,6 +181,25 @@ func (s *Store) Put(_ context.Context, particle, name string, meta credentials.M
 		rec.secrets[sec.Role] = stored
 	}
 	return descriptorOf(rec), nil
+}
+
+// ConfiguredMethod returns the name of the credential stored for
+// particle, or "" when none. Deterministic by name if multiple
+// credentials happen to coexist.
+func (s *Store) ConfiguredMethod(_ context.Context, particle string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	slot, ok := s.byParticle[particle]
+	if !ok || len(slot.byName) == 0 {
+		return "", nil
+	}
+	best := ""
+	for name := range slot.byName {
+		if best == "" || name < best {
+			best = name
+		}
+	}
+	return best, nil
 }
 
 // Delete removes the entire entry. Idempotent.

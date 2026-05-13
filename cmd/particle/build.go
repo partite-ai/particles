@@ -21,8 +21,11 @@ import (
 
 func newBuildCmd() *cobra.Command {
 	var (
-		pack   bool
-		dbPath string
+		pack             bool
+		dbPath           string
+		profile          string
+		acceptPerms      bool
+		confirmPerms     bool
 	)
 	cmd := &cobra.Command{
 		Use:   "build",
@@ -32,19 +35,33 @@ func newBuildCmd() *cobra.Command {
 By default the result is registered in the local state DB. Pass
 --pack to write a <name>-<version>.particle tarball to CWD instead.
 
-Registration fails if any credential the manifest declares hasn't
-been provisioned in the credentials store.`,
+Registration prompts to confirm the particle's declared capabilities
+when they differ from the previously-registered version (or on a
+fresh install) and walks credential setup for any unconfigured
+authentication method.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runBuild(cmd, pack, dbPath)
+			if profile != "" {
+				stop, err := startProfile(profile, cmd.ErrOrStderr())
+				if err != nil {
+					return err
+				}
+				defer stop()
+			}
+			return runBuild(cmd, pack, dbPath, permissionModeFromFlags(acceptPerms, confirmPerms))
 		},
 	}
 	cmd.Flags().BoolVar(&pack, "pack", false, "Write <name>-<version>.particle to CWD instead of registering")
 	cmd.Flags().StringVar(&dbPath, "db", "", "Path to the particle state DB (default: <user-config-dir>/particle/state.db)")
+	cmd.Flags().BoolVarP(&acceptPerms, "yes", "y", false, "Auto-accept the permission summary (does not skip credential prompts)")
+	cmd.Flags().BoolVar(&confirmPerms, "confirm-permissions", false, "Force the permission prompt even when capabilities match the prior version")
+	cmd.Flags().StringVar(&profile, "profile", "", "Write CPU + heap pprof profiles with this prefix")
+	_ = cmd.Flags().MarkHidden("profile")
+	cmd.MarkFlagsMutuallyExclusive("yes", "confirm-permissions")
 	return cmd
 }
 
-func runBuild(cmd *cobra.Command, pack bool, dbPath string) error {
+func runBuild(cmd *cobra.Command, pack bool, dbPath string, permMode importer.PermissionMode) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getwd: %w", err)
@@ -65,7 +82,7 @@ func runBuild(cmd *cobra.Command, pack bool, dbPath string) error {
 	if pack {
 		return runPack(cmd, res)
 	}
-	return runRegister(cmd, res, dbPath)
+	return runRegister(cmd, res, dbPath, permMode)
 }
 
 // runPack writes the particle FS as <name>-<version>.particle to CWD.
@@ -85,7 +102,7 @@ func runPack(cmd *cobra.Command, res *build.Result) error {
 // runRegister opens the state DB, walks the importer to set up
 // any unconfigured credentials, then stores the particle in the
 // registry.
-func runRegister(cmd *cobra.Command, res *build.Result, dbPath string) error {
+func runRegister(cmd *cobra.Command, res *build.Result, dbPath string, permMode importer.PermissionMode) error {
 	dbPath, err := resolveDBPath(dbPath)
 	if err != nil {
 		return err
@@ -104,11 +121,16 @@ func runRegister(cmd *cobra.Command, res *build.Result, dbPath string) error {
 	}
 	defer db.Close()
 
-	// Only construct the credentials store when the manifest
-	// declares anything — particles with no credentials don't
-	// need the keychain to be available.
+	// The prompter is built unconditionally: permission
+	// confirmation needs it even for particles without
+	// credentials. We don't gate on IsTerminal up front — a
+	// no-caps particle never prompts, so requiring a TTY would
+	// pessimistically reject valid pipelines. If we DO end up
+	// needing to prompt on a non-TTY, the StdioPrompter's
+	// Read surfaces a clear EOF error.
+	var prompter importer.Prompter = importer.NewStdioPrompter()
+
 	var credStore credentials.Store
-	var prompter importer.Prompter
 	if len(declared) > 0 {
 		sealer, err := credsqlite.NewKeyringSealer(keyringService, keyringName)
 		if err != nil {
@@ -118,16 +140,6 @@ func runRegister(cmd *cobra.Command, res *build.Result, dbPath string) error {
 		if err != nil {
 			return fmt.Errorf("credentials store: %w", err)
 		}
-		stdio := importer.NewStdioPrompter()
-		if !stdio.IsTerminal() {
-			// We need to prompt the user for any unset
-			// credential, but stdin isn't a TTY — fail
-			// fast with actionable advice instead of
-			// blocking on a `bufio.Read` that'll never
-			// come.
-			return fmt.Errorf("particle declares credentials but stdin is not a terminal; configure credentials before piping into `particle build`, or use `--pack` to skip registration")
-		}
-		prompter = stdio
 	}
 
 	reg, err := regsqlite.New(ctx, db)
@@ -136,9 +148,10 @@ func runRegister(cmd *cobra.Command, res *build.Result, dbPath string) error {
 	}
 
 	entry, err := importer.Import(ctx, res.Particle, importer.Options{
-		Registry:    reg,
-		Credentials: credStore,
-		Prompter:    prompter,
+		Registry:       reg,
+		Credentials:    credStore,
+		Prompter:       prompter,
+		PermissionMode: permMode,
 	})
 	if err != nil {
 		return err

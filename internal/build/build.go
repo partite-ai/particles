@@ -34,6 +34,7 @@ import (
 	"github.com/partite-ai/particle/internal/build/wacogo"
 	"github.com/partite-ai/particle/internal/bundle"
 	"github.com/partite-ai/particle/internal/importscan"
+	"github.com/partite-ai/particle/internal/semver"
 )
 
 // Options configure a single build invocation.
@@ -252,6 +253,9 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
 	}
+	if err := validateExtractedManifest(ir.Manifest); err != nil {
+		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
+	}
 
 	// ---- Phase 6: assemble --------------------------------------------
 	buildInfo, err := encodeBuildInfo(scan, resolvedPkgs)
@@ -271,6 +275,27 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		Warnings: warnings,
 		Logs:     logs,
 	}, nil
+}
+
+// validateExtractedManifest runs the Go-side gates on the JSON
+// the introspect WASM produced. Today the only gate is strict
+// SemVer 2.0.0 on `version` (shared with the registry via
+// `internal/semver`, so a tarball that bypasses the build path
+// still can't slip a bad version past `registry.Put`). Other
+// shape checks — name non-empty, tools well-formed — already
+// happen inside introspect.ts; this layer is the host-side gate
+// that doesn't depend on guest-language code being correct.
+func validateExtractedManifest(manifestJSON []byte) error {
+	var mf struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(manifestJSON, &mf); err != nil {
+		return fmt.Errorf("parse extracted manifest: %w", err)
+	}
+	if !semver.IsValid(mf.Version) {
+		return fmt.Errorf("particle.version %q is not a valid semver string (e.g. \"1.2.3\", \"0.1.0-rc.1\", \"1.0.0+build.7\")", mf.Version)
+	}
+	return nil
 }
 
 // resolveEntryPoint picks the conventional entry point. Spec §4: the

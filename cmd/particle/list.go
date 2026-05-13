@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	credsqlite "github.com/partite-ai/particle/credentials/sqlite"
 	regsqlite "github.com/partite-ai/particle/registry/sqlite"
 )
 
@@ -55,10 +56,27 @@ func runList(cmd *cobra.Command, dbPath string) error {
 		return nil
 	}
 
+	// `particle list` only reads credential NAMES (the method
+	// name IS the selection); it never decrypts. Construct a
+	// sealer-less Store so the OS keychain isn't prompted just
+	// to render the table.
+	credStore, err := credsqlite.New(ctx, db, nil)
+	if err != nil {
+		return fmt.Errorf("credentials store: %w", err)
+	}
+	methods := map[string]string{}
+
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tVERSION\tAUTH")
 	for _, e := range entries {
-		auth := e.SelectedAuthenticationMethod
+		auth, ok := methods[e.Name]
+		if !ok {
+			auth, err = credStore.ConfiguredMethod(ctx, e.Name)
+			if err != nil {
+				return fmt.Errorf("lookup method for %s: %w", e.Name, err)
+			}
+			methods[e.Name] = auth
+		}
 		if auth == "" {
 			auth = "(unconfigured)"
 		}

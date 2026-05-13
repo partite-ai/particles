@@ -19,7 +19,7 @@ import "./polyfill";
 import ts from "typescript";
 import { TS_LIB_FILES, PARTICLE_GLOBALS_DTS } from "./lib-bundle";
 
-// Synthetic path the libBundleHost serves the particle:* module
+// Synthetic path the libBundleHost serves the @partite-ai/particle-* module
 // declarations from. The leading "/" keeps it absolute (TS
 // canonicalizes paths and a relative one would resolve against
 // CWD, which doesn't exist in the wasm sandbox).
@@ -131,9 +131,9 @@ export const typecheck = {
     try {
       const host = libBundleHost(compilerOptions);
       program = ts.createProgram({
-        // Inject particle:* module declarations as a synthetic
+        // Inject @partite-ai/particle-* module declarations as a synthetic
         // root so users get type-checking on `import { credentials
-        // } from "particle:credentials"` without an external
+        // } from "@partite-ai/particle-credentials"` without an external
         // types package. libBundleHost serves the file's contents.
         rootNames: [...opts.rootFiles, PARTICLE_GLOBALS_PATH],
         options: compilerOptions,

@@ -136,6 +136,35 @@ func TestBuild_RejectsMalformedManifest(t *testing.T) {
 	}
 }
 
+// A non-semver version string fails the manifest-extract phase
+// at the build level — same plumbing as other invalid-manifest
+// errors. Catches typos like `"latest"` or shortened forms like
+// `"1.2"` before they reach the registry.
+func TestBuild_RejectsNonSemverVersion(t *testing.T) {
+	src := fstest.MapFS{
+		"Particlefile.ts": &fstest.MapFile{
+			Data: []byte(`export default { name: "x", description: "x", version: "latest", capabilities: {}, tools: {} };`),
+		},
+	}
+	_, err := build.Build(context.Background(), build.Options{
+		Source:      src,
+		NoTypeCheck: true,
+	})
+	if err == nil {
+		t.Fatal("expected validation error for non-semver version")
+	}
+	var be *build.Error
+	if !errors.As(err, &be) {
+		t.Fatalf("error type: got %T, want *build.Error", err)
+	}
+	if be.Phase != build.PhaseManifestExtract {
+		t.Errorf("phase = %v, want PhaseManifestExtract", be.Phase)
+	}
+	if !strings.Contains(err.Error(), "semver") {
+		t.Errorf("error should mention semver: %v", err)
+	}
+}
+
 // readFile reads `name` from the result FS, t.Fatal on failure.
 func readFile(t *testing.T, fsys fs.FS, name string) []byte {
 	t.Helper()

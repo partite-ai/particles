@@ -36,37 +36,16 @@ type Registry interface {
 	// expected to have validated that the particle is fully
 	// configured before calling Put — the registry doesn't enforce
 	// configuration policy.
-	//
-	// Put doesn't touch authentication-method selection: that
-	// state lives at the per-particle-name level (credentials
-	// are per-name in [credentials.Store], so the chosen method
-	// is shared by every version). Re-Putting a different
-	// version of the same particle leaves the prior selection
-	// in place.
 	Put(ctx context.Context, name, version string, particle fs.FS) error
 
 	// Get returns the entry for (name, version). Returns
-	// ErrNotFound if no such entry exists. The returned
-	// [Entry.SelectedAuthenticationMethod] reflects the
-	// per-particle-name selection — same value across every
-	// registered version of the same particle.
+	// ErrNotFound if no such entry exists.
 	Get(ctx context.Context, name, version string) (Entry, error)
 
 	// List returns a metadata-only summary of every entry, in
 	// (name, version) order. The FS contents are not loaded —
 	// callers needing those should call Get.
 	List(ctx context.Context) ([]ListEntry, error)
-
-	// SetSelectedAuthenticationMethod records the credential
-	// method the user chose at setup. Per-particle-name (no
-	// version): every version of the same particle shares the
-	// same auth-method choice because credentials are
-	// per-particle in [credentials.Store]. Empty `method`
-	// clears the selection.
-	//
-	// The runtime reads this when wiring the wasi:http policy,
-	// so substitution checks only that one method's placeholder.
-	SetSelectedAuthenticationMethod(ctx context.Context, name, method string) error
 
 	// Delete removes the entry. Idempotent: returns nil if no
 	// such entry existed.
@@ -82,23 +61,12 @@ type Entry struct {
 	// Particle is the in-memory FS the runtime can instantiate
 	// against.
 	Particle fs.FS
-	// SelectedAuthenticationMethod is the name of the credential
-	// method the user picked at setup time, taken from the
-	// per-particle-name selection table (so it's the same value
-	// for every version of the same particle). Empty when the
-	// particle either declares no credentials or hasn't been
-	// set up yet.
-	SelectedAuthenticationMethod string
 }
 
 // ListEntry is the metadata-only summary [Registry.List] returns.
 type ListEntry struct {
 	Name    string
 	Version string
-	// SelectedAuthenticationMethod is the per-particle-name
-	// selection (so identical for every row of the same name).
-	// Empty when no method is configured.
-	SelectedAuthenticationMethod string
 }
 
 // ErrNotFound is the sentinel a Registry returns when no entry

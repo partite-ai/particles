@@ -25,9 +25,6 @@ func (r *listingRegistry) Get(context.Context, string, string) (registry.Entry, 
 }
 func (r *listingRegistry) Put(context.Context, string, string, fs.FS) error { panic("unused") }
 func (r *listingRegistry) Delete(context.Context, string, string) error      { panic("unused") }
-func (r *listingRegistry) SetSelectedAuthenticationMethod(context.Context, string, string) error {
-	panic("unused")
-}
 
 func TestVersionsToDelete_ExplicitVersion(t *testing.T) {
 	reg := &listingRegistry{entries: []registry.ListEntry{

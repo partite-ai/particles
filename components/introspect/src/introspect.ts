@@ -12,7 +12,7 @@
  * stringifies it.
  *
  * The user's bundle.js still contains `import { credentials } from
- * "particle:credentials"` and similar statements (esbuild marks
+ * "@partite-ai/particle-credentials"` and similar statements (esbuild marks
  * `particle:*` external during Phase 4 so the real runtime can wire
  * them). Because handlers are never invoked here, those imported
  * modules are never *used* — only loaded. We register local no-op
@@ -79,7 +79,7 @@ type UserParticle = {
 // Before the bundle is evaluated, we register no-op JS modules for
 // every `particle:*` namespace through wasm-rquickjs's module-mock
 // API. The bundle's top-level `import { credentials } from
-// "particle:credentials"` (etc.) resolves to one of these stubs, so
+// "@partite-ai/particle-credentials"` (etc.) resolves to one of these stubs, so
 // the user's source loads even though no host instance is wired —
 // per design doc §3, introspect never calls a handler, so the
 // stubbed methods are never invoked.
@@ -91,10 +91,10 @@ declare const __wasm_rquickjs_register_module_mock: (
 ) => unknown;
 
 const PARTICLE_NAMESPACE_STUBS: Record<string, string[]> = {
-  "particle:credentials": ["fetcher", "getRaw"],
-  "particle:oauth":       ["refresh"],
-  "particle:signing":     ["sign", "verify"],
-  "particle:kv":          ["get", "set", "delete", "list"],
+  "@partite-ai/particle-credentials": ["fetcher", "getRaw"],
+  "@partite-ai/particle-oauth":       ["refresh"],
+  "@partite-ai/particle-signing":     ["sign", "verify"],
+  "@partite-ai/particle-kv":          ["get", "set", "delete", "list"],
 };
 
 let stubsRegistered = false;
@@ -115,9 +115,10 @@ function registerParticleStubs(): void {
     for (const m of methods) {
       namespaceObject[m] = trap;
     }
-    // The named export key matches the namespace's last segment —
-    // e.g., `particle:credentials` exports `credentials`.
-    const exportName = specifier.split(":")[1];
+    // The named export key is the bit after the host prefix —
+    // e.g., `@partite-ai/particle-credentials` exports
+    // `credentials`.
+    const exportName = specifier.slice("@partite-ai/particle-".length);
     __wasm_rquickjs_register_module_mock(specifier, {
       namedExports: { [exportName]: namespaceObject },
     });
@@ -152,6 +153,12 @@ async function loadParticle(): Promise<UserParticle> {
 // Manifest validation. Build errors out of any structural mismatch — these
 // surface to the user with a clean "build failed: manifest-extract" wrapper.
 // -----------------------------------------------------------------------------
+
+// Note: strict SemVer validation lives Go-side (internal/semver,
+// shared by the build pipeline and the registry) so the rule
+// can't drift between JS and Go versions of the same regex. We
+// still require version to be a non-empty string here — that's
+// the in-bundle "did the author put SOMETHING here" check.
 
 function validateAndSerialize(p: UserParticle): string {
   if (typeof p.name !== "string" || !p.name) {

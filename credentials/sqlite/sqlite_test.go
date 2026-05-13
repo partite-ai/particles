@@ -160,45 +160,46 @@ func TestGet_Missing(t *testing.T) {
 	}
 }
 
+// Each particle has at most one credential (the Put invariant),
+// so List is essentially "the one entry for this particle, if
+// any." We seed several different particles and verify List
+// scopes correctly per-particle and surfaces the entry's name,
+// ID shape, and kind.
 func TestList(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	for _, p := range []struct {
-		name string
-		meta credentials.Metadata
+	seed := []struct {
+		particle string
+		name     string
+		meta     credentials.Metadata
+		kind     credentials.Kind
 	}{
-		{"github", credentials.OAuth2Meta{}},
-		{"stripe", credentials.APIKeyMeta{Location: credentials.ApplySpec{Kind: credentials.ApplyHeader, Name: "X-Stripe"}}},
-		{"anthropic", credentials.RawMeta{}},
-	} {
-		if _, err := s.Put(ctx, "tools", p.name, p.meta); err != nil {
+		{"github", "pat", credentials.APIKeyMeta{Location: credentials.ApplySpec{Kind: credentials.ApplyHeader, Name: "X-K"}}, credentials.KindAPIKey},
+		{"stripe", "oauth", credentials.OAuth2Meta{}, credentials.KindOAuth2},
+		{"anthropic", "raw", credentials.RawMeta{}, credentials.KindRaw},
+	}
+	for _, p := range seed {
+		if _, err := s.Put(ctx, p.particle, p.name, p.meta); err != nil {
 			t.Fatal(err)
 		}
 	}
-	got, err := s.List(ctx, "tools")
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(got) != 3 {
-		t.Fatalf("len(List) = %d, want 3", len(got))
-	}
-	wantOrder := []string{"anthropic", "github", "stripe"}
-	for i, le := range got {
-		if le.Name != wantOrder[i] {
-			t.Errorf("List[%d].Name = %q, want %q", i, le.Name, wantOrder[i])
+	for _, p := range seed {
+		got, err := s.List(ctx, p.particle)
+		if err != nil {
+			t.Fatalf("List(%s): %v", p.particle, err)
 		}
-		if !idShape.MatchString(le.ID) {
-			t.Errorf("List[%d].ID malformed: %q", i, le.ID)
+		if len(got) != 1 {
+			t.Errorf("List(%s) len = %d, want 1", p.particle, len(got))
+			continue
 		}
-	}
-	wantKind := map[string]credentials.Kind{
-		"anthropic": credentials.KindRaw,
-		"github":    credentials.KindOAuth2,
-		"stripe":    credentials.KindAPIKey,
-	}
-	for _, le := range got {
-		if le.Kind != wantKind[le.Name] {
-			t.Errorf("List entry %q kind = %q, want %q", le.Name, le.Kind, wantKind[le.Name])
+		if got[0].Name != p.name {
+			t.Errorf("List(%s)[0].Name = %q, want %q", p.particle, got[0].Name, p.name)
+		}
+		if !idShape.MatchString(got[0].ID) {
+			t.Errorf("List(%s)[0].ID malformed: %q", p.particle, got[0].ID)
+		}
+		if got[0].Kind != p.kind {
+			t.Errorf("List(%s)[0].Kind = %q, want %q", p.particle, got[0].Kind, p.kind)
 		}
 	}
 }
@@ -629,14 +630,167 @@ func TestNew_RejectsNilDB(t *testing.T) {
 	}
 }
 
-func TestNew_RejectsNilSealer(t *testing.T) {
+// A Store constructed with a nil Sealer is "metadata-only": no-
+// crypto operations (List, GetByName, ConfiguredMethod, …) work,
+// but every secret operation errors with a clear message.
+// Lets `particle list` (and similar read-only paths) avoid
+// prompting the OS keychain when no decryption will ever happen.
+func TestNew_NilSealer_MetadataOnly(t *testing.T) {
 	dsn := "file:" + t.Name() + "?mode=memory&cache=shared"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := sqlite.New(context.Background(), db, nil); err == nil {
-		t.Error("New(_, _, nil) should error")
+
+	// Seed a credential through a sealer-equipped store...
+	s, err := sqlite.New(context.Background(), db, newSealer(t))
+	if err != nil {
+		t.Fatalf("sqlite.New (with sealer): %v", err)
+	}
+	if _, err := s.Put(context.Background(), "p", "pat",
+		credentials.APIKeyMeta{Location: credentials.ApplySpec{Kind: credentials.ApplyHeader, Name: "X-K"}},
+		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte("k")},
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// ...then reopen the same DB with a nil sealer.
+	meta, err := sqlite.New(context.Background(), db, nil)
+	if err != nil {
+		t.Fatalf("sqlite.New (sealer-less) should succeed: %v", err)
+	}
+
+	// No-crypto operations work.
+	got, err := meta.ConfiguredMethod(context.Background(), "p")
+	if err != nil {
+		t.Fatalf("ConfiguredMethod: %v", err)
+	}
+	if got != "pat" {
+		t.Errorf("ConfiguredMethod = %q, want pat", got)
+	}
+	if _, err := meta.GetByName(context.Background(), "p", "pat"); err != nil {
+		t.Errorf("GetByName on sealer-less store: %v", err)
+	}
+	if _, err := meta.List(context.Background(), "p"); err != nil {
+		t.Errorf("List on sealer-less store: %v", err)
+	}
+
+	// Secret operations error with a clear message.
+	if _, err := meta.Put(context.Background(), "p", "y", credentials.RawMeta{}); err == nil {
+		t.Error("Put on sealer-less store should error")
+	}
+	if _, err := meta.ReadSecret(context.Background(), "p", "any-id", credentials.SecretRoleKey); err == nil {
+		t.Error("ReadSecret on sealer-less store should error")
+	}
+	if err := meta.WriteSecrets(context.Background(), "p", "any-id",
+		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte("k")},
+	); err == nil {
+		t.Error("WriteSecrets on sealer-less store should error")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// "One credential per particle" invariant — Put atomically evicts
+// any other credential for the particle, and ConfiguredMethod
+// reflects the (unique) survivor.
+// -----------------------------------------------------------------------------
+
+// A Put under a different name from the existing credential
+// evicts the prior one in the same transaction. The
+// authentication-method-switch case is therefore atomic from a
+// reader's perspective: no window where both credentials coexist.
+func TestPut_DifferentName_EvictsPriorCredential(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	if _, err := s.Put(ctx, "p", "oauth", credentials.OAuth2Meta{ClientID: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	desc, err := s.Put(ctx, "p", "pat",
+		credentials.APIKeyMeta{Location: credentials.ApplySpec{Kind: credentials.ApplyHeader, Name: "X-K"}},
+		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte("k")},
+	)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if desc.Name != "pat" {
+		t.Errorf("new Name = %q, want pat", desc.Name)
+	}
+	// Prior credential gone.
+	if _, err := s.GetByName(ctx, "p", "oauth"); !errors.Is(err, credentials.ErrNotFound) {
+		t.Errorf("prior credential should be evicted; err = %v", err)
+	}
+	// And its secrets shouldn't be lingering either — query the
+	// secrets table directly via List.
+	entries, err := s.List(ctx, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "pat" {
+		t.Errorf("List = %v, want exactly [pat]", entries)
+	}
+	// ConfiguredMethod reflects the survivor.
+	method, err := s.ConfiguredMethod(ctx, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if method != "pat" {
+		t.Errorf("ConfiguredMethod = %q, want pat", method)
+	}
+}
+
+// A Put under the same name as an existing credential preserves
+// the entry's ID (and any secrets not in the new write — the
+// OAuth-refresh contract). Eviction only fires for OTHER names.
+func TestPut_SameName_PreservesID(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	first, err := s.Put(ctx, "p", "oauth", credentials.OAuth2Meta{ClientID: "old"},
+		credentials.Secret{Role: credentials.SecretRoleRefreshToken, Value: []byte("rt")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.Put(ctx, "p", "oauth", credentials.OAuth2Meta{ClientID: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != second.ID {
+		t.Errorf("ID changed on same-name Put: %q → %q", first.ID, second.ID)
+	}
+	// Untouched secret still readable.
+	rt, err := s.ReadSecret(ctx, "p", second.ID, credentials.SecretRoleRefreshToken)
+	if err != nil {
+		t.Fatalf("refresh token gone after same-name Put: %v", err)
+	}
+	if string(rt) != "rt" {
+		t.Errorf("refresh = %q, want rt", rt)
+	}
+}
+
+// Eviction also runs on the first-ever Put for a particle —
+// trivially a no-op (no rows match the "other name" predicate)
+// but worth pinning so a regression that conflated "evict and
+// require something to evict" can't slip in.
+func TestPut_FirstInstall_NoPriorCredential(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.Put(context.Background(), "fresh", "pat",
+		credentials.RawMeta{},
+		credentials.Secret{Role: credentials.SecretRoleValue, Value: []byte("v")},
+	); err != nil {
+		t.Fatalf("Put on fresh particle: %v", err)
+	}
+}
+
+// ConfiguredMethod returns "" when no credential exists for the
+// particle.
+func TestConfiguredMethod_Empty(t *testing.T) {
+	s := newStore(t)
+	got, err := s.ConfiguredMethod(context.Background(), "absent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Errorf("ConfiguredMethod = %q, want empty", got)
 	}
 }

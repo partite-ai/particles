@@ -12,7 +12,7 @@
  *   particle run  github-tools create_issue --owner=me --repo=mine --title="Bug"
  */
 
-import { credentials } from "particle:credentials";
+import { credentials } from "@partite-ai/particle-credentials";
 
 // Resolve the active credential's name. The host call is sync and
 // the result is fixed at setup time, so we just read it directly

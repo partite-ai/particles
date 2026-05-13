@@ -314,11 +314,11 @@ func TestRuntime_CallTool_ValidationPrecedesHandler(t *testing.T) {
 	}
 }
 
-// A particle that imports `particle:credentials` must resolve the
+// A particle that imports `@partite-ai/particle-credentials` must resolve the
 // module at bundle-load time. Without the host-shim that registers
-// `particle:credentials` on top of the WIT-imported
+// `@partite-ai/particle-credentials` on top of the WIT-imported
 // `particle:host/credentials@0.1.0`, ListTools panics with
-// "Cannot find module 'particle:credentials'". This test pins the
+// "Cannot find module '@partite-ai/particle-credentials'". This test pins the
 // shim wiring.
 //
 // `getConfiguredMethod()` is invoked from a handler to verify the
@@ -326,10 +326,10 @@ func TestRuntime_CallTool_ValidationPrecedesHandler(t *testing.T) {
 // runtime — no credentials configured, so it should be null.
 func TestRuntime_ParticleCredentialsModule_LoadsAndReturnsNull(t *testing.T) {
 	ctx := context.Background()
-	src := `import { credentials } from "particle:credentials";
+	src := `import { credentials } from "@partite-ai/particle-credentials";
 export default {
   name: "shim-test",
-  description: "exercises the particle:credentials shim",
+  description: "exercises the @partite-ai/particle-credentials shim",
   version: "0.1.0",
   capabilities: {
     credentials: {
@@ -355,7 +355,7 @@ export default {
 	defer p.Close(ctx)
 
 	// ListTools triggers bundle evaluation, which would fail with
-	// "Cannot find module 'particle:credentials'" if the shim
+	// "Cannot find module '@partite-ai/particle-credentials'" if the shim
 	// weren't registered.
 	tools, err := p.ListTools(ctx)
 	if err != nil {

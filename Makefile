@@ -130,8 +130,9 @@ typecheck:
 	@mkdir -p $(DIST_DIR) $(TYPECHECK_CARGO_TARGET) components/typecheck/build
 	@test -d components/typecheck/node_modules/typescript || \
 	  (cd components/typecheck && $(NPM_INSTALL))
-	@echo '[1/4] generate src/lib-bundle.ts (lib.*.d.ts → ESM map)'
+	@echo '[1/4] generate src/lib-bundle.ts and src/particle-globals.d.ts'
 	cd components/typecheck && node build-lib-bundle.mjs
+	cd components/typecheck && node build-particle-globals.mjs
 	@echo '[2/4] esbuild  src/typecheck.ts  →  build/typecheck.js  (bundles typescript)'
 	cd components/typecheck && esbuild src/typecheck.ts \
 	  --bundle --format=esm --platform=node --target=es2022 \

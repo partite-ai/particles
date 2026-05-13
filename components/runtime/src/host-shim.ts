@@ -4,7 +4,7 @@
  *
  * The auto-generated wasm-rquickjs bindings expose each WIT
  * interface under its full WIT name (`particle:host/credentials@0.1.0`),
- * but particles import the shorter `particle:credentials` etc. (per
+ * but particles import the shorter `@partite-ai/particle-credentials` etc. (per
  * docs/initial-design.md §2). This shim:
  *
  *   - Imports the WIT-bound functions
@@ -13,7 +13,7 @@
  *     option<string> → string|null for the few results that need it)
  *   - Registers each `particle:*` module via wasm-rquickjs's
  *     module-mock API so user `import { credentials } from
- *     "particle:credentials"` resolves before the bundle is evaluated
+ *     "@partite-ai/particle-credentials"` resolves before the bundle is evaluated
  *
  * Importing this file at the top of runtime.ts is what arms the
  * registrations; subsequent `import("/particle/bundle.js")` inside
@@ -154,15 +154,15 @@ const kv = {
 // registrations are armed by the time the dynamic import fires.
 // -----------------------------------------------------------------------------
 
-__wasm_rquickjs_register_module_mock("particle:credentials", {
+__wasm_rquickjs_register_module_mock("@partite-ai/particle-credentials", {
   namedExports: { credentials },
 });
-__wasm_rquickjs_register_module_mock("particle:oauth", {
+__wasm_rquickjs_register_module_mock("@partite-ai/particle-oauth", {
   namedExports: { oauth },
 });
-__wasm_rquickjs_register_module_mock("particle:signing", {
+__wasm_rquickjs_register_module_mock("@partite-ai/particle-signing", {
   namedExports: { signing },
 });
-__wasm_rquickjs_register_module_mock("particle:kv", {
+__wasm_rquickjs_register_module_mock("@partite-ai/particle-kv", {
   namedExports: { kv },
 });

@@ -119,45 +119,44 @@ func TestGet_Missing(t *testing.T) {
 	}
 }
 
+// Each particle has at most one credential, so List is per-
+// particle "the one entry, if any." Seed multiple particles to
+// verify scoping + correct surfacing of name/ID/kind.
 func TestList(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
-	for _, p := range []struct {
-		name string
-		meta credentials.Metadata
+	seed := []struct {
+		particle string
+		name     string
+		meta     credentials.Metadata
+		kind     credentials.Kind
 	}{
-		{"github", credentials.OAuth2Meta{}},
-		{"stripe", credentials.APIKeyMeta{Location: credentials.ApplySpec{Kind: credentials.ApplyHeader, Name: "X-Stripe"}}},
-		{"anthropic", credentials.RawMeta{}},
-	} {
-		if _, err := s.Put(ctx, "tools", p.name, p.meta); err != nil {
+		{"github", "pat", credentials.APIKeyMeta{Location: credentials.ApplySpec{Kind: credentials.ApplyHeader, Name: "X-K"}}, credentials.KindAPIKey},
+		{"stripe", "oauth", credentials.OAuth2Meta{}, credentials.KindOAuth2},
+		{"anthropic", "raw", credentials.RawMeta{}, credentials.KindRaw},
+	}
+	for _, p := range seed {
+		if _, err := s.Put(ctx, p.particle, p.name, p.meta); err != nil {
 			t.Fatal(err)
 		}
 	}
-	got, err := s.List(ctx, "tools")
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(got) != 3 {
-		t.Fatalf("len(List) = %d, want 3", len(got))
-	}
-	wantOrder := []string{"anthropic", "github", "stripe"}
-	for i, le := range got {
-		if le.Name != wantOrder[i] {
-			t.Errorf("List[%d].Name = %q, want %q", i, le.Name, wantOrder[i])
+	for _, p := range seed {
+		got, err := s.List(ctx, p.particle)
+		if err != nil {
+			t.Fatalf("List(%s): %v", p.particle, err)
 		}
-		if !idShape.MatchString(le.ID) {
-			t.Errorf("List[%d].ID malformed: %q", i, le.ID)
+		if len(got) != 1 {
+			t.Errorf("List(%s) len = %d, want 1", p.particle, len(got))
+			continue
 		}
-	}
-	wantKind := map[string]credentials.Kind{
-		"anthropic": credentials.KindRaw,
-		"github":    credentials.KindOAuth2,
-		"stripe":    credentials.KindAPIKey,
-	}
-	for _, le := range got {
-		if le.Kind != wantKind[le.Name] {
-			t.Errorf("List entry %q kind = %q, want %q", le.Name, le.Kind, wantKind[le.Name])
+		if got[0].Name != p.name {
+			t.Errorf("List(%s)[0].Name = %q, want %q", p.particle, got[0].Name, p.name)
+		}
+		if !idShape.MatchString(got[0].ID) {
+			t.Errorf("List(%s)[0].ID malformed: %q", p.particle, got[0].ID)
+		}
+		if got[0].Kind != p.kind {
+			t.Errorf("List(%s)[0].Kind = %q, want %q", p.particle, got[0].Kind, p.kind)
 		}
 	}
 }

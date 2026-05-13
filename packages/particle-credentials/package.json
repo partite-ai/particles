@@ -1,0 +1,24 @@
+{
+  "name": "@partite-ai/particle-credentials",
+  "version": "0.1.0",
+  "description": "TypeScript types for `particle:credentials` — the host-provided credential API consumed by Particle particles.",
+  "license": "MIT",
+  "homepage": "https://github.com/partite-ai/particle",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/partite-ai/particle.git",
+    "directory": "packages/particle-credentials"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "keywords": ["particle", "wasm", "credentials", "oauth", "apikey", "mcp"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false
+}

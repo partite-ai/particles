@@ -18,7 +18,7 @@ type particleConfig struct {
 
 // WithSelectedAuthenticationMethod tells the runtime which credential method
 // the host has provisioned for this particle. The CLI reads it
-// from [registry.Entry.SelectedAuthenticationMethod] and passes it through;
+// from [credentials.Store.ConfiguredMethod] and passes it through;
 // other call sites (tests, future host integrations) supply it
 // directly.
 //

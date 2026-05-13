@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	httptypes "github.com/partite-ai/wacogo/wasi/http/types"
 
@@ -80,10 +81,15 @@ func newHTTPPolicy(declared bool, allowedHosts []string, inner httptypes.HTTPDoe
 		declaredCredentials: declaredCredentials,
 	}
 	if declared {
+		// DNS hostnames are case-insensitive; the map lookup
+		// isn't. Normalize both the declared set and the request
+		// hostname (in Do) to lowercase so a manifest typo on
+		// case doesn't cause a runtime "host not allowed" that
+		// surprises a particle author.
 		p.allowedHosts = make(map[string]struct{}, len(allowedHosts))
 		for _, h := range allowedHosts {
 			if h != "" {
-				p.allowedHosts[h] = struct{}{}
+				p.allowedHosts[strings.ToLower(h)] = struct{}{}
 			}
 		}
 	}
@@ -92,7 +98,8 @@ func newHTTPPolicy(declared bool, allowedHosts []string, inner httptypes.HTTPDoe
 
 // Do implements wasi/http/types.HTTPDoer.
 func (p *httpPolicy) Do(req *http.Request) (*http.Response, error) {
-	if _, ok := p.allowedHosts[req.URL.Hostname()]; !ok {
+	host := strings.ToLower(req.URL.Hostname())
+	if _, ok := p.allowedHosts[host]; !ok {
 		hae := &HostNotAllowedError{Host: req.URL.Hostname()}
 		return nil, &codedDenialError{
 			HostNotAllowed: hae,

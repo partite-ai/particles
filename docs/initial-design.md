@@ -64,8 +64,8 @@ The Go host extracts this tarball, exposes its contents via wasi:filesystem to t
                         ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  particle-runtime.wasm (one image, many instances)          │
-│  Imports: particle:credentials, particle:kv,                │
-│           particle:oauth, particle:signing,                 │
+│  Imports: @partite-ai/particle-credentials, @partite-ai/particle-kv,                │
+│           @partite-ai/particle-oauth, @partite-ai/particle-signing,                 │
 │           wasi:http, wasi:sockets, wasi:filesystem,         │
 │           wasi:cli/environment, wasi:cli/stderr             │
 │  Exports: particle:tools, particle:health                   │
@@ -107,10 +107,10 @@ particle-runtime.wasm ──────────────────► 
    (single artifact)                       │ Host (Go process)        │
                                            │                          │
                         runtime exports    │ Implements:              │
-particle-runtime.wasm ◄──────────────────  │   particle:credentials   │
-                                           │   particle:oauth         │
-                                           │   particle:signing       │
-                                           │   particle:kv            │
+particle-runtime.wasm ◄──────────────────  │   @partite-ai/particle-credentials   │
+                                           │   @partite-ai/particle-oauth         │
+                                           │   @partite-ai/particle-signing       │
+                                           │   @partite-ai/particle-kv            │
                                            │   wasi:cli/environment   │
                                            │     (manifest-filtered)  │
                                            │   wasi:filesystem (FS    │
@@ -175,7 +175,7 @@ interface health {
 
 Optional. If the particle does not declare a `ping` function in its default export, the runtime returns `not-implemented`. Used for health-checking thin adapter particles whose underlying foreign API may be unreachable.
 
-#### `particle:credentials` (host exports)
+#### `@partite-ai/particle-credentials` (host exports)
 
 ```wit
 interface credentials {
@@ -212,7 +212,7 @@ interface credentials {
 }
 ```
 
-#### `particle:oauth` (host exports)
+#### `@partite-ai/particle-oauth` (host exports)
 
 ```wit
 interface oauth {
@@ -228,7 +228,7 @@ interface oauth {
 }
 ```
 
-#### `particle:signing` (host exports)
+#### `@partite-ai/particle-signing` (host exports)
 
 ```wit
 interface signing {
@@ -244,7 +244,7 @@ interface signing {
 }
 ```
 
-#### `particle:kv` (host exports)
+#### `@partite-ai/particle-kv` (host exports)
 
 ```wit
 interface kv {
@@ -314,7 +314,7 @@ A piece becomes its own WASM component when it's most naturally written in a non
 
 esbuild has a stable Go API and is written in Go; wrapping it in WASM adds bridging tax for no benefit. Orchestration in Go gives natural access to file I/O, caching, parallelism, and stable Go interfaces for plugging in alternate implementations.
 
-`particle-introspect.wasm` is its own component rather than a "mode" of `particle-runtime.wasm` because the two have fundamentally different boot/serve logic. Introspect never invokes a tool handler — it reads the bundle's default-export metadata, validates it, and returns the manifest JSON. Splitting it out keeps the hot-path runtime image free of build-time logic and lets the two evolve independently. The two share the QuickJS toolchain (wasm-rquickjs) but the introspect component imports *no* `particle:host/*` interfaces: since handlers are never called, the bundle's `import { credentials } from "particle:credentials"` statements only need to *resolve*, not work. The introspect component registers JS-level no-op stubs for every `particle:*` module before evaluating the bundle, so resolution happens entirely inside QuickJS without any host wiring.
+`particle-introspect.wasm` is its own component rather than a "mode" of `particle-runtime.wasm` because the two have fundamentally different boot/serve logic. Introspect never invokes a tool handler — it reads the bundle's default-export metadata, validates it, and returns the manifest JSON. Splitting it out keeps the hot-path runtime image free of build-time logic and lets the two evolve independently. The two share the QuickJS toolchain (wasm-rquickjs) but the introspect component imports *no* `particle:host/*` interfaces: since handlers are never called, the bundle's `import { credentials } from "@partite-ai/particle-credentials"` statements only need to *resolve*, not work. The introspect component registers JS-level no-op stubs for every `particle:*` module before evaluating the bundle, so resolution happens entirely inside QuickJS without any host wiring.
 
 ### `deno-npm.wasm` — Rust component
 
@@ -559,7 +559,7 @@ A capability that doesn't appear in the manifest is denied. Importing a `particl
 Every import in particle source resolves to exactly one of:
 
 1. **`npm:pkg@version`** — npm package. Version range required. Subpath supported (`npm:lodash@4/get`).
-2. **`particle:<capability>`** — host-provided capability. One of `particle:credentials`, `particle:oauth`, `particle:signing`, `particle:kv`. Env vars are not in this namespace; particles read them via `process.env`.
+2. **`particle:<capability>`** — host-provided capability. One of `@partite-ai/particle-credentials`, `@partite-ai/particle-oauth`, `@partite-ai/particle-signing`, `@partite-ai/particle-kv`. Env vars are not in this namespace; particles read them via `process.env`.
 3. **`./relative/path.js`** — local file in the particle source tree.
 4. **`/absolute/in-bundle/path`** — discouraged for human authors, but esbuild will resolve them.
 
@@ -583,7 +583,7 @@ No bare specifiers. The `npm:` prefix is mandatory.
 
 ### TypeScript
 
-esbuild handles `.ts` files natively (syntax stripping). Particles can use `.ts` or `.js` freely. Type-checking runs as a separate phase via `particle-typecheck.wasm` (default-on, opt-out via `--no-type-check`). We ship `.d.ts` files for `particle:credentials`, `particle:oauth`, `particle:signing`, `particle:kv`, and a `Particle` / `ToolDef` types package.
+esbuild handles `.ts` files natively (syntax stripping). Particles can use `.ts` or `.js` freely. Type-checking runs as a separate phase via `particle-typecheck.wasm` (default-on, opt-out via `--no-type-check`). We ship `.d.ts` files for `@partite-ai/particle-credentials`, `@partite-ai/particle-oauth`, `@partite-ai/particle-signing`, `@partite-ai/particle-kv`, and a `Particle` / `ToolDef` types package.
 
 ### Build-time validation
 
@@ -597,8 +597,8 @@ The introspect step rejects the build if:
 - An npm specifier lacks a version range
 - A local import resolves outside the particle source tree
 - A credential type and its declared fields don't match (see §7)
-- `particle:oauth` is imported with no `oauth2` credentials declared
-- `particle:signing` is imported with no `signing-key` credentials declared
+- `@partite-ai/particle-oauth` is imported with no `oauth2` credentials declared
+- `@partite-ai/particle-signing` is imported with no `signing-key` credentials declared
 - `credentials.getRaw` is called but no `raw` credentials are declared
 
 ### What's not in the DSL
@@ -643,7 +643,7 @@ Cache key: SHA-256 of (source-tree-hash + lockfile-hash).
 
 Cache key: same as typecheck.
 
-**Phase 5: manifest-extract (particle-introspect.wasm).** The orchestrator instantiates `particle-introspect.wasm` with `bundle.js` mounted at `/particle/bundle.js`. The component registers JS-level no-op stubs for every `particle:*` module specifier (so the bundle's `import { credentials } from "particle:credentials"` resolves without ever crossing the WIT boundary), evaluates the bundle, reads `default` export, validates structure, validates each `inputSchema` against the JSON Schema meta-schema, cross-references declared capabilities against imports actually used. Returns the manifest as JSON. No `particle:host/*` imports needed — the host wires only standard wasi:*.
+**Phase 5: manifest-extract (particle-introspect.wasm).** The orchestrator instantiates `particle-introspect.wasm` with `bundle.js` mounted at `/particle/bundle.js`. The component registers JS-level no-op stubs for every `particle:*` module specifier (so the bundle's `import { credentials } from "@partite-ai/particle-credentials"` resolves without ever crossing the WIT boundary), evaluates the bundle, reads `default` export, validates structure, validates each `inputSchema` against the JSON Schema meta-schema, cross-references declared capabilities against imports actually used. Returns the manifest as JSON. No `particle:host/*` imports needed — the host wires only standard wasi:*.
 
 Cache key: SHA-256 of bundle.js.
 
@@ -697,7 +697,7 @@ particle build failed: typecheck
 
 ```
 particle build failed: manifest-extract
-  Particlefile.ts: imports "particle:credentials" but no credentials are declared.
+  Particlefile.ts: imports "@partite-ai/particle-credentials" but no credentials are declared.
   Add to your manifest:
     capabilities: { credentials: { /* ... */ } }
 ```
@@ -714,7 +714,7 @@ This section describes what happens *inside* the runtime when a particle is load
 
 1. **Load.** Runtime image is instantiated. The host wires imports:
    - `wasi:filesystem` → virtual FS backed by the particle tarball, mounted at `/particle/`
-   - `particle:credentials`, `particle:oauth`, `particle:signing`, `particle:kv` → host-provided implementations
+   - `@partite-ai/particle-credentials`, `@partite-ai/particle-oauth`, `@partite-ai/particle-signing`, `@partite-ai/particle-kv` → host-provided implementations
    - `wasi:cli/environment` → host-provided impl that filters env vars per the manifest
    - `wasi:http` → host implementation that consults HTTPPolicy
    - `wasi:sockets` → host implementation that consults SocketsPolicy (deny-all when not declared)
@@ -927,7 +927,7 @@ my_hmac: {
 **Runtime:**
 
 ```js
-import { signing } from "particle:signing";
+import { signing } from "@partite-ai/particle-signing";
 
 const data = new TextEncoder().encode(payload);
 const signature = await signing.sign("my_hmac", data);
@@ -952,7 +952,7 @@ For cases none of the above cover. Setup shows an explicit warning:
 ```
 
 ```js
-import { credentials } from "particle:credentials";
+import { credentials } from "@partite-ai/particle-credentials";
 const value = await credentials.getRaw("my_raw_secret");   // actual string
 ```
 
@@ -964,7 +964,7 @@ The fetcher is a JS function provided by the runtime — a wrapper around standa
 
 ```js
 // What the user imports:
-import { credentials } from "particle:credentials";
+import { credentials } from "@partite-ai/particle-credentials";
 
 // API exposed:
 credentials.fetcher(name)   // → async (url, init?) => Response (matches fetch())

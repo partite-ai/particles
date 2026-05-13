@@ -63,13 +63,13 @@ func TestScanHappyPath(t *testing.T) {
 	fsys := mapfs(map[string]string{
 		"Particlefile.ts": `
 			import yaml from "npm:yaml@^2.3.0";
-			import { credentials } from "particle:credentials";
+			import { credentials } from "@partite-ai/particle-credentials";
 			import parse from "./tools/parse.ts";
 			import _ from "npm:@scope/utils@1.0.0/sub";
 			console.log(yaml, credentials, parse, _);
 		`,
 		"tools/parse.ts": `
-			import { kv } from "particle:kv";
+			import { kv } from "@partite-ai/particle-kv";
 			export default async ({ input }) => kv.get(input);
 		`,
 	})
@@ -91,7 +91,10 @@ func TestScanHappyPath(t *testing.T) {
 		t.Fatalf("npm deps mismatch:\n got: %#v\nwant: %#v", gotNpm, wantNpm)
 	}
 
-	wantCaps := []string{"credentials", "kv"}
+	// kv is intentionally NOT a capability — every particle gets
+	// the KV store unconditionally. Importing
+	// @partite-ai/particle-kv doesn't show up in Capabilities.
+	wantCaps := []string{"credentials"}
 	if !reflect.DeepEqual(r.Capabilities, wantCaps) {
 		t.Fatalf("capabilities = %v, want %v", r.Capabilities, wantCaps)
 	}
@@ -226,17 +229,34 @@ func TestScanSkipsNodeModules(t *testing.T) {
 
 func TestScanCapabilityDedup(t *testing.T) {
 	fsys := mapfs(map[string]string{
-		"a.ts": `import { credentials } from "particle:credentials";`,
-		"b.ts": `import { credentials } from "particle:credentials";`,
-		"c.ts": `import { kv } from "particle:kv";`,
+		"a.ts": `import { credentials } from "@partite-ai/particle-credentials";`,
+		"b.ts": `import { credentials } from "@partite-ai/particle-credentials";`,
+		"c.ts": `import { oauth } from "@partite-ai/particle-oauth";`,
 	})
 	r, err := Scan(fsys)
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	want := []string{"credentials", "kv"}
+	want := []string{"credentials", "oauth"}
 	if !reflect.DeepEqual(r.Capabilities, want) {
 		t.Fatalf("capabilities = %v, want %v", r.Capabilities, want)
+	}
+}
+
+// Importing @partite-ai/particle-kv does NOT add "kv" to the
+// reported Capabilities — KV is universal, not a capability you
+// declare. Build-info therefore won't suggest the manifest needs
+// a kv entry it can't actually have.
+func TestScanCapabilityKVIsNotRecorded(t *testing.T) {
+	fsys := mapfs(map[string]string{
+		"a.ts": `import { kv } from "@partite-ai/particle-kv";`,
+	})
+	r, err := Scan(fsys)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(r.Capabilities) != 0 {
+		t.Errorf("capabilities = %v, want empty (kv is not a capability)", r.Capabilities)
 	}
 }
 

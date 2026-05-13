@@ -172,13 +172,6 @@ export interface Capabilities {
   sockets?: SocketsCapability;
 
   /**
-   * Per-particle persistent KV store. Presence enables the
-   * `particle:kv` import — value type is intentionally empty
-   * (no per-keyspace policy in v1).
-   */
-  kv?: Record<string, never>;
-
-  /**
    * Credentials the particle needs.
    *
    * `methods` lists the alternative authentication methods the

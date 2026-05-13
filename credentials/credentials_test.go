@@ -66,6 +66,16 @@ func (s *fakeStore) Put(_ context.Context, particle, name string, meta Metadata,
 		s.byName = map[[2]string]*fakeRecord{}
 		s.byID = map[[2]string]*fakeRecord{}
 	}
+	// Evict any other credential for this particle so the
+	// "one credential per particle" invariant matches the
+	// contract real stores enforce.
+	for k, rec := range s.byName {
+		if k[0] != particle || k[1] == name {
+			continue
+		}
+		delete(s.byName, k)
+		delete(s.byID, [2]string{particle, rec.id})
+	}
 	rec, ok := s.byName[[2]string{particle, name}]
 	if !ok {
 		rec = &fakeRecord{id: "id-" + name, name: name, meta: meta, secrets: map[SecretRole][]byte{}}
@@ -78,6 +88,19 @@ func (s *fakeStore) Put(_ context.Context, particle, name string, meta Metadata,
 		rec.secrets[sec.Role] = append([]byte(nil), sec.Value...)
 	}
 	return Descriptor{ID: rec.id, Name: rec.name, Meta: rec.meta}, nil
+}
+
+func (s *fakeStore) ConfiguredMethod(_ context.Context, particle string) (string, error) {
+	best := ""
+	for k := range s.byName {
+		if k[0] != particle {
+			continue
+		}
+		if best == "" || k[1] < best {
+			best = k[1]
+		}
+	}
+	return best, nil
 }
 
 func (s *fakeStore) Delete(_ context.Context, particle, id string) error {

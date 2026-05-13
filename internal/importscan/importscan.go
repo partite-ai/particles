@@ -3,7 +3,7 @@
 // files using esbuild as a parser.
 //
 // Output: the npm: dep requests (name + version range + optional subpath),
-// the particle:* capabilities used, and structured errors for the four
+// the @partite-ai/particle-* capabilities used, and structured errors for the four
 // disallowed forms (bare specifier, npm: without version, computed import,
 // local import that escapes the source tree).
 //
@@ -73,10 +73,19 @@ func (e Error) Error() string {
 
 // Result is what Scan produces.
 type Result struct {
-	NpmDeps      []NpmSpec
-	Capabilities []string // sorted, unique (e.g. "credentials", "kv")
-	Locals       []LocalImport
-	Errors       []Error
+	NpmDeps []NpmSpec
+
+	// Capabilities is the sorted set of host-capability modules
+	// the source imports — i.e., the @partite-ai/particle-*
+	// modules whose use must be matched by a manifest
+	// declaration. `kv` is intentionally NOT recorded here: every
+	// particle gets a KV store unconditionally, so importing
+	// @partite-ai/particle-kv doesn't imply any manifest
+	// declaration.
+	Capabilities []string
+
+	Locals []LocalImport
+	Errors []Error
 }
 
 // Scan walks fsys, parses every JS/TS file, and returns the import inventory.
@@ -239,6 +248,14 @@ func loaderForExt(ext string) api.Loader {
 	}
 }
 
+// hostPackagePrefix is the npm-style scope+prefix the host
+// reserves for its capability modules. A particle reaches a host
+// capability with `import { kv } from "@partite-ai/particle-kv"`
+// (etc.) — the bundle leaves these external; the runtime
+// resolves them against its WIT-imported `particle:host/<cap>`
+// interfaces via a JS-side shim.
+const hostPackagePrefix = "@partite-ai/particle-"
+
 // -----------------------------------------------------------------------------
 // classification
 // -----------------------------------------------------------------------------
@@ -281,8 +298,17 @@ func classifyImport(
 			Importer:     importer,
 		})
 
-	case strings.HasPrefix(p, "particle:"):
-		seenCap[strings.TrimPrefix(p, "particle:")] = struct{}{}
+	case strings.HasPrefix(p, hostPackagePrefix):
+		cap := strings.TrimPrefix(p, hostPackagePrefix)
+		// kv is universal — every particle gets the per-particle
+		// KV store unconditionally, so importing it doesn't
+		// imply any manifest declaration. Recording it here
+		// would misleadingly suggest it's a capability the
+		// manifest needs to grant.
+		if cap == "kv" {
+			return
+		}
+		seenCap[cap] = struct{}{}
 
 	case strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../") || strings.HasPrefix(p, "/"):
 		// Resolve against the importer's directory using forward-slash
@@ -313,7 +339,7 @@ func classifyImport(
 	case strings.Contains(p, ":"):
 		r.Errors = append(r.Errors, Error{
 			Kind:    ErrUnknownPrefix,
-			Message: fmt.Sprintf("unsupported import scheme: %q (only npm:, particle:, ./, /)", p),
+			Message: fmt.Sprintf("unsupported import scheme: %q (only npm:, %s*, ./, /)", p, hostPackagePrefix),
 			File:    importer,
 		})
 

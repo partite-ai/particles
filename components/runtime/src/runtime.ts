@@ -22,7 +22,7 @@
 // bundle. It registers the user-facing `particle:*` JS modules
 // (credentials, oauth, signing, kv) by wrapping the WIT-imported
 // `particle:host/*@0.1.0` modules — without this, a bundle that
-// `import`s `particle:credentials` errors out at load time.
+// `import`s `@partite-ai/particle-credentials` errors out at load time.
 import "./host-shim";
 
 // -----------------------------------------------------------------------------

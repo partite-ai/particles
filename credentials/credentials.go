@@ -82,23 +82,29 @@ type Store interface {
 	// particle's namespace.
 	List(ctx context.Context, particle string) ([]ListEntry, error)
 
-	// Put creates or replaces an entry's metadata atomically
-	// with zero or more secrets.
+	// Put sets the particle's credential.
 	//
-	// Behavior:
-	//   - If `name` does not exist in the particle's namespace,
-	//     a fresh ID is generated and the entry is created with
-	//     `meta` and only the listed `secrets` set.
-	//   - If `name` already exists, the existing ID is preserved.
-	//     `meta` replaces the existing metadata. Secrets named
-	//     in `secrets` replace any prior values; secrets NOT
-	//     listed are preserved untouched.
+	// Each particle has at most one credential at any time —
+	// Put enforces that invariant atomically: any existing
+	// credential for `particle` under a name OTHER than `name` is
+	// removed in the same transaction as the new write, so
+	// readers never observe two credentials for one particle.
+	// Used both for first-time setup and for switching auth
+	// methods (e.g., during Reconfigure).
 	//
-	// All writes apply atomically — readers see all-or-nothing.
-	// This is the path for new-entry setup ("metadata + every
-	// secret at once") and for OAuth refresh ("metadata with
-	// new ExpiresAt + new access token, leave refresh token
-	// alone").
+	// Behavior when `name` already exists for the particle:
+	//   - The existing ID is preserved (no churn for downstream
+	//     callers that captured a Descriptor).
+	//   - `meta` replaces the existing metadata.
+	//   - Secrets named in `secrets` replace any prior values;
+	//     secrets NOT listed are preserved untouched. This is
+	//     what lets OAuth refresh write a new access token and
+	//     ExpiresAt while leaving the refresh token in place.
+	//
+	// When `name` is a different name than the particle's
+	// existing credential (the method-switch case), the prior
+	// credential and all of its secrets are deleted and a fresh
+	// entry is created under `name`.
 	//
 	// Returns the resulting descriptor.
 	Put(ctx context.Context, particle, name string, meta Metadata, secrets ...Secret) (Descriptor, error)
@@ -106,6 +112,19 @@ type Store interface {
 	// Delete removes the entire entry — metadata and every
 	// secret. Idempotent: returns nil if no such entry existed.
 	Delete(ctx context.Context, particle, id string) error
+
+	// ConfiguredMethod returns the name of the credential
+	// currently stored for the particle, or "" when none is. The
+	// store enforces "at most one credential per particle" via
+	// Put, so the answer is unambiguous; implementations should
+	// still be deterministic (smallest name wins) in case the
+	// invariant is ever broken by manual DB editing.
+	//
+	// Used to drive the "which authentication method is
+	// configured?" question — the answer the runtime surfaces
+	// to particles via getConfiguredMethod() and the CLI shows
+	// in `particle list`.
+	ConfiguredMethod(ctx context.Context, particle string) (string, error)
 
 	// -------- secret-level operations --------
 	//

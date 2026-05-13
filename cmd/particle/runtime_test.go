@@ -118,6 +118,3 @@ func (r *errReg) Get(context.Context, string, string) (registry.Entry, error) {
 }
 func (r *errReg) Put(context.Context, string, string, fs.FS) error { panic("unused") }
 func (r *errReg) Delete(context.Context, string, string) error      { panic("unused") }
-func (r *errReg) SetSelectedAuthenticationMethod(context.Context, string, string) error {
-	panic("unused")
-}

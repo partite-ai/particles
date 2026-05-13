@@ -30,6 +30,7 @@ import (
 	"io/fs"
 	"testing/fstest"
 
+	"github.com/partite-ai/particle/internal/semver"
 	"github.com/partite-ai/particle/registry"
 )
 
@@ -72,43 +73,29 @@ CREATE TABLE IF NOT EXISTS particle_registry_files (
   data    BLOB NOT NULL,
   PRIMARY KEY (name, version, path)
 );
--- Per-particle-name configuration. Credentials are stored
--- per-name in credentials.Store (not per-version), so the
--- chosen authentication method is shared across every
--- registered version of the same particle.
-CREATE TABLE IF NOT EXISTS particle_settings (
-  name                            TEXT PRIMARY KEY,
-  selected_authentication_method  TEXT
-);
 `
 
 func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("registry/sqlite: migrate: %w", err)
 	}
-	// Backfill: an earlier schema kept selected_method on
-	// particle_registry (per-(name,version)). The column has
-	// since moved to particle_settings (per-name). Hoist any
-	// stale values across, then drop the old column to keep the
-	// schema honest.
+	// Drop the legacy per-name selection table. Its contents
+	// are already mirrored in the credentials store — the
+	// selected method is now derived from which credential row
+	// exists per particle.
+	if _, err := s.db.ExecContext(ctx,
+		`DROP TABLE IF EXISTS particle_settings`); err != nil {
+		return fmt.Errorf("registry/sqlite: drop particle_settings: %w", err)
+	}
+	// An even-older schema kept selected_method on
+	// particle_registry (per-(name, version)). The column has
+	// been unused since the selection moved out of the registry
+	// entirely — drop it if it still lingers.
 	hasOld, err := s.columnExists(ctx, "particle_registry", "selected_method")
 	if err != nil {
 		return fmt.Errorf("registry/sqlite: probe legacy column: %w", err)
 	}
 	if hasOld {
-		// Pick any non-null per-name value (`MAX` over text picks
-		// the lexicographically-greatest, which is good enough
-		// — the old per-version selection is already losing
-		// information by collapsing). Skip NULL with WHERE.
-		if _, err := s.db.ExecContext(ctx, `
-			INSERT OR IGNORE INTO particle_settings (name, selected_authentication_method)
-			SELECT name, MAX(selected_method)
-			FROM particle_registry
-			WHERE selected_method IS NOT NULL
-			GROUP BY name
-		`); err != nil {
-			return fmt.Errorf("registry/sqlite: migrate selected_method: %w", err)
-		}
 		if _, err := s.db.ExecContext(ctx,
 			`ALTER TABLE particle_registry DROP COLUMN selected_method`); err != nil {
 			return fmt.Errorf("registry/sqlite: drop legacy column: %w", err)
@@ -134,6 +121,9 @@ func (s *Store) Put(ctx context.Context, name, version string, particle fs.FS) e
 	if name == "" || version == "" {
 		return fmt.Errorf("registry/sqlite: Put requires non-empty name and version")
 	}
+	if !semver.IsValid(version) {
+		return fmt.Errorf("registry/sqlite: Put: version %q is not valid semver (e.g. \"1.2.3\", \"0.1.0-rc.1\")", version)
+	}
 	if particle == nil {
 		return fmt.Errorf("registry/sqlite: Put requires a non-nil FS")
 	}
@@ -152,10 +142,6 @@ func (s *Store) Put(ctx context.Context, name, version string, particle fs.FS) e
 		name, version); err != nil {
 		return fmt.Errorf("registry/sqlite: Put: clear files: %w", err)
 	}
-	// Authentication-method selection is per-name (see
-	// particle_settings) so Put doesn't have to do anything
-	// special to preserve it across re-Puts. The plain INSERT
-	// is fine — particle_registry only carries identity here.
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO particle_registry (name, version) VALUES (?, ?)
 		 ON CONFLICT(name, version) DO NOTHING`,
@@ -197,9 +183,7 @@ func (s *Store) Put(ctx context.Context, name, version string, particle fs.FS) e
 }
 
 // Get returns the registered entry for (name, version), with
-// the FS reconstructed from rows. The SelectedAuthenticationMethod
-// comes from the per-name particle_settings table; the same value
-// applies to every version of the same particle.
+// the FS reconstructed from rows.
 func (s *Store) Get(ctx context.Context, name, version string) (registry.Entry, error) {
 	var exists int
 	err := s.db.QueryRowContext(ctx,
@@ -210,13 +194,6 @@ func (s *Store) Get(ctx context.Context, name, version string) (registry.Entry, 
 	}
 	if err != nil {
 		return registry.Entry{}, fmt.Errorf("registry/sqlite: Get: %w", err)
-	}
-
-	var selected sql.NullString
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT selected_authentication_method FROM particle_settings WHERE name = ?`,
-		name).Scan(&selected); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return registry.Entry{}, fmt.Errorf("registry/sqlite: Get: settings: %w", err)
 	}
 
 	rows, err := s.db.QueryContext(ctx,
@@ -240,65 +217,16 @@ func (s *Store) Get(ctx context.Context, name, version string) (registry.Entry, 
 		return registry.Entry{}, fmt.Errorf("registry/sqlite: Get: rows: %w", err)
 	}
 	return registry.Entry{
-		Name:                         name,
-		Version:                      version,
-		Particle:                     mapFS,
-		SelectedAuthenticationMethod: selected.String,
+		Name:     name,
+		Version:  version,
+		Particle: mapFS,
 	}, nil
 }
 
-// SetSelectedAuthenticationMethod records (or clears, on empty
-// input) the credential method the user picked at setup. The
-// selection is per-particle-name — every version of the same
-// particle reads the same value back via Get.
-//
-// Returns ErrNotFound when the particle name has no registered
-// version. (The selection is per-name, but it's not meaningful
-// without at least one registered artifact to apply to — and
-// rejecting catches typos at the API boundary.)
-func (s *Store) SetSelectedAuthenticationMethod(ctx context.Context, name, method string) error {
-	var exists int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT 1 FROM particle_registry WHERE name = ? LIMIT 1`, name).Scan(&exists)
-	if errors.Is(err, sql.ErrNoRows) {
-		return registry.ErrNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("registry/sqlite: SetSelectedAuthenticationMethod: lookup: %w", err)
-	}
-
-	if method == "" {
-		// Clearing: collapse to a delete so an unset
-		// particle reads back the same way as a never-set one.
-		if _, err := s.db.ExecContext(ctx,
-			`DELETE FROM particle_settings WHERE name = ?`, name); err != nil {
-			return fmt.Errorf("registry/sqlite: SetSelectedAuthenticationMethod: clear: %w", err)
-		}
-		return nil
-	}
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO particle_settings (name, selected_authentication_method)
-		 VALUES (?, ?)
-		 ON CONFLICT(name) DO UPDATE SET selected_authentication_method = excluded.selected_authentication_method`,
-		name, method); err != nil {
-		return fmt.Errorf("registry/sqlite: SetSelectedAuthenticationMethod: %w", err)
-	}
-	return nil
-}
-
-// List returns every (name, version) pair plus the per-name
-// selected authentication method, sorted by (name, version).
-//
-// LEFT JOIN against particle_settings so a particle without a
-// configured method just gets an empty string — saves a per-row
-// follow-up query in the CLI's list command.
+// List returns every (name, version) pair, sorted.
 func (s *Store) List(ctx context.Context) ([]registry.ListEntry, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT pr.name, pr.version, ps.selected_authentication_method
-		FROM particle_registry pr
-		LEFT JOIN particle_settings ps ON ps.name = pr.name
-		ORDER BY pr.name, pr.version
-	`)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT name, version FROM particle_registry ORDER BY name, version`)
 	if err != nil {
 		return nil, fmt.Errorf("registry/sqlite: List: %w", err)
 	}
@@ -307,11 +235,9 @@ func (s *Store) List(ctx context.Context) ([]registry.ListEntry, error) {
 	var out []registry.ListEntry
 	for rows.Next() {
 		var le registry.ListEntry
-		var sel sql.NullString
-		if err := rows.Scan(&le.Name, &le.Version, &sel); err != nil {
+		if err := rows.Scan(&le.Name, &le.Version); err != nil {
 			return nil, fmt.Errorf("registry/sqlite: List scan: %w", err)
 		}
-		le.SelectedAuthenticationMethod = sel.String
 		out = append(out, le)
 	}
 	if err := rows.Err(); err != nil {
@@ -322,13 +248,6 @@ func (s *Store) List(ctx context.Context) ([]registry.ListEntry, error) {
 
 // Delete removes the entry — index row and every file row.
 // Idempotent.
-//
-// When this removes the last version of a particle, the per-name
-// selection in particle_settings is cleared too: an orphan setting
-// would either confuse a re-import (with a now-stale method
-// choice) or be invisible deadwood. Deletes that leave other
-// versions in place leave the selection alone — every version
-// shares it.
 func (s *Store) Delete(ctx context.Context, name, version string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -345,22 +264,6 @@ func (s *Store) Delete(ctx context.Context, name, version string) error {
 		`DELETE FROM particle_registry WHERE name = ? AND version = ?`,
 		name, version); err != nil {
 		return fmt.Errorf("registry/sqlite: Delete: index: %w", err)
-	}
-
-	// Cleanup orphan settings only when no version of this name
-	// remains. This is a same-tx check so a concurrent Put on
-	// another version can't slip in between count and delete.
-	var remaining int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM particle_registry WHERE name = ?`,
-		name).Scan(&remaining); err != nil {
-		return fmt.Errorf("registry/sqlite: Delete: count: %w", err)
-	}
-	if remaining == 0 {
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM particle_settings WHERE name = ?`, name); err != nil {
-			return fmt.Errorf("registry/sqlite: Delete: settings: %w", err)
-		}
 	}
 	return tx.Commit()
 }

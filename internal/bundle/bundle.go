@@ -11,7 +11,7 @@
 //     against the FS's node_modules tree
 //   - resolves bare specifiers by walking node_modules / handling
 //     package.json exports / main / module fields
-//   - leaves `particle:*` (and any caller-supplied externals) untouched
+//   - leaves `@partite-ai/particle-*` (and any caller-supplied externals) untouched
 //
 // The whole resolution + load path runs against `fs.FS`. esbuild's default
 // disk-touching resolver and loader are bypassed entirely — every file
@@ -53,7 +53,7 @@ type Options struct {
 	// Minify shrinks the output (whitespace, identifiers, syntax).
 	Minify bool
 
-	// Externals are import paths to leave untouched. `particle:*` is always
+	// Externals are import paths to leave untouched. `@partite-ai/particle-*` is always
 	// added. Each entry can be an exact specifier ("foo") or a `prefix:*`
 	// glob ("node:*").
 	Externals []string
@@ -208,7 +208,7 @@ func (r *fsResolver) plugin() api.Plugin {
 func (r *fsResolver) onResolve(args api.OnResolveArgs) (api.OnResolveResult, error) {
 	spec := args.Path
 
-	// Externals (caller-supplied + the always-on particle:*).
+	// Externals (caller-supplied + the always-on @partite-ai/particle-*).
 	if r.matchesExternal(spec) {
 		return api.OnResolveResult{External: true}, nil
 	}
@@ -483,7 +483,7 @@ func (r *fsResolver) readPackageJSON(pkgDir string) (*packageJSON, bool) {
 }
 
 func (r *fsResolver) matchesExternal(spec string) bool {
-	if strings.HasPrefix(spec, "particle:") {
+	if strings.HasPrefix(spec, "@partite-ai/particle-") {
 		return true
 	}
 	for _, ext := range r.externals {

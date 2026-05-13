@@ -69,7 +69,7 @@ func runReconfigure(cmd *cobra.Command, name, dbPath string) error {
 		return fmt.Errorf("reconfigure needs an interactive terminal")
 	}
 
-	entry, err := importer.Reconfigure(ctx, name, importer.Options{
+	entry, method, err := importer.Reconfigure(ctx, name, importer.Options{
 		Registry:    reg,
 		Credentials: credStore,
 		Prompter:    stdio,
@@ -77,7 +77,6 @@ func runReconfigure(cmd *cobra.Command, name, dbPath string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "reconfigured %s — using %s\n",
-		entry.Name, entry.SelectedAuthenticationMethod)
+	fmt.Fprintf(cmd.OutOrStdout(), "reconfigured %s — using %s\n", entry.Name, method)
 	return nil
 }

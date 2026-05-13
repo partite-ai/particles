@@ -35,10 +35,16 @@ type Options struct {
 	// declares none. Required otherwise.
 	Credentials credentials.Store
 
-	// Prompter drives the per-credential setup conversation.
-	// Required when the manifest declares any credentials. Use
-	// [NewStdioPrompter] for the standard terminal experience.
+	// Prompter drives the per-credential setup conversation and
+	// the permission-confirmation prompt (see [PermissionMode]).
+	// Required whenever Import will ask the user a question.
 	Prompter Prompter
+
+	// PermissionMode controls when the capability-confirmation
+	// prompt fires. Default ([PermissionAuto]) prompts only when
+	// the manifest's capabilities differ from the previously-
+	// registered version (or on a fresh install).
+	PermissionMode PermissionMode
 }
 
 // Prompter is the surface importer uses to ask the user for
@@ -104,7 +110,13 @@ func Import(ctx context.Context, particleFS fs.FS, opts Options) (registry.Entry
 		return registry.Entry{}, err
 	}
 
-	var selectedMethod string
+	// Confirm declared capabilities before any credential setup
+	// — a declined permission shouldn't drag the user through an
+	// OAuth flow first.
+	if err := confirmPermissions(ctx, opts, manifest); err != nil {
+		return registry.Entry{}, err
+	}
+
 	if creds != nil && len(creds.Methods) > 0 {
 		if opts.Credentials == nil {
 			return registry.Entry{}, errors.New("importer: particle declares credentials, but no credentials store was provided")
@@ -112,39 +124,41 @@ func Import(ctx context.Context, particleFS fs.FS, opts Options) (registry.Entry
 		if opts.Prompter == nil {
 			return registry.Entry{}, errors.New("importer: particle declares credentials, but no Prompter was provided")
 		}
-		method, err := setupCredentials(ctx, opts, manifest.Name, creds)
-		if err != nil {
+		// The selected method is implicit in the credentials store
+		// (the unique credential row's name IS the selected method),
+		// so we don't need to record it separately. setupCredentials
+		// still runs for the side effects: prompting, OAuth flow,
+		// writing the credential row.
+		if _, err := setupCredentials(ctx, opts, manifest.Name, creds); err != nil {
 			return registry.Entry{}, err
 		}
-		selectedMethod = method
 	}
 
 	if err := opts.Registry.Put(ctx, manifest.Name, manifest.Version, particleFS); err != nil {
 		return registry.Entry{}, fmt.Errorf("register %s@%s: %w", manifest.Name, manifest.Version, err)
 	}
-	if selectedMethod != "" {
-		if err := opts.Registry.SetSelectedAuthenticationMethod(ctx, manifest.Name, selectedMethod); err != nil {
-			return registry.Entry{}, fmt.Errorf("record selected method: %w", err)
-		}
-	}
 	return registry.Entry{
-		Name:           manifest.Name,
-		Version:        manifest.Version,
-		Particle:       particleFS,
-		SelectedAuthenticationMethod: selectedMethod,
+		Name:     manifest.Name,
+		Version:  manifest.Version,
+		Particle: particleFS,
 	}, nil
 }
 
 // Reconfigure re-runs credential setup against an already-registered
 // particle, letting the user pick a (possibly different)
-// authentication method and provide fresh values.
+// authentication method and provide fresh values. Returns the
+// registry entry plus the name of the method the user chose —
+// callers don't need to round-trip back to [credentials.Store.ConfiguredMethod]
+// to learn what was just configured.
 //
 // Identity is per-particle-name — credentials live in
-// [credentials.Store] keyed by name only, and the
-// authentication-method selection lives on the per-name
-// [registry.Registry] settings. The version parameter that was
-// here previously didn't match this model (it implied credentials
-// were per-(name, version), which they aren't).
+// [credentials.Store] keyed by name only. The selected method is
+// implicit: it's the name of the (single) credential row stored
+// for the particle. Picking a different method calls into
+// [credentials.Store.Put], which atomically evicts any other
+// credential for the particle in the same transaction as the new
+// write — readers never observe two credentials for one
+// particle.
 //
 // To pick which manifest's method declarations to walk,
 // Reconfigure resolves the highest semver-registered version of
@@ -152,86 +166,57 @@ func Import(ctx context.Context, particleFS fs.FS, opts Options) (registry.Entry
 // methods have changed across versions get the most recent
 // view, which is the one the user is most likely thinking about.
 //
-// Behavior:
-//   - Always prompts for the method (no idempotent skip).
-//   - On a method change, the previously-configured credential is
-//     removed only AFTER the new one writes successfully — a setup
-//     error mid-flow leaves the prior state intact.
-//   - The registry's SelectedAuthenticationMethod is updated last,
-//     so a crash after credential setup but before that write
-//     leaves the system in a self-correcting state (re-run picks
-//     up the new method on the next reconfigure).
-//
 // Errors when the particle isn't registered, declares no
 // credentials, or the chosen method's setup fails.
-func Reconfigure(ctx context.Context, name string, opts Options) (registry.Entry, error) {
+func Reconfigure(ctx context.Context, name string, opts Options) (registry.Entry, string, error) {
 	if opts.Registry == nil {
-		return registry.Entry{}, errors.New("importer: Registry is required")
+		return registry.Entry{}, "", errors.New("importer: Registry is required")
 	}
 	if opts.Credentials == nil {
-		return registry.Entry{}, errors.New("importer: Credentials store is required")
+		return registry.Entry{}, "", errors.New("importer: Credentials store is required")
 	}
 	if opts.Prompter == nil {
-		return registry.Entry{}, errors.New("importer: Prompter is required")
+		return registry.Entry{}, "", errors.New("importer: Prompter is required")
 	}
 
 	version, err := highestRegisteredVersion(ctx, opts.Registry, name)
 	if err != nil {
-		return registry.Entry{}, err
+		return registry.Entry{}, "", err
 	}
 	entry, err := opts.Registry.Get(ctx, name, version)
 	if err != nil {
-		return registry.Entry{}, fmt.Errorf("registry.Get %s@%s: %w", name, version, err)
+		return registry.Entry{}, "", fmt.Errorf("registry.Get %s@%s: %w", name, version, err)
 	}
 
 	manifest, err := readManifest(entry.Particle)
 	if err != nil {
-		return registry.Entry{}, err
+		return registry.Entry{}, "", err
 	}
 	creds, err := parseCredentialsCapability(manifest.CapabilitiesRaw)
 	if err != nil {
-		return registry.Entry{}, err
+		return registry.Entry{}, "", err
 	}
 	if creds == nil || len(creds.Methods) == 0 {
-		return registry.Entry{}, fmt.Errorf("%s@%s declares no credentials to configure", name, version)
+		return registry.Entry{}, "", fmt.Errorf("%s@%s declares no credentials to configure", name, version)
 	}
 
-	previous := entry.SelectedAuthenticationMethod
+	previous, err := opts.Credentials.ConfiguredMethod(ctx, name)
+	if err != nil {
+		return registry.Entry{}, "", fmt.Errorf("look up current method: %w", err)
+	}
 	if previous != "" {
 		opts.Prompter.Info(fmt.Sprintf("Currently configured: %s", previous))
 	}
 
 	chosen, err := chooseAuthMethod(opts.Prompter, creds.Methods)
 	if err != nil {
-		return registry.Entry{}, err
+		return registry.Entry{}, "", err
 	}
 	opts.Prompter.Info(fmt.Sprintf("→ %s (%s) — %s", chosen.Name, chosen.Type, chosen.Description))
 	if err := dispatchSetup(ctx, opts, name, chosen); err != nil {
-		return registry.Entry{}, err
+		return registry.Entry{}, "", err
 	}
-
-	// Drop the previous credential only on success of the new
-	// one, and only if it's a different method — otherwise the
-	// new setup just overwrote it in place.
-	if previous != "" && previous != chosen.Name {
-		oldDesc, err := opts.Credentials.GetByName(ctx, name, previous)
-		switch {
-		case err == nil:
-			if err := opts.Credentials.Delete(ctx, name, oldDesc.ID); err != nil {
-				return registry.Entry{}, fmt.Errorf("delete previous credential %s: %w", previous, err)
-			}
-		case errors.Is(err, credentials.ErrNotFound):
-			// Already gone; nothing to clean up.
-		default:
-			return registry.Entry{}, fmt.Errorf("look up previous credential %s: %w", previous, err)
-		}
-	}
-
-	if err := opts.Registry.SetSelectedAuthenticationMethod(ctx, name, chosen.Name); err != nil {
-		return registry.Entry{}, fmt.Errorf("record selected method: %w", err)
-	}
-	entry.SelectedAuthenticationMethod = chosen.Name
-	return entry, nil
+	return entry, chosen.Name, nil
 }
 
 // highestRegisteredVersion returns the highest semver-registered
@@ -343,6 +328,11 @@ func chooseAuthMethod(p Prompter, methods []credentialDecl) (credentialDecl, err
 	return credentialDecl{}, fmt.Errorf("internal: chosen method %q not found", chosen)
 }
 
+// dispatchSetup routes the setup of a single declared method to
+// the per-type helper. Each helper writes via Store.Put, which
+// atomically evicts any other credential for the particle — so
+// callers don't have to thread an "old name" through to handle
+// the Reconfigure method-switch case.
 func dispatchSetup(ctx context.Context, opts Options, particle string, decl credentialDecl) error {
 	switch decl.Type {
 	case "basic":

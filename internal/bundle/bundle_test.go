@@ -33,7 +33,7 @@ func TestBundleHappyPath(t *testing.T) {
 	fsys := mapfs(map[string]string{
 		"src/Particlefile.ts": `
 import yaml from "npm:yaml@^2.3.0";
-import { credentials } from "particle:credentials";
+import { credentials } from "@partite-ai/particle-credentials";
 import { greet } from "./greet.ts";
 
 export default {
@@ -67,8 +67,8 @@ export default {
 	if !strings.Contains(js, "PARSED:") {
 		t.Errorf("expected bundled yaml content (PARSED: literal); got:\n%s", js)
 	}
-	if !strings.Contains(js, `"particle:credentials"`) {
-		t.Errorf("expected `particle:credentials` to remain externalized; got:\n%s", js)
+	if !strings.Contains(js, `"@partite-ai/particle-credentials"`) {
+		t.Errorf("expected `@partite-ai/particle-credentials` to remain externalized; got:\n%s", js)
 	}
 	if !strings.Contains(js, `"hello"`) {
 		t.Errorf("expected local greet() string to be inlined; got:\n%s", js)
@@ -123,8 +123,8 @@ console.log(x);
 func TestBundleParticleExternalized(t *testing.T) {
 	fsys := mapfs(map[string]string{
 		"src/Particlefile.ts": `
-import { credentials } from "particle:credentials";
-import { kv } from "particle:kv";
+import { credentials } from "@partite-ai/particle-credentials";
+import { kv } from "@partite-ai/particle-kv";
 console.log(credentials, kv);
 `,
 		// MapFS needs at least one node_modules entry or fs.WalkDir won't
@@ -140,8 +140,8 @@ console.log(credentials, kv);
 		t.Fatalf("Bundle: %v", err)
 	}
 	js := string(r.JS)
-	if !strings.Contains(js, `"particle:credentials"`) ||
-		!strings.Contains(js, `"particle:kv"`) {
+	if !strings.Contains(js, `"@partite-ai/particle-credentials"`) ||
+		!strings.Contains(js, `"@partite-ai/particle-kv"`) {
 		t.Errorf("particle:* should pass through as imports; got:\n%s", js)
 	}
 }

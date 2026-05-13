@@ -1,0 +1,24 @@
+{
+  "name": "@partite-ai/particle-oauth",
+  "version": "0.1.0",
+  "description": "TypeScript types for `@partite-ai/particle-oauth` — OAuth-specific operations (refresh) for Particle particles.",
+  "license": "MIT",
+  "homepage": "https://github.com/partite-ai/particle",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/partite-ai/particle.git",
+    "directory": "packages/particle-oauth"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "keywords": ["particle", "wasm", "oauth", "credentials", "mcp"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false
+}
