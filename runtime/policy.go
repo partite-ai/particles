@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	httptypes "github.com/partite-ai/wacogo/wasi/http/types"
 
@@ -63,7 +64,22 @@ type httpPolicy struct {
 	store               credentials.Store
 	particle            string
 	declaredCredentials []string
+
+	// refreshAccessToken, when non-nil, lets the bearer-
+	// substitution path proactively rotate an OAuth2 access
+	// token that's within tokenSkew of its ExpiresAt before
+	// putting it on the wire. nil disables the proactive path
+	// (and the particle has to handle refresh-on-401 itself);
+	// see substituteBearer for the failure handling.
+	refreshAccessToken func(ctx context.Context, id string) (credentials.AccessToken, error)
 }
+
+// tokenSkew is how long before an OAuth2 access token's
+// ExpiresAt we'll proactively refresh. Bigger windows waste valid
+// lifetime on early refreshes; smaller windows risk handing a
+// token to the upstream that the clock skew (or network RTT) has
+// already invalidated. 30s is the conventional choice.
+const tokenSkew = 30 * time.Second
 
 // newHTTPPolicy builds the policy for one particle.
 //
@@ -73,12 +89,23 @@ type httpPolicy struct {
 //     authorized; substitution only ever attempts these. nil/empty
 //     → no substitution runs and any placeholder a particle
 //     planted transmits literally.
-func newHTTPPolicy(declared bool, allowedHosts []string, inner httptypes.HTTPDoer, store credentials.Store, particle string, declaredCredentials []string) *httpPolicy {
+//   - refreshAccessToken, when non-nil, enables proactive refresh
+//     of expired bearer tokens before substitution.
+func newHTTPPolicy(
+	declared bool,
+	allowedHosts []string,
+	inner httptypes.HTTPDoer,
+	store credentials.Store,
+	particle string,
+	declaredCredentials []string,
+	refreshAccessToken func(ctx context.Context, id string) (credentials.AccessToken, error),
+) *httpPolicy {
 	p := &httpPolicy{
 		inner:               inner,
 		store:               store,
 		particle:            particle,
 		declaredCredentials: declaredCredentials,
+		refreshAccessToken:  refreshAccessToken,
 	}
 	if declared {
 		// DNS hostnames are case-insensitive; the map lookup
@@ -209,8 +236,35 @@ func (p *httpPolicy) substituteBearer(req *http.Request, id, placeholder string)
 	if err != nil {
 		return fmt.Errorf("substitute %s: decode access token: %w", id, err)
 	}
+	// If the token is within tokenSkew of its ExpiresAt (or
+	// already past it), try to refresh in place. A successful
+	// refresh writes the rotated bundle to the Store; we take
+	// the fresh one returned by the closure directly so we
+	// don't pay for a second decrypt round-trip. On any failure
+	// — refresher down, no refresh token, store rejected the
+	// write — we fall through and substitute the stale token,
+	// putting the request on the wire and letting the upstream's
+	// 401 (if any) be the particle's signal to handle refresh
+	// itself.
+	if p.refreshAccessToken != nil && tokenNeedsRefresh(bundle, time.Now()) {
+		if fresh, err := p.refreshAccessToken(req.Context(), id); err == nil {
+			bundle = fresh
+		}
+	}
 	req.Header.Set("Authorization", "Bearer "+bundle.Token)
 	return nil
+}
+
+// tokenNeedsRefresh reports whether bundle's expiry is within
+// tokenSkew of now (or already past). A zero ExpiresAt means the
+// provider didn't supply one — we have no signal, so we assume
+// the token is valid and let the upstream 401 path handle a
+// stale token if it shows up.
+func tokenNeedsRefresh(bundle credentials.AccessToken, now time.Time) bool {
+	if bundle.ExpiresAt.IsZero() {
+		return false
+	}
+	return !bundle.ExpiresAt.After(now.Add(tokenSkew))
 }
 
 func (p *httpPolicy) substituteAPIKey(req *http.Request, id, placeholder string, loc credentials.ApplySpec) error {

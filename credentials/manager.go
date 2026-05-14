@@ -108,6 +108,24 @@ func NewManager(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 // component.
 func (m *Manager) Store() Store { return m.store }
 
+// RotateAccessToken performs an OAuth 2.0 token refresh for the
+// credential identified by (particle, id) and writes the rotated
+// secrets back to the Store. Returns the new access-token bundle
+// (Token + Type + ExpiresAt) so the caller doesn't need a follow-
+// up ReadSecret.
+//
+// Exposed so the wasi:http policy can proactively refresh tokens
+// approaching their ExpiresAt before substituting them into
+// outbound requests — saving each particle's tool code from
+// having to implement a refresh-on-401 retry. Errors come from
+// missing/wrong-type metadata, an empty refresh token, refresher
+// failure, or store write failure; callers decide whether to fail
+// the operation, fall through to the stale token, or surface
+// somewhere else.
+func (m *Manager) RotateAccessToken(ctx context.Context, particle, id string) (AccessToken, error) {
+	return rotateAccessToken(ctx, m.store, m.refresher, particle, id)
+}
+
 // Close releases the host.Component templates for every
 // capability. Existing instances built from the Manager remain
 // callable until each is individually closed; closing the

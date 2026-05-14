@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/partite-ai/particle/credentials"
 	"github.com/partite-ai/particle/credentials/memory"
@@ -44,7 +45,7 @@ func newPolicyWithStore(t *testing.T, particle string, declared ...string) (*htt
 	t.Helper()
 	store := memory.New()
 	rec := &recordingDoer{}
-	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, particle, declared)
+	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, particle, declared, nil)
 	return pol, store, rec
 }
 
@@ -160,6 +161,149 @@ func TestSubstitute_OAuth2_WrongScheme_NotReplaced(t *testing.T) {
 	}
 	if got := rec.got.Header.Get("Authorization"); got != "Basic "+placeholder {
 		t.Errorf("Authorization = %q, expected literal placeholder", got)
+	}
+}
+
+// A token within tokenSkew of expiry gets refreshed in place
+// before substitution. The fresh token's value reaches the wire.
+func TestSubstitute_OAuth2_ExpiredToken_ProactivelyRefreshed(t *testing.T) {
+	store := memory.New()
+	rec := &recordingDoer{}
+
+	stale := credentials.AccessToken{
+		Token:     "stale-token",
+		ExpiresAt: time.Now().Add(-1 * time.Minute), // already expired
+	}.Marshal()
+	desc, _ := store.Put(context.Background(), "p", "gh",
+		credentials.OAuth2Meta{TokenURL: "https://provider.test/token"},
+		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: stale},
+	)
+	placeholder := credentials.PlaceholderPrefix + desc.ID
+
+	refreshCalls := 0
+	refresh := func(_ context.Context, id string) (credentials.AccessToken, error) {
+		refreshCalls++
+		if id != desc.ID {
+			t.Errorf("refresh called with id %q, want %q", id, desc.ID)
+		}
+		return credentials.AccessToken{
+			Token:     "fresh-token",
+			ExpiresAt: time.Now().Add(1 * time.Hour),
+		}, nil
+	}
+	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, "p", []string{"gh"}, refresh)
+
+	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
+		"Authorization": {"Bearer " + placeholder},
+	})
+	if _, err := pol.Do(req); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if refreshCalls != 1 {
+		t.Errorf("refresh called %d times, want 1", refreshCalls)
+	}
+	if got := rec.got.Header.Get("Authorization"); got != "Bearer fresh-token" {
+		t.Errorf("Authorization = %q, want fresh-token", got)
+	}
+}
+
+// A token with plenty of life left doesn't trigger a refresh —
+// we don't waste valid lifetime on early rotation.
+func TestSubstitute_OAuth2_FreshToken_NoRefresh(t *testing.T) {
+	store := memory.New()
+	rec := &recordingDoer{}
+
+	bundle := credentials.AccessToken{
+		Token:     "still-good",
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	}.Marshal()
+	desc, _ := store.Put(context.Background(), "p", "gh",
+		credentials.OAuth2Meta{},
+		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: bundle},
+	)
+	placeholder := credentials.PlaceholderPrefix + desc.ID
+
+	refresh := func(context.Context, string) (credentials.AccessToken, error) {
+		t.Fatal("refresh must not be called for a token outside the skew window")
+		return credentials.AccessToken{}, nil
+	}
+	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, "p", []string{"gh"}, refresh)
+
+	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
+		"Authorization": {"Bearer " + placeholder},
+	})
+	if _, err := pol.Do(req); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if got := rec.got.Header.Get("Authorization"); got != "Bearer still-good" {
+		t.Errorf("Authorization = %q", got)
+	}
+}
+
+// When proactive refresh fails — refresher down, network error,
+// store rejected the write — we fall through and substitute the
+// stale token rather than failing the request. The upstream's
+// 401 (if any) is the particle's signal to call oauth.refresh()
+// and retry; failing here would block requests that might still
+// have worked (provider clock skew, etc).
+func TestSubstitute_OAuth2_RefreshFailure_FallsBackToStale(t *testing.T) {
+	store := memory.New()
+	rec := &recordingDoer{}
+
+	stale := credentials.AccessToken{
+		Token:     "stale-token",
+		ExpiresAt: time.Now().Add(-1 * time.Minute),
+	}.Marshal()
+	desc, _ := store.Put(context.Background(), "p", "gh",
+		credentials.OAuth2Meta{},
+		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: stale},
+	)
+	placeholder := credentials.PlaceholderPrefix + desc.ID
+
+	refresh := func(context.Context, string) (credentials.AccessToken, error) {
+		return credentials.AccessToken{}, errors.New("provider unreachable")
+	}
+	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, "p", []string{"gh"}, refresh)
+
+	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
+		"Authorization": {"Bearer " + placeholder},
+	})
+	if _, err := pol.Do(req); err != nil {
+		t.Fatalf("Do: %v (should have substituted stale token, not failed)", err)
+	}
+	if got := rec.got.Header.Get("Authorization"); got != "Bearer stale-token" {
+		t.Errorf("Authorization = %q, want stale-token fallback", got)
+	}
+}
+
+// A bundle with ExpiresAt zero (provider didn't supply one) is
+// treated as "we have no signal" — no proactive refresh fires,
+// and refresh-on-401 in the particle remains the only path.
+func TestSubstitute_OAuth2_ZeroExpiresAt_NoRefresh(t *testing.T) {
+	store := memory.New()
+	rec := &recordingDoer{}
+
+	bundle := credentials.AccessToken{Token: "no-expiry"}.Marshal() // ExpiresAt is zero
+	desc, _ := store.Put(context.Background(), "p", "gh",
+		credentials.OAuth2Meta{},
+		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: bundle},
+	)
+	placeholder := credentials.PlaceholderPrefix + desc.ID
+
+	refresh := func(context.Context, string) (credentials.AccessToken, error) {
+		t.Fatal("refresh must not fire when ExpiresAt is zero")
+		return credentials.AccessToken{}, nil
+	}
+	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, "p", []string{"gh"}, refresh)
+
+	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
+		"Authorization": {"Bearer " + placeholder},
+	})
+	if _, err := pol.Do(req); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if got := rec.got.Header.Get("Authorization"); got != "Bearer no-expiry" {
+		t.Errorf("Authorization = %q", got)
 	}
 }
 
@@ -402,7 +546,7 @@ func TestSubstitute_SecretMissing_ReturnsError(t *testing.T) {
 func TestSubstitute_DeniedHost_ShortCircuitsBeforeSubstitution(t *testing.T) {
 	store := memory.New()
 	rec := &recordingDoer{}
-	pol := newHTTPPolicy(true, []string{"only.allowed.test"}, rec, store, "p", []string{"k"})
+	pol := newHTTPPolicy(true, []string{"only.allowed.test"}, rec, store, "p", []string{"k"}, nil)
 
 	desc, _ := store.Put(context.Background(), "p", "k",
 		credentials.APIKeyMeta{Location: credentials.ApplySpec{

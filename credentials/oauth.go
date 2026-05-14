@@ -220,13 +220,10 @@ func newOAuthAdapter(store Store, refresher OAuthRefresher, particle string) *oa
 }
 
 // Refresh resolves the credential by name, verifies it's an OAuth2
-// entry, fetches the current refresh token + (optionally) client
-// secret, performs the upstream refresh, and atomically writes the
-// new access token (bundled with its expiry + type) back to the
-// Store via WriteSecrets — without touching metadata. Metadata is
-// static post-setup.
+// entry, and rotates the access token via [rotateAccessToken].
 //
-// Maps to the WIT `result<_, oauth-error>`:
+// Maps the rotation mechanics' errors to the WIT
+// `result<_, oauth-error>`:
 //
 //	credential not found            → not-configured
 //	credential exists but not OAuth2 → not-oauth
@@ -241,61 +238,91 @@ func (a *oauthAdapter) Refresh(ctx context.Context, name string) (gen.Result_Oau
 		}
 		return gen.Result_OauthErrorErr{Value: gen.OauthErrorRefreshFailed{Value: err.Error()}}, nil
 	}
-	meta, ok := desc.Meta.(OAuth2Meta)
-	if !ok {
+	if _, ok := desc.Meta.(OAuth2Meta); !ok {
 		return gen.Result_OauthErrorErr{Value: gen.OauthErrorNotOauth{}}, nil
 	}
-
-	refreshTok, err := a.store.ReadSecret(ctx, a.particle, desc.ID, SecretRoleRefreshToken)
-	if err != nil {
-		// Both ErrNotFound and ErrSecretNotSet collapse to
-		// not-configured here — without a refresh token the
-		// credential isn't usable for refresh, regardless of
-		// which slot is empty.
+	if _, err := rotateAccessToken(ctx, a.store, a.refresher, a.particle, desc.ID); err != nil {
+		// ErrNotFound (and the ErrSecretNotSet that wraps it)
+		// at this layer means the refresh token slot was empty —
+		// the credential isn't usable for refresh.
 		if errors.Is(err, ErrNotFound) {
 			return gen.Result_OauthErrorErr{Value: gen.OauthErrorNotConfigured{}}, nil
 		}
 		return gen.Result_OauthErrorErr{Value: gen.OauthErrorRefreshFailed{Value: err.Error()}}, nil
 	}
+	return gen.Result_OauthErrorOk{}, nil
+}
+
+// rotateAccessToken performs the OAuth 2.0 refresh mechanics for
+// the credential identified by (particle, id):
+//
+//  1. Read the current refresh token + (optionally) client secret.
+//  2. Hand them to the [OAuthRefresher] along with the entry's
+//     metadata.
+//  3. Atomically write the rotated access-token bundle (and the
+//     refresh token, if the provider returned a new one) back via
+//     [Store.WriteSecrets].
+//
+// Returns the new [AccessToken] bundle (Token + Type + ExpiresAt)
+// so callers don't need a follow-up ReadSecret. Plain Go errors —
+// no WIT mapping — so callers can compose this in whichever
+// context they want (the WIT adapter, the wasi:http policy's
+// proactive refresh path, future host integrations).
+//
+// The entry's metadata is read inside (no metadata lookup is
+// required from the caller). The caller is responsible for
+// verifying that the entry IS an OAuth2 credential before
+// calling — if it isn't, rotate returns a clear error pointing
+// at the type mismatch.
+func rotateAccessToken(ctx context.Context, store Store, refresher OAuthRefresher, particle, id string) (AccessToken, error) {
+	desc, err := store.GetByID(ctx, particle, id)
+	if err != nil {
+		return AccessToken{}, fmt.Errorf("rotate: lookup %s: %w", id, err)
+	}
+	meta, ok := desc.Meta.(OAuth2Meta)
+	if !ok {
+		return AccessToken{}, fmt.Errorf("rotate %s: not an oauth2 credential", id)
+	}
+
+	refreshTok, err := store.ReadSecret(ctx, particle, id, SecretRoleRefreshToken)
+	if err != nil {
+		return AccessToken{}, fmt.Errorf("rotate %s: read refresh token: %w", id, err)
+	}
 
 	// Client secret is optional (PKCE flows omit it). Tolerate
 	// ErrSecretNotSet and pass an empty value through.
-	clientSecret, err := a.store.ReadSecret(ctx, a.particle, desc.ID, SecretRoleClientSecret)
+	clientSecret, err := store.ReadSecret(ctx, particle, id, SecretRoleClientSecret)
 	if err != nil && !errors.Is(err, ErrSecretNotSet) {
-		return gen.Result_OauthErrorErr{Value: gen.OauthErrorRefreshFailed{Value: err.Error()}}, nil
+		return AccessToken{}, fmt.Errorf("rotate %s: read client secret: %w", id, err)
 	}
 
-	resp, err := a.refresher.Refresh(ctx, RefreshRequest{
+	resp, err := refresher.Refresh(ctx, RefreshRequest{
 		Meta:         meta,
 		ClientSecret: clientSecret,
 		RefreshToken: refreshTok,
 	})
 	if err != nil {
-		return gen.Result_OauthErrorErr{Value: gen.OauthErrorRefreshFailed{Value: err.Error()}}, nil
+		return AccessToken{}, fmt.Errorf("rotate %s: %w", id, err)
 	}
 	if len(resp.AccessToken) == 0 {
-		return gen.Result_OauthErrorErr{Value: gen.OauthErrorRefreshFailed{Value: "refresher returned empty access token"}}, nil
+		return AccessToken{}, fmt.Errorf("rotate %s: refresher returned empty access token", id)
 	}
 
-	// Bundle the access token with its expiry and type so a
-	// future read recovers everything from the secret alone —
-	// metadata stays untouched.
 	bundle := AccessToken{
 		Token:     string(resp.AccessToken),
 		Type:      resp.TokenType,
 		ExpiresAt: resp.ExpiresAt,
-	}.Marshal()
+	}
 
 	// Atomic secret-only write: rotate the access token bundle,
 	// and — only when the provider rotated — the refresh token.
 	// Client secret and any other secrets stay untouched.
-	secrets := []Secret{{Role: SecretRoleAccessToken, Value: bundle}}
+	secrets := []Secret{{Role: SecretRoleAccessToken, Value: bundle.Marshal()}}
 	if len(resp.RefreshToken) > 0 {
 		secrets = append(secrets, Secret{Role: SecretRoleRefreshToken, Value: resp.RefreshToken})
 	}
-	if err := a.store.WriteSecrets(ctx, a.particle, desc.ID, secrets...); err != nil {
-		return gen.Result_OauthErrorErr{Value: gen.OauthErrorRefreshFailed{Value: "store: " + err.Error()}}, nil
+	if err := store.WriteSecrets(ctx, particle, id, secrets...); err != nil {
+		return AccessToken{}, fmt.Errorf("rotate %s: store: %w", id, err)
 	}
-
-	return gen.Result_OauthErrorOk{}, nil
+	return bundle, nil
 }

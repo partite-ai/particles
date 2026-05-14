@@ -17,6 +17,8 @@ import (
 	"github.com/partite-ai/wacogo/host"
 	"github.com/partite-ai/wacogo/wasi"
 	"github.com/partite-ai/wacogo/wasi/filesystem/preopens"
+
+	"github.com/partite-ai/particle/credentials"
 )
 
 // Canonical WIT export names the runtime publishes — see
@@ -213,6 +215,9 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, opts ...Par
 			r.cfg.Credentials.Store(),
 			manifest.Name,
 			activeCredentialNames(cfg.selectedAuthenticationMethod),
+			func(ctx context.Context, id string) (credentials.AccessToken, error) {
+				return r.cfg.Credentials.RotateAccessToken(ctx, manifest.Name, id)
+			},
 		),
 	})
 	if err != nil {
