@@ -2,7 +2,7 @@
 
 Particles lets you write small, self-contained, capability-sandboxed programs ("particles") that expose typed tools to an LLM. The common case: you want to plug a remote system into an LLM, but it has no MCP server, or it has one that dumps so much into the model's context that the rest of the conversation suffers. A `particle` ships just the handful of tools you actually want exposed, with hard isolation between the LLM-facing API and the credentials behind it — so you can wire a polished adapter into your harness instead of an off-the-shelf MCP you can't trim.
 
-A `particle` is one ESM module: a manifest, a few tools, and an explicit list of capabilities (HTTP hosts it can reach, credentials it needs). The same artifact works two ways: drop it into Claude Desktop / Cursor / any MCP client via `particle serve-mcp`, or call its tools straight from the shell with `particle run` — useful for Claude Code skills and ad-hoc scripts. Every particle also gets a per-particle key/value store out of the box — no declaration needed.
+A `particle` is one ESM module: a manifest, a few tools, an explicit list of capabilities (HTTP hosts it can reach), and a declared set of credentials it needs. The same artifact works two ways: drop it into Claude Desktop / Cursor / any MCP client via `particle serve-mcp`, or call its tools straight from the shell with `particle run` — useful for Claude Code skills and ad-hoc scripts. Every particle also gets a per-particle key/value store out of the box — no declaration needed.
 
 Six things make it different from "just a script":
 
@@ -27,7 +27,11 @@ export default {
 
   capabilities: {
     http: { allowedHosts: ["api.github.com"] },
-    credentials: {
+  },
+
+  credentials: {
+    github: {
+      hosts: ["api.github.com"],
       required: true,
       methods: {
         pat: {
@@ -50,7 +54,7 @@ export default {
         required: ["owner", "repo"],
       },
       handler: async ({ owner, repo }: { owner: string; repo: string }) => {
-        const fetcher = await credentials.fetcher("pat");
+        const fetcher = await credentials.fetcher("github");
         const res = await fetcher(`https://api.github.com/repos/${owner}/${repo}`);
         return res.json();
       },
@@ -59,7 +63,7 @@ export default {
 };
 ```
 
-The richer `examples/github` particle adds OAuth 2 as an alternate auth method, a few more tools, and a `ping` health check.
+The richer `examples/github` particle adds OAuth 2 as an alternate auth method for the same `github` credential, a few more tools, and a `ping` health check.
 
 ## Quick start
 
@@ -112,12 +116,22 @@ Version is optional anywhere it appears — omitted resolves to the highest regi
 
 ## Capabilities at a glance
 
-A particle only sees what its `capabilities` declare. Importing a host capability module (`@partite-ai/particle-credentials`, `@partite-ai/particle-oauth`, `@partite-ai/particle-signing`) for a category not in the manifest is a build error.
+A particle only sees what its `capabilities` declare. Importing a host capability module (`@partite-ai/particle-credentials`, `@partite-ai/particle-oauth`, `@partite-ai/particle-signing`) for a category not authorized by the manifest is a build error.
 
 - `http: { allowedHosts: [...] }` — outbound HTTP. Anything else fails with a "destination prohibited" error. Host matching is case-insensitive.
-- `credentials: { required, methods: {...} }` — alternative auth methods (`basic`, `oauth2`, `apikey`, `signing-key`, `raw`). The user picks one at setup; only that one is provisioned. Tools call `credentials.getConfiguredMethod()` to discover which name to pass to `credentials.fetcher(name)`.
+- `sockets`, `env` — declared the same way; see `types/particle.d.ts`.
 
 A per-particle key/value store is available via `@partite-ai/particle-kv` — it's a built-in, not a capability you declare. Two particles using the same key see independent values; one particle's storage is invisible to another.
+
+## Credentials
+
+`credentials` is its own top-level field on the default export — it describes what secret material the particle needs, not a permission gate. Each entry names a logical credential (e.g., `github`, `openai`):
+
+- `hosts: [...]` — pins the credential to a set of HTTP destinations. The host substitutes the real value only on requests bound for one of those hosts; a stray placeholder in a request to anywhere else transmits literally, surfacing the bug rather than leaking the secret. Every host here must also appear in `capabilities.http.allowedHosts`. Omit `hosts` for credentials accessed entirely through the JS-side API (signing keys, raw values).
+- `required: true | false` — whether setup refuses to register the particle until a method is configured. Defaults to `false`.
+- `methods: { <name>: { type, ... } }` — one or more alternative authentication methods. Supported types: `basic`, `oauth2`, `apikey`, `signing-key`, `raw`. The user picks one at setup; only that one is provisioned, and switching later atomically replaces it.
+
+Tools call `credentials.fetcher("<credName>")` to get a `fetch`-shaped function bound to that credential — the same call regardless of which method the user picked, as long as the methods land at the same wire location. When the manifest mixes methods with different shapes (e.g., a header-based PAT alongside a query-param key), `credentials.getConfiguredMethod("<credName>")` reports which method is active so the tool can branch.
 
 ## TypeScript types
 
@@ -167,7 +181,7 @@ The `particle` binary embeds three WebAssembly components used by the build pipe
 - [`wasm-rquickjs`](https://github.com/wasm-rquickjs/wasm-rquickjs)
 - Node + npm (the typecheck wasm bundles the TypeScript compiler)
 
-You may find the included devconatiner useful.
+You may find the included devcontainer useful.
 
 ```sh
 make            # builds every wasm component and copies them into the embed dirs
