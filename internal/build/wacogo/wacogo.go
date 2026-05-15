@@ -22,14 +22,15 @@ import (
 )
 
 // embeddedWasm holds the three build-pipeline wasms baked into the
-// binary at compile time. The directory exists in source control with
-// only a .gitignore + README; the wasms are produced by `make embed`
-// (driven by the //go:generate directive above) and are excluded from
-// git.
+// binary at compile time. The wasms are committed under embed/ so a
+// fresh `go build` produces a working binary without the Rust + npm +
+// wasm-rquickjs toolchain on hand; `make embed` (driven by the
+// //go:generate directive above) regenerates them after a component
+// source change.
 //
-// `all:embed` is used so the directive succeeds even on a fresh
-// checkout where the .wasm files are absent — readEmbedded reports a
-// clear error at runtime in that case.
+// `all:embed` is used so the directive succeeds even if the .wasm
+// files are absent (e.g., someone wiped them locally) — readEmbedded
+// reports a clear error at runtime in that case.
 //
 //go:embed all:embed
 var embeddedWasm embed.FS
