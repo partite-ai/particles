@@ -153,6 +153,7 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, opts ...Par
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	_ = cfg
 
 	manifest, err := readManifest(particleFS)
 	if err != nil {
@@ -214,7 +215,8 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, opts ...Par
 			http.DefaultClient,
 			r.cfg.Credentials.Store(),
 			manifest.Name,
-			activeCredentialNames(cfg.selectedAuthenticationMethod),
+			manifest.declaredCredentialNames(),
+			credentialHostBindings(manifest),
 			func(ctx context.Context, id string) (credentials.AccessToken, error) {
 				return r.cfg.Credentials.RotateAccessToken(ctx, manifest.Name, id)
 			},

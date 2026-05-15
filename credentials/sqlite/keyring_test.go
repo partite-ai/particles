@@ -130,7 +130,7 @@ func TestStore_SecretsAreEncryptedAtRest(t *testing.T) {
 	}
 
 	plain := []byte("super-secret-token-value")
-	desc, err := s.Put(ctx, "yaml-tools", "gh", credentials.OAuth2Meta{},
+	desc, err := s.Put(ctx, "yaml-tools", "gh", "gh", credentials.OAuth2Meta{},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: plain},
 	)
 	if err != nil {
@@ -181,7 +181,7 @@ func TestStore_WrongSealerSurfacesDecryptError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	desc, err := s.Put(ctx, "p", "gh", credentials.OAuth2Meta{},
+	desc, err := s.Put(ctx, "p", "gh", "gh", credentials.OAuth2Meta{},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("token")},
 	)
 	if err != nil {

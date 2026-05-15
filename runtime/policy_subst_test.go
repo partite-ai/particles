@@ -45,7 +45,7 @@ func newPolicyWithStore(t *testing.T, particle string, declared ...string) (*htt
 	t.Helper()
 	store := memory.New()
 	rec := &recordingDoer{}
-	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, particle, declared, nil)
+	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, particle, declared, nil, nil)
 	return pol, store, rec
 }
 
@@ -69,7 +69,7 @@ func mustReq(t *testing.T, method, url string, header http.Header) *http.Request
 
 func TestSubstitute_Basic_ReplacesAuthorization(t *testing.T) {
 	pol, store, rec := newPolicyWithStore(t, "yaml-tools", "db")
-	desc, _ := store.Put(context.Background(), "yaml-tools", "db",
+	desc, _ := store.Put(context.Background(), "yaml-tools", "db", "db",
 		credentials.BasicMeta{Username: "alice"},
 		credentials.Secret{Role: credentials.SecretRolePassword, Value: []byte("hunter2")},
 	)
@@ -95,7 +95,7 @@ func TestSubstitute_Basic_ReplacesAuthorization(t *testing.T) {
 // "Targeted substitution".
 func TestSubstitute_Basic_WrongLocation_NotReplaced(t *testing.T) {
 	pol, store, rec := newPolicyWithStore(t, "p", "db", "gh", "k", "sig")
-	desc, _ := store.Put(context.Background(), "p", "db",
+	desc, _ := store.Put(context.Background(), "p", "db", "db",
 		credentials.BasicMeta{Username: "u"},
 		credentials.Secret{Role: credentials.SecretRolePassword, Value: []byte("v")},
 	)
@@ -124,7 +124,7 @@ func TestSubstitute_Basic_WrongLocation_NotReplaced(t *testing.T) {
 func TestSubstitute_OAuth2_ReplacesAccessToken(t *testing.T) {
 	pol, store, rec := newPolicyWithStore(t, "p", "db", "gh", "k", "sig")
 	bundle := credentials.AccessToken{Token: "real-access-token"}.Marshal()
-	desc, _ := store.Put(context.Background(), "p", "gh",
+	desc, _ := store.Put(context.Background(), "p", "gh", "gh",
 		credentials.OAuth2Meta{ClientID: "c"},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: bundle},
 	)
@@ -147,7 +147,7 @@ func TestSubstitute_OAuth2_WrongScheme_NotReplaced(t *testing.T) {
 	// transmits literally.
 	pol, store, rec := newPolicyWithStore(t, "p", "db", "gh", "k", "sig")
 	bundle := credentials.AccessToken{Token: "tok"}.Marshal()
-	desc, _ := store.Put(context.Background(), "p", "gh",
+	desc, _ := store.Put(context.Background(), "p", "gh", "gh",
 		credentials.OAuth2Meta{},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: bundle},
 	)
@@ -174,7 +174,7 @@ func TestSubstitute_OAuth2_ExpiredToken_ProactivelyRefreshed(t *testing.T) {
 		Token:     "stale-token",
 		ExpiresAt: time.Now().Add(-1 * time.Minute), // already expired
 	}.Marshal()
-	desc, _ := store.Put(context.Background(), "p", "gh",
+	desc, _ := store.Put(context.Background(), "p", "gh", "gh",
 		credentials.OAuth2Meta{TokenURL: "https://provider.test/token"},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: stale},
 	)
@@ -191,7 +191,7 @@ func TestSubstitute_OAuth2_ExpiredToken_ProactivelyRefreshed(t *testing.T) {
 			ExpiresAt: time.Now().Add(1 * time.Hour),
 		}, nil
 	}
-	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, "p", []string{"gh"}, refresh)
+	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, "p", []string{"gh"}, nil, refresh)
 
 	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
 		"Authorization": {"Bearer " + placeholder},
@@ -217,7 +217,7 @@ func TestSubstitute_OAuth2_FreshToken_NoRefresh(t *testing.T) {
 		Token:     "still-good",
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 	}.Marshal()
-	desc, _ := store.Put(context.Background(), "p", "gh",
+	desc, _ := store.Put(context.Background(), "p", "gh", "gh",
 		credentials.OAuth2Meta{},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: bundle},
 	)
@@ -227,7 +227,7 @@ func TestSubstitute_OAuth2_FreshToken_NoRefresh(t *testing.T) {
 		t.Fatal("refresh must not be called for a token outside the skew window")
 		return credentials.AccessToken{}, nil
 	}
-	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, "p", []string{"gh"}, refresh)
+	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, "p", []string{"gh"}, nil, refresh)
 
 	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
 		"Authorization": {"Bearer " + placeholder},
@@ -254,7 +254,7 @@ func TestSubstitute_OAuth2_RefreshFailure_FallsBackToStale(t *testing.T) {
 		Token:     "stale-token",
 		ExpiresAt: time.Now().Add(-1 * time.Minute),
 	}.Marshal()
-	desc, _ := store.Put(context.Background(), "p", "gh",
+	desc, _ := store.Put(context.Background(), "p", "gh", "gh",
 		credentials.OAuth2Meta{},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: stale},
 	)
@@ -263,7 +263,7 @@ func TestSubstitute_OAuth2_RefreshFailure_FallsBackToStale(t *testing.T) {
 	refresh := func(context.Context, string) (credentials.AccessToken, error) {
 		return credentials.AccessToken{}, errors.New("provider unreachable")
 	}
-	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, "p", []string{"gh"}, refresh)
+	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, "p", []string{"gh"}, nil, refresh)
 
 	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
 		"Authorization": {"Bearer " + placeholder},
@@ -284,7 +284,7 @@ func TestSubstitute_OAuth2_ZeroExpiresAt_NoRefresh(t *testing.T) {
 	rec := &recordingDoer{}
 
 	bundle := credentials.AccessToken{Token: "no-expiry"}.Marshal() // ExpiresAt is zero
-	desc, _ := store.Put(context.Background(), "p", "gh",
+	desc, _ := store.Put(context.Background(), "p", "gh", "gh",
 		credentials.OAuth2Meta{},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: bundle},
 	)
@@ -294,7 +294,7 @@ func TestSubstitute_OAuth2_ZeroExpiresAt_NoRefresh(t *testing.T) {
 		t.Fatal("refresh must not fire when ExpiresAt is zero")
 		return credentials.AccessToken{}, nil
 	}
-	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, "p", []string{"gh"}, refresh)
+	pol := newHTTPPolicy(true, []string{"upstream.test"}, rec, store, "p", []string{"gh"}, nil, refresh)
 
 	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
 		"Authorization": {"Bearer " + placeholder},
@@ -313,7 +313,7 @@ func TestSubstitute_OAuth2_ZeroExpiresAt_NoRefresh(t *testing.T) {
 
 func TestSubstitute_APIKey_Header(t *testing.T) {
 	pol, store, rec := newPolicyWithStore(t, "p", "db", "gh", "k", "sig")
-	desc, _ := store.Put(context.Background(), "p", "k",
+	desc, _ := store.Put(context.Background(), "p", "k", "k",
 		credentials.APIKeyMeta{Location: credentials.ApplySpec{
 			Kind: credentials.ApplyHeader, Name: "X-API-Key",
 		}},
@@ -337,7 +337,7 @@ func TestSubstitute_APIKey_Header_WrongName_NotReplaced(t *testing.T) {
 	// substitute when the placeholder appears in any other
 	// header.
 	pol, store, rec := newPolicyWithStore(t, "p", "db", "gh", "k", "sig")
-	desc, _ := store.Put(context.Background(), "p", "k",
+	desc, _ := store.Put(context.Background(), "p", "k", "k",
 		credentials.APIKeyMeta{Location: credentials.ApplySpec{
 			Kind: credentials.ApplyHeader, Name: "X-API-Key",
 		}},
@@ -358,7 +358,7 @@ func TestSubstitute_APIKey_Header_WrongName_NotReplaced(t *testing.T) {
 
 func TestSubstitute_APIKey_QueryParam(t *testing.T) {
 	pol, store, rec := newPolicyWithStore(t, "p", "db", "gh", "k", "sig")
-	desc, _ := store.Put(context.Background(), "p", "k",
+	desc, _ := store.Put(context.Background(), "p", "k", "k",
 		credentials.APIKeyMeta{Location: credentials.ApplySpec{
 			Kind: credentials.ApplyQueryParam, Name: "api_key",
 		}},
@@ -380,7 +380,7 @@ func TestSubstitute_APIKey_QueryParam(t *testing.T) {
 
 func TestSubstitute_APIKey_AuthScheme(t *testing.T) {
 	pol, store, rec := newPolicyWithStore(t, "p", "db", "gh", "k", "sig")
-	desc, _ := store.Put(context.Background(), "p", "k",
+	desc, _ := store.Put(context.Background(), "p", "k", "k",
 		credentials.APIKeyMeta{Location: credentials.ApplySpec{
 			Kind: credentials.ApplyAuthScheme, Scheme: "Token",
 		}},
@@ -407,7 +407,7 @@ func TestSubstitute_APIKey_AuthScheme(t *testing.T) {
 // A placeholder for either kind transmits literally.
 func TestSubstitute_SigningKey_LeavesPlaceholder(t *testing.T) {
 	pol, store, rec := newPolicyWithStore(t, "p", "db", "gh", "k", "sig")
-	desc, _ := store.Put(context.Background(), "p", "sig",
+	desc, _ := store.Put(context.Background(), "p", "sig", "sig",
 		credentials.SigningKeyMeta{Algorithm: credentials.AlgorithmHMACSHA256},
 		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte("k")},
 	)
@@ -454,7 +454,7 @@ func TestSubstitute_UndeclaredInManifest_LeavesPlaceholder(t *testing.T) {
 	// Put a real Bearer credential under a name the manifest
 	// doesn't declare.
 	bundle := credentials.AccessToken{Token: "secret-token"}.Marshal()
-	desc, _ := store.Put(context.Background(), "p", "smuggled",
+	desc, _ := store.Put(context.Background(), "p", "smuggled", "smuggled",
 		credentials.OAuth2Meta{},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: bundle},
 	)
@@ -483,7 +483,7 @@ func TestSubstitute_OneOfMultipleDeclared_Substituted(t *testing.T) {
 	pol, store, rec := newPolicyWithStore(t, "p", "key", "gh")
 
 	// Only "gh" is configured. The user picked OAuth.
-	oauth, _ := store.Put(context.Background(), "p", "gh",
+	oauth, _ := store.Put(context.Background(), "p", "gh", "gh",
 		credentials.OAuth2Meta{},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: credentials.AccessToken{Token: "oauth-token"}.Marshal()},
 	)
@@ -517,7 +517,7 @@ func TestSubstitute_OneOfMultipleDeclared_Substituted(t *testing.T) {
 // going on the wire with an empty credential.
 func TestSubstitute_SecretMissing_ReturnsError(t *testing.T) {
 	pol, store, rec := newPolicyWithStore(t, "p", "db", "gh", "k", "sig")
-	desc, _ := store.Put(context.Background(), "p", "db",
+	desc, _ := store.Put(context.Background(), "p", "db", "db",
 		credentials.BasicMeta{Username: "alice"},
 		// no SecretRolePassword written
 	)
@@ -546,9 +546,9 @@ func TestSubstitute_SecretMissing_ReturnsError(t *testing.T) {
 func TestSubstitute_DeniedHost_ShortCircuitsBeforeSubstitution(t *testing.T) {
 	store := memory.New()
 	rec := &recordingDoer{}
-	pol := newHTTPPolicy(true, []string{"only.allowed.test"}, rec, store, "p", []string{"k"}, nil)
+	pol := newHTTPPolicy(true, []string{"only.allowed.test"}, rec, store, "p", []string{"k"}, nil, nil)
 
-	desc, _ := store.Put(context.Background(), "p", "k",
+	desc, _ := store.Put(context.Background(), "p", "k", "k",
 		credentials.APIKeyMeta{Location: credentials.ApplySpec{
 			Kind: credentials.ApplyHeader, Name: "X-API-Key",
 		}},

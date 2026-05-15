@@ -66,16 +66,7 @@ func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry) (*runti
 		return nil, nil, fmt.Errorf("runtime: %w", err)
 	}
 
-	authMethod, err := credStore.ConfiguredMethod(ctx, entry.Name)
-	if err != nil {
-		_ = rt.Close(ctx)
-		_ = kvMgr.Close(ctx)
-		_ = credMgr.Close(ctx)
-		_ = engine.Close(ctx)
-		return nil, nil, fmt.Errorf("lookup configured method: %w", err)
-	}
-
-	p, err := rt.NewParticle(ctx, entry.Particle, runtime.WithSelectedAuthenticationMethod(authMethod))
+	p, err := rt.NewParticle(ctx, entry.Particle)
 	if err != nil {
 		_ = rt.Close(ctx)
 		_ = kvMgr.Close(ctx)

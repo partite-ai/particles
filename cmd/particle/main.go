@@ -93,6 +93,22 @@ func defaultDBPath() (string, error) {
 	return filepath.Join(dir, "particle", "state.db"), nil
 }
 
+// dbFlagUsage is the --db flag's `help` string. Resolves the
+// default-path placeholder to the actual platform-specific path
+// at flag-registration time (e.g.,
+// "/home/alice/.config/particle/state.db" on Linux,
+// "/Users/alice/Library/Application Support/particle/state.db"
+// on macOS). Falls back to a generic <user-config-dir> token
+// only if UserConfigDir is unavailable — that's the case on a
+// host without HOME, where every CLI command needs --db anyway.
+func dbFlagUsage() string {
+	def, err := defaultDBPath()
+	if err != nil {
+		def = "<user-config-dir>/particle/state.db"
+	}
+	return "Path to the particle state DB (default: " + def + ")"
+}
+
 // resolveDBPath returns dbPath if non-empty, else the default. It
 // also creates the parent directory and pre-creates the DB file
 // with restrictive (0600) permissions, so the SQLite driver opens

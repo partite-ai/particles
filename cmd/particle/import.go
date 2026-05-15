@@ -17,6 +17,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/spf13/cobra"
 
 	"github.com/partite-ai/particle/credentials"
@@ -47,7 +48,7 @@ import from sources you trust.`,
 			return runImport(cmd, args[0], dbPath, permissionModeFromFlags(acceptPerms, confirmPerms))
 		},
 	}
-	cmd.Flags().StringVar(&dbPath, "db", "", "Path to the particle state DB (default: <user-config-dir>/particle/state.db)")
+	cmd.Flags().StringVar(&dbPath, "db", "", dbFlagUsage())
 	cmd.Flags().BoolVarP(&acceptPerms, "yes", "y", false, "Auto-accept the permission summary (does not skip credential prompts)")
 	cmd.Flags().BoolVar(&confirmPerms, "confirm-permissions", false, "Force the permission prompt even when capabilities match the prior version")
 	cmd.MarkFlagsMutuallyExclusive("yes", "confirm-permissions")
@@ -115,7 +116,8 @@ func runImport(cmd *cobra.Command, src, dbPath string, permMode importer.Permiss
 // loadParticle resolves src to an in-memory FS. It accepts either
 // a local file path or an http(s):// URL — URLs are streamed
 // through readTar, so the on-the-wire bytes are the same shape as
-// what `particle build --pack` writes locally.
+// what `particle build --pack` writes locally (zstd-compressed
+// tar archive).
 func loadParticle(ctx context.Context, src string) (fs.FS, error) {
 	if u, ok := parseHTTPURL(src); ok {
 		return loadParticleFromHTTP(ctx, u.String())
@@ -141,10 +143,11 @@ func parseHTTPURL(s string) (*url.URL, bool) {
 	return u, true
 }
 
-// readParticleTar opens the file at path, walks the USTAR
-// archive, and returns an in-memory FS keyed by file path.
-// Mirrors the deterministic-USTAR layout `writeParticleTar`
-// produces — but is tolerant of any tarball with regular files.
+// readParticleTar opens the file at path, decompresses the zstd
+// stream, walks the tar archive inside, and returns an in-memory
+// FS keyed by file path. Mirrors the deterministic zstd-of-tar
+// layout `writeParticleTar` produces — but is tolerant of any
+// zstd-wrapped tarball with regular files.
 func readParticleTar(path string) (fs.FS, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -212,7 +215,12 @@ func isHTMLContentType(ct string) bool {
 }
 
 func readTar(r io.Reader) (fs.FS, error) {
-	tr := tar.NewReader(r)
+	zr, err := zstd.NewReader(r)
+	if err != nil {
+		return nil, fmt.Errorf("zstd reader: %w", err)
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
 	out := fstest.MapFS{}
 	for {
 		hdr, err := tr.Next()

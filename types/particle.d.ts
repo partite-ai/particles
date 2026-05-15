@@ -57,6 +57,21 @@ export interface Particle {
   capabilities: Capabilities;
 
   /**
+   * Named credentials the particle needs. Each entry declares one
+   * or more alternative methods (the user picks at setup), and
+   * optionally pins the credential to a set of HTTP destinations —
+   * a credential's value is only substituted into requests bound
+   * for one of those hosts.
+   *
+   * Credentials are NOT a capability: they don't gate runtime
+   * behavior, they describe what secret material the particle's
+   * declared HTTP allow-list needs. The runtime's
+   * `particle:host/credentials` interface is wired unconditionally;
+   * this map controls what's stored and how it's applied.
+   */
+  credentials?: Record<string, CredentialDecl>;
+
+  /**
    * Tools the particle exposes. Keys are the tool names that will be
    * surfaced over MCP / `particle run`.
    */
@@ -172,22 +187,6 @@ export interface Capabilities {
   sockets?: SocketsCapability;
 
   /**
-   * Credentials the particle needs.
-   *
-   * `methods` lists the alternative authentication methods the
-   * particle accepts — at setup the user picks one, and only that
-   * one is provisioned. Use [`credentials.getConfiguredMethod`]
-   * inside a tool to find out which name to pass to
-   * `fetcher` / `getRaw`.
-   *
-   * `required: true` makes setup refuse to register the particle
-   * until one method is configured. `required: false` lets the
-   * particle run without auth (handlers should fall back when
-   * `getConfiguredMethod` returns `null`).
-   */
-  credentials?: CredentialsCapability;
-
-  /**
    * Allowlist of environment variables exposed via `process.env`.
    * Vars not listed here are filtered out before reaching the
    * particle.
@@ -218,49 +217,71 @@ export interface EnvDecl {
 // -----------------------------------------------------------------------------
 // Credentials
 //
-// `CredentialsCapability` declares the credential block at the top
-// level: a required flag and a map of named alternative methods.
-// At setup the user picks one; only that one is provisioned, and
-// the runtime exposes the chosen name via `credentials.getConfiguredMethod`.
+// One entry per named credential the particle uses (e.g., "github",
+// "openai"). Each declares one or more alternative authentication
+// methods — at setup the user picks one and only that one is
+// provisioned. The runtime exposes the chosen method's name via
+// `credentials.getConfiguredMethod(name)`.
+//
+// `hosts` is the HTTP-side binding: when set, the host-side
+// substitution policy only swaps the credential's placeholder for
+// the real value on requests whose hostname is in `hosts`. Omit
+// for non-HTTP credentials (e.g., signing keys), where the
+// credential is accessed by name through the relevant host
+// interface and HTTP scoping is irrelevant.
 //
 // Each method declaration is one of the five typed variants,
 // discriminated on `type` — TypeScript narrows correctly when the
-// user reads `decl.type === "oauth2"` etc.
+// user reads `m.type === "oauth2"` etc.
 // -----------------------------------------------------------------------------
 
-export interface CredentialsCapability {
+export interface CredentialDecl {
   /**
-   * Refuse to register the particle until one method is configured.
-   * `false` means the particle can run unauthenticated; handlers
-   * should treat `credentials.getConfiguredMethod()` returning null
-   * as the unauthenticated state.
+   * Hosts on which the host-side wasi:http policy is allowed to
+   * substitute this credential. Exact match against the request
+   * URL's hostname; wildcards aren't supported. Every entry must
+   * also appear in `capabilities.http.allowedHosts` — the build
+   * pipeline rejects out-of-scope hosts.
+   *
+   * Absent → not bound to any HTTP destination. Use for
+   * credentials consumed entirely via the JS-side API (signing
+   * keys, raw values) where HTTP substitution isn't relevant.
    */
-  required: boolean;
+  hosts?: string[];
+
+  /**
+   * Refuse to register the particle until one method for this
+   * credential is configured. Defaults to `false` — handlers
+   * should treat `credentials.getConfiguredMethod(name)`
+   * returning `null` as the unauthenticated state.
+   */
+  required?: boolean;
 
   /**
    * Alternative authentication methods. The user picks one at
-   * setup; the rest are never touched.
+   * setup; the rest are never touched. A single entry skips the
+   * prompt.
    */
-  methods: Record<string, CredentialDecl>;
+  methods: Record<string, CredentialMethod>;
 }
 
-export type CredentialDecl =
-  | BasicCredentialDecl
-  | OAuth2CredentialDecl
-  | APIKeyCredentialDecl
-  | SigningKeyCredentialDecl
-  | RawCredentialDecl;
+export type CredentialMethod =
+  | BasicCredentialMethod
+  | OAuth2CredentialMethod
+  | APIKeyCredentialMethod
+  | SigningKeyCredentialMethod
+  | RawCredentialMethod;
 
-interface CredentialDeclBase {
+interface CredentialMethodBase {
   /** Human-readable description shown during `particle setup`. */
   description?: string;
 }
 
-export interface BasicCredentialDecl extends CredentialDeclBase {
+export interface BasicCredentialMethod extends CredentialMethodBase {
   type: "basic";
 }
 
-export interface OAuth2CredentialDecl extends CredentialDeclBase {
+export interface OAuth2CredentialMethod extends CredentialMethodBase {
   type: "oauth2";
   /**
    * OAuth flows the particle supports. `particle setup` lets the
@@ -306,7 +327,7 @@ export type OAuth2Flow =
   /** Headless / SSH-friendly; user authorizes on a separate device. */
   | "device-code";
 
-export interface APIKeyCredentialDecl extends CredentialDeclBase {
+export interface APIKeyCredentialMethod extends CredentialMethodBase {
   type: "apikey";
   /**
    * Optional pre-set location. When provided, setup skips the
@@ -331,13 +352,13 @@ export type APIKeyApplyLocation =
   /** `?<name>=<key>` — appended to the URL query string. */
   | { kind: "query-param"; name: string };
 
-export interface SigningKeyCredentialDecl extends CredentialDeclBase {
+export interface SigningKeyCredentialMethod extends CredentialMethodBase {
   type: "signing-key";
   /** v1 supports HMAC-SHA-256 and HMAC-SHA-512. */
   algorithm: "hmac-sha256" | "hmac-sha512";
 }
 
-export interface RawCredentialDecl extends CredentialDeclBase {
+export interface RawCredentialMethod extends CredentialMethodBase {
   type: "raw";
   // Setup shows an explicit warning before storing — `raw`
   // credentials are returned in plaintext to the JS handler.

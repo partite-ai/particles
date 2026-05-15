@@ -6,20 +6,24 @@ import (
 	"sort"
 )
 
-// credentialsCapability mirrors the manifest's
-// `capabilities.credentials` block: a top-level required flag plus
-// a map of named alternative methods (the user picks one at setup).
-type credentialsCapability struct {
-	Required bool             `json:"required"`
-	Methods  []credentialDecl `json:"-"` // populated from `methods` map for stable order
+// credentialDecl mirrors one entry in the manifest's top-level
+// `credentials` map: a name, optional host binding, an optional
+// required flag, and one-or-more alternative methods the user
+// picks from at setup. The `Name` field is populated from the
+// map key during parsing.
+type credentialDecl struct {
+	Name     string             `json:"-"`
+	Hosts    []string           `json:"hosts"`
+	Required bool               `json:"required"`
+	Methods  []credentialMethod `json:"-"` // populated from `methods` map for stable order
 }
 
-// credentialDecl is one entry in `capabilities.credentials.methods`.
+// credentialMethod is one entry in `credentials.<name>.methods`.
 // Type-specific fields (Flows, Algorithm, Location, URL overrides, …)
 // are tolerated even when not applicable to a given Type — the build
 // pipeline already validated the manifest's structure, so the
 // importer trusts what's there.
-type credentialDecl struct {
+type credentialMethod struct {
 	Name        string `json:"-"` // populated from the map key
 	Type        string `json:"type"`
 	Description string `json:"description"`
@@ -50,32 +54,40 @@ type applyLocation struct {
 	Scheme string `json:"scheme"`
 }
 
-// parseCredentialsCapability decodes the manifest's
-// `capabilities.credentials` block. Returns (nil, nil) when the
-// capability isn't declared.
-func parseCredentialsCapability(caps map[string]json.RawMessage) (*credentialsCapability, error) {
-	raw, ok := caps["credentials"]
-	if !ok {
+// parseCredentials decodes the manifest's top-level `credentials`
+// map into a sorted slice (sorted by credential name) of decls.
+// Within each decl, methods are also sorted by name. Returns
+// (nil, nil) when no credentials are declared.
+func parseCredentials(raw map[string]json.RawMessage) ([]credentialDecl, error) {
+	if len(raw) == 0 {
 		return nil, nil
 	}
-	var shell struct {
-		Required bool                       `json:"required"`
-		Methods  map[string]json.RawMessage `json:"methods"`
-	}
-	if err := json.Unmarshal(raw, &shell); err != nil {
-		return nil, fmt.Errorf("manifest.capabilities.credentials: %w", err)
-	}
-	out := &credentialsCapability{Required: shell.Required}
-	for name, rawDecl := range shell.Methods {
-		var d credentialDecl
-		if err := json.Unmarshal(rawDecl, &d); err != nil {
-			return nil, fmt.Errorf("manifest.capabilities.credentials.methods.%s: %w", name, err)
+	out := make([]credentialDecl, 0, len(raw))
+	for name, rawDecl := range raw {
+		var shell struct {
+			Hosts    []string                   `json:"hosts"`
+			Required bool                       `json:"required"`
+			Methods  map[string]json.RawMessage `json:"methods"`
 		}
-		d.Name = name
-		out.Methods = append(out.Methods, d)
+		if err := json.Unmarshal(rawDecl, &shell); err != nil {
+			return nil, fmt.Errorf("manifest.credentials.%s: %w", name, err)
+		}
+		decl := credentialDecl{
+			Name:     name,
+			Hosts:    shell.Hosts,
+			Required: shell.Required,
+		}
+		for mname, rawMethod := range shell.Methods {
+			var m credentialMethod
+			if err := json.Unmarshal(rawMethod, &m); err != nil {
+				return nil, fmt.Errorf("manifest.credentials.%s.methods.%s: %w", name, mname, err)
+			}
+			m.Name = mname
+			decl.Methods = append(decl.Methods, m)
+		}
+		sort.Slice(decl.Methods, func(i, j int) bool { return decl.Methods[i].Name < decl.Methods[j].Name })
+		out = append(out, decl)
 	}
-	// Sort so the prompt always presents methods in the same
-	// order across runs.
-	sort.Slice(out.Methods, func(i, j int) bool { return out.Methods[i].Name < out.Methods[j].Name })
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }

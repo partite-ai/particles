@@ -34,7 +34,7 @@ Exposes every tool the particle defines to any MCP client, unless
 			return runServeMCP(cmd, args[0], dbPath, includes, excludes)
 		},
 	}
-	cmd.Flags().StringVar(&dbPath, "db", "", "Path to the particle state DB (default: <user-config-dir>/particle/state.db)")
+	cmd.Flags().StringVar(&dbPath, "db", "", dbFlagUsage())
 	cmd.Flags().StringSliceVar(&includes, "only-tools", nil,
 		"Comma-separated allowlist: expose only the named tools. Mutually exclusive with --exclude-tools.")
 	cmd.Flags().StringSliceVar(&excludes, "exclude-tools", nil,

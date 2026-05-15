@@ -68,7 +68,7 @@ func newStore(t *testing.T) *sqlite.Store {
 
 func TestPut_GeneratesID(t *testing.T) {
 	s := newStore(t)
-	desc, err := s.Put(context.Background(), "yaml-tools", "main", credentials.BasicMeta{Username: "u"})
+	desc, err := s.Put(context.Background(), "yaml-tools", "main", "main", credentials.BasicMeta{Username: "u"})
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestPut_PreservesIDAndSecretsOnNameOverwrite(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 
-	first, _ := s.Put(ctx, "yaml-tools", "gh", credentials.OAuth2Meta{ClientID: "old"})
+	first, _ := s.Put(ctx, "yaml-tools", "gh", "gh", credentials.OAuth2Meta{ClientID: "old"})
 	if err := s.WriteSecrets(ctx, "yaml-tools", first.ID,
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("at")},
 		credentials.Secret{Role: credentials.SecretRoleRefreshToken, Value: []byte("rt")},
@@ -95,7 +95,7 @@ func TestPut_PreservesIDAndSecretsOnNameOverwrite(t *testing.T) {
 		t.Fatalf("WriteSecrets: %v", err)
 	}
 
-	second, _ := s.Put(ctx, "yaml-tools", "gh", credentials.OAuth2Meta{ClientID: "new"})
+	second, _ := s.Put(ctx, "yaml-tools", "gh", "gh", credentials.OAuth2Meta{ClientID: "new"})
 	if first.ID != second.ID {
 		t.Errorf("ID changed on metadata-only update: %q → %q", first.ID, second.ID)
 	}
@@ -123,7 +123,7 @@ func TestPut_PreservesIDAndSecretsOnNameOverwrite(t *testing.T) {
 func TestGetByID(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	put, _ := s.Put(ctx, "yaml-tools", "main", credentials.RawMeta{})
+	put, _ := s.Put(ctx, "yaml-tools", "main", "main", credentials.RawMeta{})
 	got, err := s.GetByID(ctx, "yaml-tools", put.ID)
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
@@ -136,7 +136,7 @@ func TestGetByID(t *testing.T) {
 func TestGetByName(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	put, _ := s.Put(ctx, "yaml-tools", "main", credentials.RawMeta{})
+	put, _ := s.Put(ctx, "yaml-tools", "main", "main", credentials.RawMeta{})
 	got, err := s.GetByName(ctx, "yaml-tools", "main")
 	if err != nil {
 		t.Fatalf("GetByName: %v", err)
@@ -179,7 +179,7 @@ func TestList(t *testing.T) {
 		{"anthropic", "raw", credentials.RawMeta{}, credentials.KindRaw},
 	}
 	for _, p := range seed {
-		if _, err := s.Put(ctx, p.particle, p.name, p.meta); err != nil {
+		if _, err := s.Put(ctx, p.particle, p.name, p.name, p.meta); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -219,7 +219,7 @@ func TestDelete_RemovesEverything(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 
-	put, _ := s.Put(ctx, "tools", "x", credentials.RawMeta{})
+	put, _ := s.Put(ctx, "tools", "x", "x", credentials.RawMeta{})
 	if err := s.WriteSecrets(ctx, "tools", put.ID,
 		credentials.Secret{Role: credentials.SecretRoleValue, Value: []byte("v")},
 	); err != nil {
@@ -249,7 +249,7 @@ func TestPut_AtomicCreateWithSecrets(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 
-	desc, err := s.Put(ctx, "yaml-tools", "gh", credentials.OAuth2Meta{ClientID: "c"},
+	desc, err := s.Put(ctx, "yaml-tools", "gh", "gh", credentials.OAuth2Meta{ClientID: "c"},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("at")},
 		credentials.Secret{Role: credentials.SecretRoleRefreshToken, Value: []byte("rt")},
 		credentials.Secret{Role: credentials.SecretRoleClientSecret, Value: []byte("cs")},
@@ -281,14 +281,14 @@ func TestPut_AtomicUpdatePreservesUnlistedSecrets(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 
-	first, _ := s.Put(ctx, "yaml-tools", "gh",
+	first, _ := s.Put(ctx, "yaml-tools", "gh", "gh",
 		credentials.OAuth2Meta{ClientID: "c-1"},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("at-1")},
 		credentials.Secret{Role: credentials.SecretRoleRefreshToken, Value: []byte("rt-1")},
 		credentials.Secret{Role: credentials.SecretRoleClientSecret, Value: []byte("cs-1")},
 	)
 
-	second, _ := s.Put(ctx, "yaml-tools", "gh",
+	second, _ := s.Put(ctx, "yaml-tools", "gh", "gh",
 		credentials.OAuth2Meta{ClientID: "c-2"},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("at-2")},
 	)
@@ -318,10 +318,13 @@ func TestPut_AtomicUpdatePreservesUnlistedSecrets(t *testing.T) {
 func TestPut_RejectsEmptyArgs(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	if _, err := s.Put(ctx, "yaml-tools", "", credentials.RawMeta{}); err == nil {
+	if _, err := s.Put(ctx, "yaml-tools", "", "m", credentials.RawMeta{}); err == nil {
 		t.Error("Put with empty name should error")
 	}
-	if _, err := s.Put(ctx, "yaml-tools", "name", nil); err == nil {
+	if _, err := s.Put(ctx, "yaml-tools", "name", "", credentials.RawMeta{}); err == nil {
+		t.Error("Put with empty method should error")
+	}
+	if _, err := s.Put(ctx, "yaml-tools", "name", "name", nil); err == nil {
 		t.Error("Put with nil Metadata should error")
 	}
 }
@@ -333,7 +336,7 @@ func TestPut_RejectsEmptyArgs(t *testing.T) {
 func TestWriteSecrets_RoundTrip(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	put, _ := s.Put(ctx, "tools", "k", credentials.OAuth2Meta{})
+	put, _ := s.Put(ctx, "tools", "k", "k", credentials.OAuth2Meta{})
 
 	if err := s.WriteSecrets(ctx, "tools", put.ID,
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("abc")},
@@ -352,7 +355,7 @@ func TestWriteSecrets_RoundTrip(t *testing.T) {
 func TestWriteSecrets_AtomicRotateLeavesOthersAlone(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	put, _ := s.Put(ctx, "tools", "gh", credentials.OAuth2Meta{})
+	put, _ := s.Put(ctx, "tools", "gh", "gh", credentials.OAuth2Meta{})
 
 	_ = s.WriteSecrets(ctx, "tools", put.ID,
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("at-1")},
@@ -382,7 +385,7 @@ func TestWriteSecrets_AtomicRotateLeavesOthersAlone(t *testing.T) {
 func TestReadSecret_NotSet(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	put, _ := s.Put(ctx, "tools", "k", credentials.RawMeta{})
+	put, _ := s.Put(ctx, "tools", "k", "k", credentials.RawMeta{})
 
 	_, err := s.ReadSecret(ctx, "tools", put.ID, credentials.SecretRoleValue)
 	if !errors.Is(err, credentials.ErrSecretNotSet) {
@@ -413,7 +416,7 @@ func TestWriteSecrets_EntryMissing(t *testing.T) {
 
 func TestWriteSecrets_RejectsEmptyRole(t *testing.T) {
 	s := newStore(t)
-	put, _ := s.Put(context.Background(), "tools", "k", credentials.RawMeta{})
+	put, _ := s.Put(context.Background(), "tools", "k", "k", credentials.RawMeta{})
 	if err := s.WriteSecrets(context.Background(), "tools", put.ID,
 		credentials.Secret{Role: "", Value: []byte("v")},
 	); err == nil {
@@ -424,7 +427,7 @@ func TestWriteSecrets_RejectsEmptyRole(t *testing.T) {
 func TestDeleteSecret_Idempotent(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	put, _ := s.Put(ctx, "tools", "k", credentials.RawMeta{})
+	put, _ := s.Put(ctx, "tools", "k", "k", credentials.RawMeta{})
 	_ = s.WriteSecrets(ctx, "tools", put.ID,
 		credentials.Secret{Role: credentials.SecretRoleValue, Value: []byte("v")},
 	)
@@ -450,8 +453,8 @@ func TestDeleteSecret_Idempotent(t *testing.T) {
 func TestScopedByParticle(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	yaml, _ := s.Put(ctx, "yaml-tools", "shared", credentials.RawMeta{})
-	json, _ := s.Put(ctx, "json-tools", "shared", credentials.RawMeta{})
+	yaml, _ := s.Put(ctx, "yaml-tools", "shared", "shared", credentials.RawMeta{})
+	json, _ := s.Put(ctx, "json-tools", "shared", "shared", credentials.RawMeta{})
 
 	if yaml.ID == json.ID {
 		t.Errorf("IDs collided across particles: %q", yaml.ID)
@@ -492,7 +495,7 @@ func TestMetadataRoundTrip_AllKinds(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			desc, err := s.Put(ctx, "p", c.name, c.meta)
+			desc, err := s.Put(ctx, "p", c.name, c.name, c.meta)
 			if err != nil {
 				t.Fatalf("Put: %v", err)
 			}
@@ -512,7 +515,7 @@ func TestIDShape_NoSpecialChars(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	for i := 0; i < 50; i++ {
-		desc, err := s.Put(ctx, "tools", "n", credentials.RawMeta{})
+		desc, err := s.Put(ctx, "tools", "n", "n", credentials.RawMeta{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -559,7 +562,7 @@ func TestPersistsAcrossOpens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	desc, err := s1.Put(ctx, "yaml-tools", "gh",
+	desc, err := s1.Put(ctx, "yaml-tools", "gh", "gh",
 		credentials.OAuth2Meta{ClientID: "c-1", Scopes: []string{"repo"}},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("token")},
 	)
@@ -648,7 +651,7 @@ func TestNew_NilSealer_MetadataOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlite.New (with sealer): %v", err)
 	}
-	if _, err := s.Put(context.Background(), "p", "pat",
+	if _, err := s.Put(context.Background(), "p", "pat", "pat",
 		credentials.APIKeyMeta{Location: credentials.ApplySpec{Kind: credentials.ApplyHeader, Name: "X-K"}},
 		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte("k")},
 	); err != nil {
@@ -662,7 +665,7 @@ func TestNew_NilSealer_MetadataOnly(t *testing.T) {
 	}
 
 	// No-crypto operations work.
-	got, err := meta.ConfiguredMethod(context.Background(), "p")
+	got, err := meta.ConfiguredMethod(context.Background(), "p", "pat")
 	if err != nil {
 		t.Fatalf("ConfiguredMethod: %v", err)
 	}
@@ -677,7 +680,7 @@ func TestNew_NilSealer_MetadataOnly(t *testing.T) {
 	}
 
 	// Secret operations error with a clear message.
-	if _, err := meta.Put(context.Background(), "p", "y", credentials.RawMeta{}); err == nil {
+	if _, err := meta.Put(context.Background(), "p", "y", "y", credentials.RawMeta{}); err == nil {
 		t.Error("Put on sealer-less store should error")
 	}
 	if _, err := meta.ReadSecret(context.Background(), "p", "any-id", credentials.SecretRoleKey); err == nil {
@@ -696,46 +699,71 @@ func TestNew_NilSealer_MetadataOnly(t *testing.T) {
 // reflects the (unique) survivor.
 // -----------------------------------------------------------------------------
 
-// A Put under a different name from the existing credential
-// evicts the prior one in the same transaction. The
-// authentication-method-switch case is therefore atomic from a
-// reader's perspective: no window where both credentials coexist.
-func TestPut_DifferentName_EvictsPriorCredential(t *testing.T) {
+// Two different credential names coexist under the same particle
+// — the store is keyed by (particle, name), so a particle with
+// both a "github" and an "openai" credential gets two rows.
+func TestPut_DifferentNames_Coexist(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	if _, err := s.Put(ctx, "p", "oauth", credentials.OAuth2Meta{ClientID: "c"}); err != nil {
+	if _, err := s.Put(ctx, "p", "github", "oauth", credentials.OAuth2Meta{ClientID: "c"}); err != nil {
 		t.Fatal(err)
 	}
-	desc, err := s.Put(ctx, "p", "pat",
+	if _, err := s.Put(ctx, "p", "openai", "key",
+		credentials.APIKeyMeta{Location: credentials.ApplySpec{Kind: credentials.ApplyAuthScheme, Scheme: "Bearer"}},
+		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte("k")},
+	); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	entries, err := s.List(ctx, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("List = %v, want both github and openai", entries)
+	}
+	got, _ := s.ConfiguredMethod(ctx, "p", "github")
+	if got != "oauth" {
+		t.Errorf("github.Method = %q, want oauth", got)
+	}
+	got, _ = s.ConfiguredMethod(ctx, "p", "openai")
+	if got != "key" {
+		t.Errorf("openai.Method = %q, want key", got)
+	}
+}
+
+// Switching method for the same credential wipes the prior
+// method's secrets in the same transaction — no reader observes
+// stale secret bytes from the abandoned method.
+func TestPut_SameName_MethodSwitch_WipesSecrets(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	first, err := s.Put(ctx, "p", "auth", "basic",
+		credentials.BasicMeta{Username: "alice"},
+		credentials.Secret{Role: credentials.SecretRolePassword, Value: []byte("hunter2")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.Put(ctx, "p", "auth", "apikey",
 		credentials.APIKeyMeta{Location: credentials.ApplySpec{Kind: credentials.ApplyHeader, Name: "X-K"}},
 		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte("k")},
 	)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if desc.Name != "pat" {
-		t.Errorf("new Name = %q, want pat", desc.Name)
+	if second.ID != first.ID {
+		t.Errorf("ID changed across method switch: %q → %q", first.ID, second.ID)
 	}
-	// Prior credential gone.
-	if _, err := s.GetByName(ctx, "p", "oauth"); !errors.Is(err, credentials.ErrNotFound) {
-		t.Errorf("prior credential should be evicted; err = %v", err)
+	if second.Method != "apikey" {
+		t.Errorf("Method = %q, want apikey", second.Method)
 	}
-	// And its secrets shouldn't be lingering either — query the
-	// secrets table directly via List.
-	entries, err := s.List(ctx, "p")
-	if err != nil {
-		t.Fatal(err)
+	// The basic-era password must be gone; the apikey-era key present.
+	if _, err := s.ReadSecret(ctx, "p", second.ID, credentials.SecretRolePassword); !errors.Is(err, credentials.ErrSecretNotSet) {
+		t.Errorf("prior password should be wiped; err = %v", err)
 	}
-	if len(entries) != 1 || entries[0].Name != "pat" {
-		t.Errorf("List = %v, want exactly [pat]", entries)
-	}
-	// ConfiguredMethod reflects the survivor.
-	method, err := s.ConfiguredMethod(ctx, "p")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if method != "pat" {
-		t.Errorf("ConfiguredMethod = %q, want pat", method)
+	v, err := s.ReadSecret(ctx, "p", second.ID, credentials.SecretRoleKey)
+	if err != nil || string(v) != "k" {
+		t.Errorf("apikey key = %q, err = %v", v, err)
 	}
 }
 
@@ -745,13 +773,13 @@ func TestPut_DifferentName_EvictsPriorCredential(t *testing.T) {
 func TestPut_SameName_PreservesID(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	first, err := s.Put(ctx, "p", "oauth", credentials.OAuth2Meta{ClientID: "old"},
+	first, err := s.Put(ctx, "p", "oauth", "oauth", credentials.OAuth2Meta{ClientID: "old"},
 		credentials.Secret{Role: credentials.SecretRoleRefreshToken, Value: []byte("rt")},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := s.Put(ctx, "p", "oauth", credentials.OAuth2Meta{ClientID: "new"})
+	second, err := s.Put(ctx, "p", "oauth", "oauth", credentials.OAuth2Meta{ClientID: "new"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -774,7 +802,7 @@ func TestPut_SameName_PreservesID(t *testing.T) {
 // require something to evict" can't slip in.
 func TestPut_FirstInstall_NoPriorCredential(t *testing.T) {
 	s := newStore(t)
-	if _, err := s.Put(context.Background(), "fresh", "pat",
+	if _, err := s.Put(context.Background(), "fresh", "pat", "pat",
 		credentials.RawMeta{},
 		credentials.Secret{Role: credentials.SecretRoleValue, Value: []byte("v")},
 	); err != nil {
@@ -786,7 +814,7 @@ func TestPut_FirstInstall_NoPriorCredential(t *testing.T) {
 // particle.
 func TestConfiguredMethod_Empty(t *testing.T) {
 	s := newStore(t)
-	got, err := s.ConfiguredMethod(context.Background(), "absent")
+	got, err := s.ConfiguredMethod(context.Background(), "absent", "absent")
 	if err != nil {
 		t.Fatal(err)
 	}

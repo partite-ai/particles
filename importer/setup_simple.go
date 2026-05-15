@@ -9,7 +9,7 @@ import (
 
 // setupBasic captures username + password for an HTTP Basic
 // credential. The password is masked at the terminal.
-func setupBasic(ctx context.Context, opts Options, particle string, decl credentialDecl) error {
+func setupBasic(ctx context.Context, opts Options, particle, credName string, method credentialMethod) error {
 	username, err := opts.Prompter.String("Username", "")
 	if err != nil {
 		return err
@@ -18,7 +18,7 @@ func setupBasic(ctx context.Context, opts Options, particle string, decl credent
 	if err != nil {
 		return err
 	}
-	_, err = opts.Credentials.Put(ctx, particle, decl.Name,
+	_, err = opts.Credentials.Put(ctx, particle, credName, method.Name,
 		credentials.BasicMeta{Username: username},
 		credentials.Secret{Role: credentials.SecretRolePassword, Value: []byte(password)},
 	)
@@ -28,7 +28,7 @@ func setupBasic(ctx context.Context, opts Options, particle string, decl credent
 // setupAPIKey provisions an apikey credential. The
 // substitution location can come from one of two places:
 //
-//   - the manifest, via [APIKeyCredentialDecl.location] — when
+//   - the manifest, via [APIKeyCredentialMethod.location] — when
 //     present, setup skips the location prompt and only asks for
 //     the key value
 //   - the user, via the location prompt — when the manifest
@@ -37,11 +37,11 @@ func setupBasic(ctx context.Context, opts Options, particle string, decl credent
 // Pre-setting matters when the API has a single canonical
 // placement (GitHub PATs always go in `Authorization: Bearer
 // <pat>`) — re-asking the user is just noise.
-func setupAPIKey(ctx context.Context, opts Options, particle string, decl credentialDecl) error {
+func setupAPIKey(ctx context.Context, opts Options, particle, credName string, method credentialMethod) error {
 	var loc credentials.ApplySpec
 	var err error
-	if decl.Location != nil {
-		loc, err = applyLocationFromManifest(decl.Location)
+	if method.Location != nil {
+		loc, err = applyLocationFromManifest(method.Location)
 		if err != nil {
 			return err
 		}
@@ -56,7 +56,7 @@ func setupAPIKey(ctx context.Context, opts Options, particle string, decl creden
 	if err != nil {
 		return err
 	}
-	_, err = opts.Credentials.Put(ctx, particle, decl.Name,
+	_, err = opts.Credentials.Put(ctx, particle, credName, method.Name,
 		credentials.APIKeyMeta{Location: loc},
 		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte(key)},
 	)
@@ -137,19 +137,19 @@ func promptAPIKeyLocation(p Prompter) (credentials.ApplySpec, error) {
 }
 
 // setupSigningKey captures the raw key material. The algorithm
-// is taken from the manifest declaration (the user already
+// is taken from the method declaration (the manifest author
 // committed to one at design time) — re-prompting would invite
 // drift between the schema and what's stored.
-func setupSigningKey(ctx context.Context, opts Options, particle string, decl credentialDecl) error {
-	if decl.Algorithm == "" {
-		return fmt.Errorf("manifest declares signing-key %q without algorithm", decl.Name)
+func setupSigningKey(ctx context.Context, opts Options, particle, credName string, method credentialMethod) error {
+	if method.Algorithm == "" {
+		return fmt.Errorf("manifest declares signing-key %s.%s without algorithm", credName, method.Name)
 	}
-	key, err := opts.Prompter.Secret(fmt.Sprintf("Signing key (%s)", decl.Algorithm))
+	key, err := opts.Prompter.Secret(fmt.Sprintf("Signing key (%s)", method.Algorithm))
 	if err != nil {
 		return err
 	}
-	_, err = opts.Credentials.Put(ctx, particle, decl.Name,
-		credentials.SigningKeyMeta{Algorithm: decl.Algorithm},
+	_, err = opts.Credentials.Put(ctx, particle, credName, method.Name,
+		credentials.SigningKeyMeta{Algorithm: method.Algorithm},
 		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte(key)},
 	)
 	return err
@@ -158,7 +158,7 @@ func setupSigningKey(ctx context.Context, opts Options, particle string, decl cr
 // setupRaw captures an opaque value, after warning the user that
 // it'll be visible to the JS handler (and any transitive npm
 // dep) in plaintext. Per design doc §7.
-func setupRaw(ctx context.Context, opts Options, particle string, decl credentialDecl) error {
+func setupRaw(ctx context.Context, opts Options, particle, credName string, method credentialMethod) error {
 	opts.Prompter.Warn("'raw' credentials are returned to your particle's JavaScript in their actual value.")
 	opts.Prompter.Warn("They will be visible to all code in the particle, including transitive npm dependencies.")
 	opts.Prompter.Warn("Use a more specific type (basic, oauth2, apikey, signing-key) where possible.")
@@ -173,7 +173,7 @@ func setupRaw(ctx context.Context, opts Options, particle string, decl credentia
 	if err != nil {
 		return err
 	}
-	_, err = opts.Credentials.Put(ctx, particle, decl.Name,
+	_, err = opts.Credentials.Put(ctx, particle, credName, method.Name,
 		credentials.RawMeta{},
 		credentials.Secret{Role: credentials.SecretRoleValue, Value: []byte(value)},
 	)

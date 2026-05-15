@@ -94,12 +94,17 @@ const credentials = {
   },
 
   /**
-   * Returns the configured authentication method name, or null
-   * when no method is configured. Sync — the result is fixed at
-   * setup time, no I/O on the hot path.
+   * Returns the method name the user configured for the named
+   * credential at setup, or null when no method is set.
+   * Particles that declare multiple alternative methods for a
+   * credential (e.g. oauth2 + apikey for the same provider)
+   * call this to find out which method backs the credential.
+   *
+   * Sync — the result is fixed at setup time, no I/O on the
+   * hot path.
    */
-  getConfiguredMethod(): string | null {
-    const v = witGetConfiguredMethod();
+  getConfiguredMethod(name: string): string | null {
+    const v = witGetConfiguredMethod(name);
     return v == null ? null : v;
   },
 };

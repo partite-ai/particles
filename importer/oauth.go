@@ -10,7 +10,7 @@ import (
 )
 
 // flow constants — also surfaced in types/particle.d.ts as the
-// values a manifest may list under `capabilities.credentials.*.flows`.
+// values a manifest may list under `credentials.<name>.methods.<method>.flows`.
 const (
 	flowAuthCode     = "authorization-code"
 	flowAuthCodePKCE = "authorization-code-pkce"
@@ -21,14 +21,14 @@ const (
 // flow against the provider, and stores both metadata and the
 // resulting tokens in the credentials store.
 //
-// The manifest's `flows` list constrains which flow runs. When
+// The method's `flows` list constrains which flow runs. When
 // multiple are offered, the user picks one at the prompt.
-func setupOAuth2(ctx context.Context, opts Options, particle string, decl credentialDecl) error {
-	if len(decl.Flows) == 0 {
-		return fmt.Errorf("manifest declares oauth2 %q without flows", decl.Name)
+func setupOAuth2(ctx context.Context, opts Options, particle, credName string, method credentialMethod) error {
+	if len(method.Flows) == 0 {
+		return fmt.Errorf("manifest declares oauth2 %s.%s without flows", credName, method.Name)
 	}
 
-	cfg, flow, clientSecret, meta, err := promptOAuth2Config(opts.Prompter, decl)
+	cfg, flow, clientSecret, meta, err := promptOAuth2Config(opts.Prompter, method)
 	if err != nil {
 		return err
 	}
@@ -67,10 +67,10 @@ func setupOAuth2(ctx context.Context, opts Options, particle string, decl creden
 		})
 	}
 
-	if _, err := opts.Credentials.Put(ctx, particle, decl.Name, meta, secrets...); err != nil {
+	if _, err := opts.Credentials.Put(ctx, particle, credName, method.Name, meta, secrets...); err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
-	opts.Prompter.Info(fmt.Sprintf("✓ %s — OAuth complete (%s)", decl.Name, flow))
+	opts.Prompter.Info(fmt.Sprintf("✓ %s.%s — OAuth complete (%s)", credName, method.Name, flow))
 	return nil
 }
 
@@ -86,14 +86,14 @@ func setupOAuth2(ctx context.Context, opts Options, particle string, decl creden
 //
 // Scopes come from the manifest itself — re-prompting would
 // invite drift between the schema and what's negotiated.
-func promptOAuth2Config(p Prompter, decl credentialDecl) (*oauth2.Config, string, string, credentials.OAuth2Meta, error) {
-	presets := providerPresets(decl.Provider)
+func promptOAuth2Config(p Prompter, method credentialMethod) (*oauth2.Config, string, string, credentials.OAuth2Meta, error) {
+	presets := providerPresets(method.Provider)
 
-	authURL, err := resolveOAuthURL(p, "Authorization URL", decl.AuthorizationURL, presets.Auth)
+	authURL, err := resolveOAuthURL(p, "Authorization URL", method.AuthorizationURL, presets.Auth)
 	if err != nil {
 		return nil, "", "", credentials.OAuth2Meta{}, err
 	}
-	tokenURL, err := resolveOAuthURL(p, "Token URL", decl.TokenURL, presets.Token)
+	tokenURL, err := resolveOAuthURL(p, "Token URL", method.TokenURL, presets.Token)
 	if err != nil {
 		return nil, "", "", credentials.OAuth2Meta{}, err
 	}
@@ -103,11 +103,11 @@ func promptOAuth2Config(p Prompter, decl credentialDecl) (*oauth2.Config, string
 	// device-code flow is chosen, the device-flow runner errors
 	// with a clear message — there's no path that silently does
 	// the wrong thing.
-	deviceURL := decl.DeviceAuthURL
+	deviceURL := method.DeviceAuthURL
 	if deviceURL == "" {
 		deviceURL = presets.Device
 	}
-	revokeURL := decl.RevocationURL
+	revokeURL := method.RevocationURL
 	if revokeURL == "" {
 		revokeURL = presets.Revoke
 	}
@@ -117,7 +117,7 @@ func promptOAuth2Config(p Prompter, decl credentialDecl) (*oauth2.Config, string
 		return nil, "", "", credentials.OAuth2Meta{}, err
 	}
 
-	flow, err := chooseFlow(p, decl.Flows)
+	flow, err := chooseFlow(p, method.Flows)
 	if err != nil {
 		return nil, "", "", credentials.OAuth2Meta{}, err
 	}
@@ -137,14 +137,14 @@ func promptOAuth2Config(p Prompter, decl credentialDecl) (*oauth2.Config, string
 		return nil, "", "", credentials.OAuth2Meta{}, err
 	}
 
-	if len(decl.Scopes) > 0 {
-		p.Info(fmt.Sprintf("Requesting scopes: %v", decl.Scopes))
+	if len(method.Scopes) > 0 {
+		p.Info(fmt.Sprintf("Requesting scopes: %v", method.Scopes))
 	}
 
 	cfg := &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
-		Scopes:       decl.Scopes,
+		Scopes:       method.Scopes,
 		Endpoint: oauth2.Endpoint{
 			AuthURL:       authURL,
 			TokenURL:      tokenURL,
@@ -156,7 +156,7 @@ func promptOAuth2Config(p Prompter, decl credentialDecl) (*oauth2.Config, string
 		TokenURL:         tokenURL,
 		RevocationURL:    revokeURL,
 		ClientID:         clientID,
-		Scopes:           decl.Scopes,
+		Scopes:           method.Scopes,
 		Flow:             flow,
 	}
 	return cfg, flow, clientSecret, meta, nil

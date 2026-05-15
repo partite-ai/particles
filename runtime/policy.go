@@ -65,6 +65,14 @@ type httpPolicy struct {
 	particle            string
 	declaredCredentials []string
 
+	// credentialHosts maps a declared credential's name to the
+	// (lowercased) set of hosts on which substitution may happen.
+	// A credential with no entry here — or an empty set — is not
+	// HTTP-bound, so the policy substitutes wherever the
+	// placeholder appears (matches the "signing-key / raw" case
+	// where there's no HTTP scope to enforce).
+	credentialHosts map[string]map[string]struct{}
+
 	// refreshAccessToken, when non-nil, lets the bearer-
 	// substitution path proactively rotate an OAuth2 access
 	// token that's within tokenSkew of its ExpiresAt before
@@ -89,6 +97,10 @@ const tokenSkew = 30 * time.Second
 //     authorized; substitution only ever attempts these. nil/empty
 //     → no substitution runs and any placeholder a particle
 //     planted transmits literally.
+//   - credentialHosts pins each credential to its declared host
+//     set; a request to a host outside the set won't trigger
+//     substitution for that credential. Empty / absent entry =
+//     not host-bound.
 //   - refreshAccessToken, when non-nil, enables proactive refresh
 //     of expired bearer tokens before substitution.
 func newHTTPPolicy(
@@ -98,6 +110,7 @@ func newHTTPPolicy(
 	store credentials.Store,
 	particle string,
 	declaredCredentials []string,
+	credentialHosts map[string][]string,
 	refreshAccessToken func(ctx context.Context, id string) (credentials.AccessToken, error),
 ) *httpPolicy {
 	p := &httpPolicy{
@@ -118,6 +131,21 @@ func newHTTPPolicy(
 			if h != "" {
 				p.allowedHosts[strings.ToLower(h)] = struct{}{}
 			}
+		}
+	}
+	if len(credentialHosts) > 0 {
+		p.credentialHosts = make(map[string]map[string]struct{}, len(credentialHosts))
+		for name, hosts := range credentialHosts {
+			if len(hosts) == 0 {
+				continue
+			}
+			set := make(map[string]struct{}, len(hosts))
+			for _, h := range hosts {
+				if h != "" {
+					set[strings.ToLower(h)] = struct{}{}
+				}
+			}
+			p.credentialHosts[name] = set
 		}
 	}
 	return p
@@ -184,7 +212,18 @@ func (p *httpPolicy) substituteCredentials(req *http.Request) error {
 // if a matching placeholder appears there. Errors propagate to Do
 // (the request fails before any partial substitution lands on
 // the wire).
+//
+// Out-of-scope guard: when the credential is bound to a `hosts`
+// set, a request to a host outside the set skips substitution
+// silently. The placeholder transmits literally and the upstream
+// 401 (or similar) surfaces to the particle as the failure signal
+// — matches the "declared but not configured" fall-through.
 func (p *httpPolicy) substituteOne(req *http.Request, name string) error {
+	if hosts, bound := p.credentialHosts[name]; bound {
+		if _, ok := hosts[strings.ToLower(req.URL.Hostname())]; !ok {
+			return nil
+		}
+	}
 	desc, err := p.store.GetByName(req.Context(), p.particle, name)
 	if err != nil {
 		// Declared but not configured → nothing to substitute.

@@ -22,7 +22,7 @@ var idShape = regexp.MustCompile(`^[a-z2-7]{26}$`)
 
 func TestPut_GeneratesID(t *testing.T) {
 	s := memory.New()
-	desc, err := s.Put(context.Background(), "yaml-tools", "main", credentials.BasicMeta{Username: "u"})
+	desc, err := s.Put(context.Background(), "yaml-tools", "main", "main", credentials.BasicMeta{Username: "u"})
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestPut_PreservesIDAndSecretsOnNameOverwrite(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
 
-	first, _ := s.Put(ctx, "yaml-tools", "gh", credentials.OAuth2Meta{ClientID: "old"})
+	first, _ := s.Put(ctx, "yaml-tools", "gh", "gh", credentials.OAuth2Meta{ClientID: "old"})
 	if err := s.WriteSecrets(ctx, "yaml-tools", first.ID,
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("at")},
 		credentials.Secret{Role: credentials.SecretRoleRefreshToken, Value: []byte("rt")},
@@ -53,7 +53,7 @@ func TestPut_PreservesIDAndSecretsOnNameOverwrite(t *testing.T) {
 
 	// Update metadata only — e.g., user re-ran setup with a
 	// new client ID. Secrets should survive.
-	second, _ := s.Put(ctx, "yaml-tools", "gh", credentials.OAuth2Meta{ClientID: "new"})
+	second, _ := s.Put(ctx, "yaml-tools", "gh", "gh", credentials.OAuth2Meta{ClientID: "new"})
 	if first.ID != second.ID {
 		t.Errorf("ID changed on metadata-only update: %q → %q", first.ID, second.ID)
 	}
@@ -82,7 +82,7 @@ func TestPut_PreservesIDAndSecretsOnNameOverwrite(t *testing.T) {
 func TestGetByID(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
-	put, _ := s.Put(ctx, "yaml-tools", "main", credentials.RawMeta{})
+	put, _ := s.Put(ctx, "yaml-tools", "main", "main", credentials.RawMeta{})
 	got, err := s.GetByID(ctx, "yaml-tools", put.ID)
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
@@ -95,7 +95,7 @@ func TestGetByID(t *testing.T) {
 func TestGetByName(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
-	put, _ := s.Put(ctx, "yaml-tools", "main", credentials.RawMeta{})
+	put, _ := s.Put(ctx, "yaml-tools", "main", "main", credentials.RawMeta{})
 	got, err := s.GetByName(ctx, "yaml-tools", "main")
 	if err != nil {
 		t.Fatalf("GetByName: %v", err)
@@ -136,7 +136,7 @@ func TestList(t *testing.T) {
 		{"anthropic", "raw", credentials.RawMeta{}, credentials.KindRaw},
 	}
 	for _, p := range seed {
-		if _, err := s.Put(ctx, p.particle, p.name, p.meta); err != nil {
+		if _, err := s.Put(ctx, p.particle, p.name, p.name, p.meta); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -176,7 +176,7 @@ func TestDelete_RemovesEverything(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
 
-	put, _ := s.Put(ctx, "tools", "x", credentials.RawMeta{})
+	put, _ := s.Put(ctx, "tools", "x", "x", credentials.RawMeta{})
 	if err := s.WriteSecrets(ctx, "tools", put.ID,
 		credentials.Secret{Role: credentials.SecretRoleValue, Value: []byte("v")},
 	); err != nil {
@@ -212,7 +212,7 @@ func TestPut_AtomicCreateWithSecrets(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
 
-	desc, err := s.Put(ctx, "yaml-tools", "gh", credentials.OAuth2Meta{ClientID: "c"},
+	desc, err := s.Put(ctx, "yaml-tools", "gh", "gh", credentials.OAuth2Meta{ClientID: "c"},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("at")},
 		credentials.Secret{Role: credentials.SecretRoleRefreshToken, Value: []byte("rt")},
 		credentials.Secret{Role: credentials.SecretRoleClientSecret, Value: []byte("cs")},
@@ -249,7 +249,7 @@ func TestPut_AtomicUpdatePreservesUnlistedSecrets(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
 
-	first, _ := s.Put(ctx, "yaml-tools", "gh",
+	first, _ := s.Put(ctx, "yaml-tools", "gh", "gh",
 		credentials.OAuth2Meta{ClientID: "c-1"},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("at-1")},
 		credentials.Secret{Role: credentials.SecretRoleRefreshToken, Value: []byte("rt-1")},
@@ -258,7 +258,7 @@ func TestPut_AtomicUpdatePreservesUnlistedSecrets(t *testing.T) {
 
 	// Re-run setup with a new client id + new access token.
 	// Refresh / client secret left alone.
-	second, _ := s.Put(ctx, "yaml-tools", "gh",
+	second, _ := s.Put(ctx, "yaml-tools", "gh", "gh",
 		credentials.OAuth2Meta{ClientID: "c-2"},
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("at-2")},
 	)
@@ -288,10 +288,13 @@ func TestPut_AtomicUpdatePreservesUnlistedSecrets(t *testing.T) {
 func TestPut_RejectsEmptyArgs(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
-	if _, err := s.Put(ctx, "yaml-tools", "", credentials.RawMeta{}); err == nil {
+	if _, err := s.Put(ctx, "yaml-tools", "", "m", credentials.RawMeta{}); err == nil {
 		t.Error("Put with empty name should error")
 	}
-	if _, err := s.Put(ctx, "yaml-tools", "name", nil); err == nil {
+	if _, err := s.Put(ctx, "yaml-tools", "name", "", credentials.RawMeta{}); err == nil {
+		t.Error("Put with empty method should error")
+	}
+	if _, err := s.Put(ctx, "yaml-tools", "name", "name", nil); err == nil {
 		t.Error("Put with nil Metadata should error")
 	}
 }
@@ -303,7 +306,7 @@ func TestPut_RejectsEmptyArgs(t *testing.T) {
 func TestWriteSecrets_RoundTrip(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
-	put, _ := s.Put(ctx, "tools", "k", credentials.OAuth2Meta{})
+	put, _ := s.Put(ctx, "tools", "k", "k", credentials.OAuth2Meta{})
 
 	if err := s.WriteSecrets(ctx, "tools", put.ID,
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("abc")},
@@ -325,7 +328,7 @@ func TestWriteSecrets_RoundTrip(t *testing.T) {
 func TestWriteSecrets_AtomicRotateLeavesOthersAlone(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
-	put, _ := s.Put(ctx, "tools", "gh", credentials.OAuth2Meta{})
+	put, _ := s.Put(ctx, "tools", "gh", "gh", credentials.OAuth2Meta{})
 
 	_ = s.WriteSecrets(ctx, "tools", put.ID,
 		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: []byte("at-1")},
@@ -358,7 +361,7 @@ func TestWriteSecrets_AtomicRotateLeavesOthersAlone(t *testing.T) {
 func TestReadSecret_NotSet(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
-	put, _ := s.Put(ctx, "tools", "k", credentials.RawMeta{})
+	put, _ := s.Put(ctx, "tools", "k", "k", credentials.RawMeta{})
 
 	_, err := s.ReadSecret(ctx, "tools", put.ID, credentials.SecretRoleValue)
 	if !errors.Is(err, credentials.ErrSecretNotSet) {
@@ -391,7 +394,7 @@ func TestWriteSecrets_EntryMissing(t *testing.T) {
 
 func TestWriteSecrets_RejectsEmptyRole(t *testing.T) {
 	s := memory.New()
-	put, _ := s.Put(context.Background(), "tools", "k", credentials.RawMeta{})
+	put, _ := s.Put(context.Background(), "tools", "k", "k", credentials.RawMeta{})
 	if err := s.WriteSecrets(context.Background(), "tools", put.ID,
 		credentials.Secret{Role: "", Value: []byte("v")},
 	); err == nil {
@@ -402,7 +405,7 @@ func TestWriteSecrets_RejectsEmptyRole(t *testing.T) {
 func TestDeleteSecret_Idempotent(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
-	put, _ := s.Put(ctx, "tools", "k", credentials.RawMeta{})
+	put, _ := s.Put(ctx, "tools", "k", "k", credentials.RawMeta{})
 	_ = s.WriteSecrets(ctx, "tools", put.ID,
 		credentials.Secret{Role: credentials.SecretRoleValue, Value: []byte("v")},
 	)
@@ -429,7 +432,7 @@ func TestDeleteSecret_Idempotent(t *testing.T) {
 func TestReadSecret_ReturnsCopy(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
-	put, _ := s.Put(ctx, "tools", "k", credentials.RawMeta{})
+	put, _ := s.Put(ctx, "tools", "k", "k", credentials.RawMeta{})
 	original := []byte("secret")
 	_ = s.WriteSecrets(ctx, "tools", put.ID,
 		credentials.Secret{Role: credentials.SecretRoleValue, Value: original},
@@ -451,8 +454,8 @@ func TestReadSecret_ReturnsCopy(t *testing.T) {
 func TestScopedByParticle(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
-	yaml, _ := s.Put(ctx, "yaml-tools", "shared", credentials.RawMeta{})
-	json, _ := s.Put(ctx, "json-tools", "shared", credentials.RawMeta{})
+	yaml, _ := s.Put(ctx, "yaml-tools", "shared", "shared", credentials.RawMeta{})
+	json, _ := s.Put(ctx, "json-tools", "shared", "shared", credentials.RawMeta{})
 
 	if yaml.ID == json.ID {
 		t.Errorf("IDs collided across particles: %q", yaml.ID)
@@ -473,7 +476,7 @@ func TestIDShape_NoSpecialChars(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
 	for i := 0; i < 50; i++ {
-		desc, err := s.Put(ctx, "tools", "n", credentials.RawMeta{})
+		desc, err := s.Put(ctx, "tools", "n", "n", credentials.RawMeta{})
 		if err != nil {
 			t.Fatal(err)
 		}

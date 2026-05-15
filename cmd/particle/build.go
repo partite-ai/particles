@@ -10,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/spf13/cobra"
 
 	"github.com/partite-ai/particle/credentials"
@@ -52,7 +53,7 @@ authentication method.`,
 		},
 	}
 	cmd.Flags().BoolVar(&pack, "pack", false, "Write <name>-<version>.particle to CWD instead of registering")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Path to the particle state DB (default: <user-config-dir>/particle/state.db)")
+	cmd.Flags().StringVar(&dbPath, "db", "", dbFlagUsage())
 	cmd.Flags().BoolVarP(&acceptPerms, "yes", "y", false, "Auto-accept the permission summary (does not skip credential prompts)")
 	cmd.Flags().BoolVar(&confirmPerms, "confirm-permissions", false, "Force the permission prompt even when capabilities match the prior version")
 	cmd.Flags().StringVar(&profile, "profile", "", "Write CPU + heap pprof profiles with this prefix")
@@ -161,36 +162,25 @@ func runRegister(cmd *cobra.Command, res *build.Result, dbPath string, permMode 
 }
 
 // declaredCredentialNames parses manifest.json and returns the
-// names of every method declared under
-// `capabilities.credentials.methods`, sorted. Empty slice when
-// the capability isn't declared.
+// names of every credential declared at the top-level
+// `credentials` map, sorted. Empty slice when none are declared.
 //
 // The CLI uses this only as a "do we need to build the
-// credentials store at all" gate; the per-method semantics live
-// in the importer.
+// credentials store at all" gate; the per-credential / per-method
+// semantics live in the importer.
 func declaredCredentialNames(fsys fs.FS) ([]string, error) {
 	data, err := fs.ReadFile(fsys, "manifest.json")
 	if err != nil {
 		return nil, fmt.Errorf("read manifest.json: %w", err)
 	}
 	var m struct {
-		Capabilities map[string]json.RawMessage `json:"capabilities"`
+		Credentials map[string]json.RawMessage `json:"credentials"`
 	}
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parse manifest.json: %w", err)
 	}
-	raw, ok := m.Capabilities["credentials"]
-	if !ok {
-		return nil, nil
-	}
-	var shell struct {
-		Methods map[string]json.RawMessage `json:"methods"`
-	}
-	if err := json.Unmarshal(raw, &shell); err != nil {
-		return nil, fmt.Errorf("parse manifest.json capabilities.credentials: %w", err)
-	}
-	out := make([]string, 0, len(shell.Methods))
-	for n := range shell.Methods {
+	out := make([]string, 0, len(m.Credentials))
+	for n := range m.Credentials {
 		out = append(out, n)
 	}
 	sort.Strings(out)
@@ -218,10 +208,16 @@ func manifestNameVersion(fsys fs.FS) (string, string, error) {
 	return m.Name, m.Version, nil
 }
 
-// writeParticleTar packs every file in fsys into a deterministic USTAR
-// tarball at outPath. "Deterministic" matters for content-addressing:
-// two builds of the same source should produce byte-identical output.
-// We rely on fs.WalkDir's lexical traversal order plus a zero ModTime.
+// writeParticleTar packs every file in fsys into a deterministic
+// zstd-compressed tar archive at outPath. "Deterministic" matters
+// for content-addressing: two builds of the same source should
+// produce byte-identical output. We rely on fs.WalkDir's lexical
+// traversal order, a zero ModTime, the fixed POSIX.1-1988 tar
+// header dialect (Format: tar.FormatUSTAR below — picked over PAX
+// because PAX writes extended headers carrying metadata that's
+// harder to keep byte-stable), a fixed zstd level, and
+// concurrency=1 (klauspost's zstd encoder can produce different
+// frame splits under multi-threading).
 func writeParticleTar(fsys fs.FS, outPath string) error {
 	f, err := os.Create(outPath)
 	if err != nil {
@@ -229,10 +225,16 @@ func writeParticleTar(fsys fs.FS, outPath string) error {
 	}
 	defer f.Close()
 
-	tw := tar.NewWriter(f)
-	defer tw.Close()
+	zw, err := zstd.NewWriter(f,
+		zstd.WithEncoderLevel(zstd.SpeedBetterCompression),
+		zstd.WithEncoderConcurrency(1),
+	)
+	if err != nil {
+		return fmt.Errorf("zstd writer: %w", err)
+	}
+	tw := tar.NewWriter(zw)
 
-	return fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+	walkErr := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -258,6 +260,22 @@ func writeParticleTar(fsys fs.FS, outPath string) error {
 		}
 		return nil
 	})
+	if walkErr != nil {
+		_ = tw.Close()
+		_ = zw.Close()
+		return walkErr
+	}
+	// Close in LIFO: tar (trailer into zw) → zstd (final frame into
+	// f). Failures here turn a corrupt .particle into a clear error
+	// rather than a confusing import failure downstream.
+	if err := tw.Close(); err != nil {
+		_ = zw.Close()
+		return fmt.Errorf("close tar: %w", err)
+	}
+	if err := zw.Close(); err != nil {
+		return fmt.Errorf("close zstd: %w", err)
+	}
+	return nil
 }
 
 // errLogs extracts captured wasm logs from a *build.Error, if the

@@ -20,10 +20,10 @@ declare module "@partite-ai/particle-credentials" {
   // runtime at execution time.
   
   /**
-   * Per-particle credential access. The particle's
-   * `capabilities.credentials.methods` declaration governs which names
-   * are valid — calling `fetcher` / `getRaw` with an undeclared name
-   * throws a `not-configured` error.
+   * Per-particle credential access. The particle's top-level
+   * `credentials` map declares which names are valid — calling
+   * `fetcher` / `getRaw` with an undeclared name throws a
+   * `not-configured` error.
    */
   export const credentials: {
     /**
@@ -31,6 +31,12 @@ declare module "@partite-ai/particle-credentials" {
      * Each request through it receives the credential at the
      * configured location (Authorization header, custom header, or
      * query param) before the request leaves the host.
+     *
+     * Host-side scope: when the manifest pins the credential to a
+     * `hosts` set, substitution only fires on requests to one of
+     * those hosts; a stray request to another host transmits the
+     * placeholder literally and the upstream returns 401, surfacing
+     * misuse to the particle.
      *
      * Available for `basic`, `oauth2`, and `apikey` credentials. For
      * `signing-key` / `raw`, use `@partite-ai/particle-signing`'s
@@ -47,16 +53,18 @@ declare module "@partite-ai/particle-credentials" {
     getRaw(name: string): Promise<string>;
   
     /**
-     * Returns the name of the credential method the user configured
-     * at setup, or `null` when no method is configured. Particles
-     * whose manifest declares multiple alternative auth methods
-     * (e.g. oauth2 + apikey for the same provider) call this to
-     * discover which one to pass to `fetcher` / `getRaw`.
+     * Returns the method name the user configured for the named
+     * credential at setup, or `null` when no method is set.
+     * Particles whose manifest declares multiple alternative
+     * methods for a credential (e.g. oauth2 + apikey for the same
+     * provider) call this to discover which method backs the
+     * credential — usually unneeded if all methods share an
+     * apply-spec (the common case).
      *
      * Synchronous — the result is fixed at setup time and resolves
      * via a single host call without any I/O on the hot path.
      */
-    getConfiguredMethod(): string | null;
+    getConfiguredMethod(name: string): string | null;
   };
   
   /**

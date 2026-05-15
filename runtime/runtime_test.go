@@ -331,8 +331,9 @@ export default {
   name: "shim-test",
   description: "exercises the @partite-ai/particle-credentials shim",
   version: "0.1.0",
-  capabilities: {
-    credentials: {
+  capabilities: {},
+  credentials: {
+    svc: {
       required: false,
       methods: { tok: { type: "apikey", location: { kind: "header", name: "X-K" } } },
     },
@@ -341,7 +342,7 @@ export default {
     method: {
       description: "Return the configured method name (or null).",
       inputSchema: { type: "object" },
-      handler: async () => ({ method: credentials.getConfiguredMethod() }),
+      handler: async () => ({ method: credentials.getConfiguredMethod("svc") }),
     },
   },
 };`

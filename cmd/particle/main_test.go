@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // buildCLI compiles cmd/particle into the test's temp dir and returns
@@ -313,7 +315,12 @@ func TestParticleBuild_StateDB_TightensExistingLoosePerms(t *testing.T) {
 
 func tarEntries(t *testing.T, data []byte) []string {
 	t.Helper()
-	tr := tar.NewReader(bytes.NewReader(data))
+	zr, err := zstd.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("zstd open: %v", err)
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
 	var names []string
 	for {
 		hdr, err := tr.Next()

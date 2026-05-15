@@ -31,7 +31,7 @@ type Options struct {
 	Registry registry.Registry
 
 	// Credentials store consulted when the manifest declares any
-	// `capabilities.credentials`. May be nil when the manifest
+	// top-level `credentials`. May be nil when the manifest
 	// declares none. Required otherwise.
 	Credentials credentials.Store
 
@@ -86,15 +86,15 @@ type ChoiceOption struct {
 // for credentials when the manifest declares them. On success
 // returns the resulting registry entry.
 //
-// Authentication shape: the manifest declares
-// `capabilities.credentials.methods` as a map of named
-// alternative methods (e.g. oauth2 + apikey for the same
-// provider). The user picks one at setup; only that one is
-// provisioned. The runtime exposes the chosen name via
-// `credentials.getConfiguredMethod()`.
+// Authentication shape: the manifest's top-level `credentials`
+// map declares one or more named credentials (e.g., "github",
+// "openai"). Each declares one or more alternative methods —
+// at setup the user picks one per credential. The runtime
+// exposes the chosen method per credential via
+// `credentials.getConfiguredMethod(name)`.
 //
-// Idempotent in the steady state: if any method is already
-// configured, re-importing skips prompting and just re-registers.
+// Idempotent in the steady state: any credential that's already
+// configured is skipped; only unconfigured ones prompt.
 func Import(ctx context.Context, particleFS fs.FS, opts Options) (registry.Entry, error) {
 	if opts.Registry == nil {
 		return registry.Entry{}, errors.New("importer: Registry is required")
@@ -105,7 +105,7 @@ func Import(ctx context.Context, particleFS fs.FS, opts Options) (registry.Entry
 		return registry.Entry{}, err
 	}
 
-	creds, err := parseCredentialsCapability(manifest.CapabilitiesRaw)
+	creds, err := parseCredentials(manifest.CredentialsRaw)
 	if err != nil {
 		return registry.Entry{}, err
 	}
@@ -117,20 +117,17 @@ func Import(ctx context.Context, particleFS fs.FS, opts Options) (registry.Entry
 		return registry.Entry{}, err
 	}
 
-	if creds != nil && len(creds.Methods) > 0 {
+	if len(creds) > 0 {
 		if opts.Credentials == nil {
 			return registry.Entry{}, errors.New("importer: particle declares credentials, but no credentials store was provided")
 		}
 		if opts.Prompter == nil {
 			return registry.Entry{}, errors.New("importer: particle declares credentials, but no Prompter was provided")
 		}
-		// The selected method is implicit in the credentials store
-		// (the unique credential row's name IS the selected method),
-		// so we don't need to record it separately. setupCredentials
-		// still runs for the side effects: prompting, OAuth flow,
-		// writing the credential row.
-		if _, err := setupCredentials(ctx, opts, manifest.Name, creds); err != nil {
-			return registry.Entry{}, err
+		for _, cred := range creds {
+			if _, err := setupOneCredential(ctx, opts, manifest.Name, cred); err != nil {
+				return registry.Entry{}, err
+			}
 		}
 	}
 
@@ -144,31 +141,28 @@ func Import(ctx context.Context, particleFS fs.FS, opts Options) (registry.Entry
 	}, nil
 }
 
-// Reconfigure re-runs credential setup against an already-registered
-// particle, letting the user pick a (possibly different)
-// authentication method and provide fresh values. Returns the
-// registry entry plus the name of the method the user chose —
-// callers don't need to round-trip back to [credentials.Store.ConfiguredMethod]
-// to learn what was just configured.
+// Reconfigure re-runs credential setup for one named credential
+// against an already-registered particle, letting the user pick a
+// (possibly different) method and provide fresh values. Returns
+// the registry entry plus the name of the method the user chose —
+// callers don't need to round-trip back to
+// [credentials.Store.ConfiguredMethod] to learn what was just
+// configured.
 //
-// Identity is per-particle-name — credentials live in
-// [credentials.Store] keyed by name only. The selected method is
-// implicit: it's the name of the (single) credential row stored
-// for the particle. Picking a different method calls into
-// [credentials.Store.Put], which atomically evicts any other
-// credential for the particle in the same transaction as the new
-// write — readers never observe two credentials for one
-// particle.
+// `credName` selects which entry in the manifest's top-level
+// `credentials` map to reconfigure. When the manifest declares
+// exactly one credential, callers may pass "" — the lone entry
+// is used; that's the common case for single-credential particles.
+//
+// Switching method calls into [credentials.Store.Put], which
+// atomically replaces the row's metadata and wipes any prior
+// method's secrets in the same transaction — readers never see a
+// half-rotated credential.
 //
 // To pick which manifest's method declarations to walk,
 // Reconfigure resolves the highest semver-registered version of
-// name and uses that one's manifest. Particles whose declared
-// methods have changed across versions get the most recent
-// view, which is the one the user is most likely thinking about.
-//
-// Errors when the particle isn't registered, declares no
-// credentials, or the chosen method's setup fails.
-func Reconfigure(ctx context.Context, name string, opts Options) (registry.Entry, string, error) {
+// the particle and uses that one's manifest.
+func Reconfigure(ctx context.Context, particleName, credName string, opts Options) (registry.Entry, string, error) {
 	if opts.Registry == nil {
 		return registry.Entry{}, "", errors.New("importer: Registry is required")
 	}
@@ -179,44 +173,72 @@ func Reconfigure(ctx context.Context, name string, opts Options) (registry.Entry
 		return registry.Entry{}, "", errors.New("importer: Prompter is required")
 	}
 
-	version, err := highestRegisteredVersion(ctx, opts.Registry, name)
+	version, err := highestRegisteredVersion(ctx, opts.Registry, particleName)
 	if err != nil {
 		return registry.Entry{}, "", err
 	}
-	entry, err := opts.Registry.Get(ctx, name, version)
+	entry, err := opts.Registry.Get(ctx, particleName, version)
 	if err != nil {
-		return registry.Entry{}, "", fmt.Errorf("registry.Get %s@%s: %w", name, version, err)
+		return registry.Entry{}, "", fmt.Errorf("registry.Get %s@%s: %w", particleName, version, err)
 	}
 
 	manifest, err := readManifest(entry.Particle)
 	if err != nil {
 		return registry.Entry{}, "", err
 	}
-	creds, err := parseCredentialsCapability(manifest.CapabilitiesRaw)
+	creds, err := parseCredentials(manifest.CredentialsRaw)
 	if err != nil {
 		return registry.Entry{}, "", err
 	}
-	if creds == nil || len(creds.Methods) == 0 {
-		return registry.Entry{}, "", fmt.Errorf("%s@%s declares no credentials to configure", name, version)
+	if len(creds) == 0 {
+		return registry.Entry{}, "", fmt.Errorf("%s@%s declares no credentials to configure", particleName, version)
 	}
 
-	previous, err := opts.Credentials.ConfiguredMethod(ctx, name)
+	cred, err := pickCredential(creds, credName)
 	if err != nil {
-		return registry.Entry{}, "", fmt.Errorf("look up current method: %w", err)
+		return registry.Entry{}, "", fmt.Errorf("%s@%s: %w", particleName, version, err)
+	}
+
+	previous, err := opts.Credentials.ConfiguredMethod(ctx, particleName, cred.Name)
+	if err != nil {
+		return registry.Entry{}, "", fmt.Errorf("look up current method for %s: %w", cred.Name, err)
 	}
 	if previous != "" {
-		opts.Prompter.Info(fmt.Sprintf("Currently configured: %s", previous))
+		opts.Prompter.Info(fmt.Sprintf("Currently configured: %s.%s", cred.Name, previous))
 	}
 
-	chosen, err := chooseAuthMethod(opts.Prompter, creds.Methods)
+	chosen, err := chooseAuthMethod(opts.Prompter, cred)
 	if err != nil {
 		return registry.Entry{}, "", err
 	}
-	opts.Prompter.Info(fmt.Sprintf("→ %s (%s) — %s", chosen.Name, chosen.Type, chosen.Description))
-	if err := dispatchSetup(ctx, opts, name, chosen); err != nil {
+	opts.Prompter.Info(fmt.Sprintf("→ %s.%s (%s) — %s", cred.Name, chosen.Name, chosen.Type, chosen.Description))
+	if err := dispatchSetup(ctx, opts, particleName, cred.Name, chosen); err != nil {
 		return registry.Entry{}, "", err
 	}
 	return entry, chosen.Name, nil
+}
+
+// pickCredential resolves credName to a credentialDecl from creds.
+// Empty credName + exactly one credential → that credential.
+// Empty credName + multiple credentials → ambiguous, error listing
+// available names. Otherwise → exact match.
+func pickCredential(creds []credentialDecl, credName string) (credentialDecl, error) {
+	if credName == "" {
+		if len(creds) == 1 {
+			return creds[0], nil
+		}
+		names := make([]string, 0, len(creds))
+		for _, c := range creds {
+			names = append(names, c.Name)
+		}
+		return credentialDecl{}, fmt.Errorf("multiple credentials declared (%v); pass a credential name to disambiguate", names)
+	}
+	for _, c := range creds {
+		if c.Name == credName {
+			return c, nil
+		}
+	}
+	return credentialDecl{}, fmt.Errorf("no credential named %q", credName)
 }
 
 // highestRegisteredVersion returns the highest semver-registered
@@ -256,97 +278,77 @@ func canonicalSemver(v string) string {
 	return "v" + v
 }
 
-// setupCredentials enforces the "exactly one method configured"
-// invariant: if any method is already set it returns that name;
-// otherwise (when required) it prompts the user to pick one,
-// runs that method's setup, and returns the method's name. Empty
+// setupOneCredential walks one declared credential through the
+// "is it already configured? if not, prompt + setup" flow. Empty
 // return + nil error means optional auth was declined / skipped.
-func setupCredentials(ctx context.Context, opts Options, particle string, creds *credentialsCapability) (string, error) {
-	existing, err := findConfiguredMethod(ctx, opts.Credentials, particle, creds.Methods)
+func setupOneCredential(ctx context.Context, opts Options, particle string, cred credentialDecl) (string, error) {
+	existing, err := opts.Credentials.ConfiguredMethod(ctx, particle, cred.Name)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("lookup configured method for %s: %w", cred.Name, err)
 	}
 	if existing != "" {
-		opts.Prompter.Info(fmt.Sprintf("✓ %s — authentication already configured", existing))
+		opts.Prompter.Info(fmt.Sprintf("✓ %s.%s — authentication already configured", cred.Name, existing))
 		return existing, nil
 	}
-	if !creds.Required {
-		opts.Prompter.Info("Authentication is optional for this particle; skipping credential setup.")
+	if !cred.Required {
+		opts.Prompter.Info(fmt.Sprintf("%s: authentication is optional; skipping credential setup.", cred.Name))
 		return "", nil
 	}
 
-	chosen, err := chooseAuthMethod(opts.Prompter, creds.Methods)
+	chosen, err := chooseAuthMethod(opts.Prompter, cred)
 	if err != nil {
 		return "", err
 	}
-	opts.Prompter.Info(fmt.Sprintf("→ %s (%s) — %s", chosen.Name, chosen.Type, chosen.Description))
-	if err := dispatchSetup(ctx, opts, particle, chosen); err != nil {
+	opts.Prompter.Info(fmt.Sprintf("→ %s.%s (%s) — %s", cred.Name, chosen.Name, chosen.Type, chosen.Description))
+	if err := dispatchSetup(ctx, opts, particle, cred.Name, chosen); err != nil {
 		return "", err
 	}
 	return chosen.Name, nil
 }
 
-// findConfiguredMethod returns the name of any declared method
-// already present in the store, or "" when none is. Lookup errors
-// other than ErrNotFound propagate.
-func findConfiguredMethod(ctx context.Context, store credentials.Store, particle string, methods []credentialDecl) (string, error) {
-	for _, m := range methods {
-		_, err := store.GetByName(ctx, particle, m.Name)
-		if err == nil {
-			return m.Name, nil
-		}
-		if !errors.Is(err, credentials.ErrNotFound) {
-			return "", fmt.Errorf("lookup %s: %w", m.Name, err)
-		}
-	}
-	return "", nil
-}
-
-// chooseAuthMethod short-circuits when the manifest declared
+// chooseAuthMethod short-circuits when the credential declared
 // exactly one method; otherwise prompts the user to pick.
-func chooseAuthMethod(p Prompter, methods []credentialDecl) (credentialDecl, error) {
-	if len(methods) == 1 {
-		return methods[0], nil
+func chooseAuthMethod(p Prompter, cred credentialDecl) (credentialMethod, error) {
+	if len(cred.Methods) == 1 {
+		return cred.Methods[0], nil
 	}
-	options := make([]ChoiceOption, 0, len(methods))
-	for _, m := range methods {
+	options := make([]ChoiceOption, 0, len(cred.Methods))
+	for _, m := range cred.Methods {
 		opt := ChoiceOption{Value: m.Name, Label: m.Name + " (" + m.Type + ")"}
 		if m.Description != "" {
 			opt.Description = m.Description
 		}
 		options = append(options, opt)
 	}
-	chosen, err := p.Choice("Pick an authentication method:", options)
+	chosen, err := p.Choice(fmt.Sprintf("Pick an authentication method for %s:", cred.Name), options)
 	if err != nil {
-		return credentialDecl{}, err
+		return credentialMethod{}, err
 	}
-	for _, m := range methods {
+	for _, m := range cred.Methods {
 		if m.Name == chosen {
 			return m, nil
 		}
 	}
-	return credentialDecl{}, fmt.Errorf("internal: chosen method %q not found", chosen)
+	return credentialMethod{}, fmt.Errorf("internal: chosen method %q not found", chosen)
 }
 
-// dispatchSetup routes the setup of a single declared method to
-// the per-type helper. Each helper writes via Store.Put, which
-// atomically evicts any other credential for the particle — so
-// callers don't have to thread an "old name" through to handle
-// the Reconfigure method-switch case.
-func dispatchSetup(ctx context.Context, opts Options, particle string, decl credentialDecl) error {
-	switch decl.Type {
+// dispatchSetup routes one method's setup to the per-type helper.
+// Each helper writes via Store.Put with credName as the row name
+// and method.Name as the method discriminator.
+func dispatchSetup(ctx context.Context, opts Options, particle, credName string, method credentialMethod) error {
+	switch method.Type {
 	case "basic":
-		return setupBasic(ctx, opts, particle, decl)
+		return setupBasic(ctx, opts, particle, credName, method)
 	case "apikey":
-		return setupAPIKey(ctx, opts, particle, decl)
+		return setupAPIKey(ctx, opts, particle, credName, method)
 	case "signing-key":
-		return setupSigningKey(ctx, opts, particle, decl)
+		return setupSigningKey(ctx, opts, particle, credName, method)
 	case "raw":
-		return setupRaw(ctx, opts, particle, decl)
+		return setupRaw(ctx, opts, particle, credName, method)
 	case "oauth2":
-		return setupOAuth2(ctx, opts, particle, decl)
+		return setupOAuth2(ctx, opts, particle, credName, method)
 	}
-	return fmt.Errorf("unknown credential type %q", decl.Type)
+	return fmt.Errorf("unknown credential type %q", method.Type)
 }
 
 // readManifest pulls manifest.json off the particle FS and decodes
@@ -371,4 +373,5 @@ type manifest struct {
 	Description     string                     `json:"description"`
 	Version         string                     `json:"version"`
 	CapabilitiesRaw map[string]json.RawMessage `json:"capabilities"`
+	CredentialsRaw  map[string]json.RawMessage `json:"credentials"`
 }

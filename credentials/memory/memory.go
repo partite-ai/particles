@@ -53,6 +53,7 @@ type particleSlot struct {
 type record struct {
 	id      string
 	name    string
+	method  string
 	meta    credentials.Metadata
 	secrets map[credentials.SecretRole][]byte
 }
@@ -119,28 +120,28 @@ func (s *Store) List(_ context.Context, particle string) ([]credentials.ListEntr
 	out := make([]credentials.ListEntry, 0, len(slot.byID))
 	for _, rec := range slot.byID {
 		out = append(out, credentials.ListEntry{
-			ID:   rec.id,
-			Name: rec.name,
-			Kind: rec.meta.Kind(),
+			ID:     rec.id,
+			Name:   rec.name,
+			Method: rec.method,
+			Kind:   rec.meta.Kind(),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 
-// Put sets the particle's credential, enforcing the "one
-// credential per particle" invariant: any existing credential
-// under a name OTHER than `name` is evicted in the same critical
-// section as the new write. Re-Putting under the same name
-// preserves the entry's ID and untouched secrets (the
-// OAuth-refresh path: write new ExpiresAt + new access token,
-// don't touch refresh token or client secret).
-func (s *Store) Put(_ context.Context, particle, name string, meta credentials.Metadata, secrets ...credentials.Secret) (credentials.Descriptor, error) {
+// Put configures the (particle, name) credential — see the
+// [credentials.Store] interface for the full contract. Method
+// switch wipes the row's prior secrets before writing new ones.
+func (s *Store) Put(_ context.Context, particle, name, method string, meta credentials.Metadata, secrets ...credentials.Secret) (credentials.Descriptor, error) {
 	if meta == nil {
 		return credentials.Descriptor{}, fmt.Errorf("memory: Put requires a non-nil Metadata")
 	}
 	if name == "" {
 		return credentials.Descriptor{}, fmt.Errorf("memory: Put requires a non-empty name")
+	}
+	if method == "" {
+		return credentials.Descriptor{}, fmt.Errorf("memory: Put requires a non-empty method")
 	}
 	for i, sec := range secrets {
 		if sec.Role == "" {
@@ -152,27 +153,25 @@ func (s *Store) Put(_ context.Context, particle, name string, meta credentials.M
 	defer s.mu.Unlock()
 
 	slot := s.slotFor(particle)
-	// Evict any other credential for this particle so the
-	// "one credential per particle" invariant holds. Walk
-	// byName since byID may diverge under future changes.
-	for otherName, other := range slot.byName {
-		if otherName == name {
-			continue
-		}
-		delete(slot.byID, other.id)
-		delete(slot.byName, otherName)
-	}
 	rec, isUpdate := slot.byName[name]
 	if !isUpdate {
 		rec = &record{
 			id:      s.idGenerator(),
 			name:    name,
+			method:  method,
 			meta:    meta,
 			secrets: map[credentials.SecretRole][]byte{},
 		}
 		slot.byID[rec.id] = rec
 		slot.byName[rec.name] = rec
 	} else {
+		if rec.method != method {
+			// Method switch — wipe the prior secrets so a
+			// "pat" → "oauth" change can't leave the api-key
+			// bytes lying around.
+			rec.secrets = map[credentials.SecretRole][]byte{}
+		}
+		rec.method = method
 		rec.meta = meta
 	}
 	for _, sec := range secrets {
@@ -183,23 +182,21 @@ func (s *Store) Put(_ context.Context, particle, name string, meta credentials.M
 	return descriptorOf(rec), nil
 }
 
-// ConfiguredMethod returns the name of the credential stored for
-// particle, or "" when none. Deterministic by name if multiple
-// credentials happen to coexist.
-func (s *Store) ConfiguredMethod(_ context.Context, particle string) (string, error) {
+// ConfiguredMethod returns the method name stored for
+// (particle, name), or "" when no credential is configured under
+// that name.
+func (s *Store) ConfiguredMethod(_ context.Context, particle, name string) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	slot, ok := s.byParticle[particle]
-	if !ok || len(slot.byName) == 0 {
+	if !ok {
 		return "", nil
 	}
-	best := ""
-	for name := range slot.byName {
-		if best == "" || name < best {
-			best = name
-		}
+	rec, ok := slot.byName[name]
+	if !ok {
+		return "", nil
 	}
-	return best, nil
+	return rec.method, nil
 }
 
 // Delete removes the entire entry. Idempotent.
@@ -287,9 +284,10 @@ func (s *Store) DeleteSecret(_ context.Context, particle, id string, role creden
 
 func descriptorOf(rec *record) credentials.Descriptor {
 	return credentials.Descriptor{
-		ID:   rec.id,
-		Name: rec.name,
-		Meta: rec.meta,
+		ID:     rec.id,
+		Name:   rec.name,
+		Method: rec.method,
+		Meta:   rec.meta,
 	}
 }
 

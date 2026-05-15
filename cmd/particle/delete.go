@@ -28,7 +28,7 @@ on a separate axis (see ` + "`particle reconfigure`" + `).`,
 			return runDelete(cmd, args[0], dbPath)
 		},
 	}
-	cmd.Flags().StringVar(&dbPath, "db", "", "Path to the particle state DB (default: <user-config-dir>/particle/state.db)")
+	cmd.Flags().StringVar(&dbPath, "db", "", dbFlagUsage())
 	return cmd
 }
 

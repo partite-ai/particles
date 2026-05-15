@@ -45,7 +45,7 @@ func NewFactory(ctx context.Context, e *wacogo.Engine) (*Factory, error) {
 	_ = typCredentialError_
 
 	b_.AddFunction("get-configured-method", &host.FuncType{
-		Params:  []host.Param{},
+		Params:  []host.Param{{Name: "name", Type: host.String}},
 		Results: []host.ResultDecl{{Name: "", Type: host.Result{Ok: host.Option{Inner: host.String}, Err: typCredentialError_}}},
 	}, wrapGetConfiguredMethod(f_))
 
@@ -1383,7 +1383,15 @@ func wrapGetConfiguredMethod(f *Factory) host.Func {
 		state_ := h.UserState().(*instanceState)
 		fnType_ := cc.Instance().ExportedFunc("get-configured-method").Type()
 		_ = fnType_
-		result_, implErr_ := state_.impl.GetConfiguredMethod(ctx)
+		var name string
+		{
+			v_, err_ := toGoFlatString(ctx, cc, h, fnType_.Params[0].Type, stack[0:2])
+			if err_ != nil {
+				return err_
+			}
+			name = v_
+		}
+		result_, implErr_ := state_.impl.GetConfiguredMethod(ctx, name)
 		if implErr_ != nil {
 			return fmt.Errorf("wacogo/witgen: get-configured-method: impl returned error: %w", implErr_)
 		}

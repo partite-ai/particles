@@ -85,11 +85,19 @@ var errNoSealer = errors.New("credentials/sqlite: secret operation requires a Se
 
 var _ credentials.Store = (*Store)(nil)
 
+// schema: one row per (particle, name) — `name` is the credential's
+// user-facing name (e.g., "github"); `method` is the configured
+// method name (e.g., "pat"). Multiple credentials per particle
+// coexist under different `name` values.
+//
+// Pre-1.0 breaking change: the prior schema lacked the `method`
+// column. Existing state DBs need to be deleted before use.
 const schema = `
 CREATE TABLE IF NOT EXISTS particle_credentials (
   particle  TEXT NOT NULL,
   id        TEXT NOT NULL,
   name      TEXT NOT NULL,
+  method    TEXT NOT NULL,
   kind      TEXT NOT NULL,
   meta_json TEXT NOT NULL,
   PRIMARY KEY (particle, id)
@@ -119,21 +127,21 @@ func (s *Store) migrate(ctx context.Context) error {
 
 func (s *Store) GetByID(ctx context.Context, particle, id string) (credentials.Descriptor, error) {
 	return s.getOne(ctx,
-		`SELECT id, name, kind, meta_json FROM particle_credentials WHERE particle = ? AND id = ?`,
+		`SELECT id, name, method, kind, meta_json FROM particle_credentials WHERE particle = ? AND id = ?`,
 		particle, id)
 }
 
 func (s *Store) GetByName(ctx context.Context, particle, name string) (credentials.Descriptor, error) {
 	return s.getOne(ctx,
-		`SELECT id, name, kind, meta_json FROM particle_credentials WHERE particle = ? AND name = ?`,
+		`SELECT id, name, method, kind, meta_json FROM particle_credentials WHERE particle = ? AND name = ?`,
 		particle, name)
 }
 
 func (s *Store) getOne(ctx context.Context, query string, args ...any) (credentials.Descriptor, error) {
 	row := s.db.QueryRowContext(ctx, query, args...)
-	var id, name, kind string
+	var id, name, method, kind string
 	var metaJSON []byte
-	if err := row.Scan(&id, &name, &kind, &metaJSON); err != nil {
+	if err := row.Scan(&id, &name, &method, &kind, &metaJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return credentials.Descriptor{}, credentials.ErrNotFound
 		}
@@ -143,12 +151,12 @@ func (s *Store) getOne(ctx context.Context, query string, args ...any) (credenti
 	if err != nil {
 		return credentials.Descriptor{}, fmt.Errorf("credentials/sqlite: %w", err)
 	}
-	return credentials.Descriptor{ID: id, Name: name, Meta: meta}, nil
+	return credentials.Descriptor{ID: id, Name: name, Method: method, Meta: meta}, nil
 }
 
 func (s *Store) List(ctx context.Context, particle string) ([]credentials.ListEntry, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, kind FROM particle_credentials WHERE particle = ? ORDER BY name`,
+		`SELECT id, name, method, kind FROM particle_credentials WHERE particle = ? ORDER BY name`,
 		particle)
 	if err != nil {
 		return nil, fmt.Errorf("credentials/sqlite: List: %w", err)
@@ -157,11 +165,11 @@ func (s *Store) List(ctx context.Context, particle string) ([]credentials.ListEn
 
 	var out []credentials.ListEntry
 	for rows.Next() {
-		var id, name, kind string
-		if err := rows.Scan(&id, &name, &kind); err != nil {
+		var id, name, method, kind string
+		if err := rows.Scan(&id, &name, &method, &kind); err != nil {
 			return nil, fmt.Errorf("credentials/sqlite: List scan: %w", err)
 		}
-		out = append(out, credentials.ListEntry{ID: id, Name: name, Kind: credentials.Kind(kind)})
+		out = append(out, credentials.ListEntry{ID: id, Name: name, Method: method, Kind: credentials.Kind(kind)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("credentials/sqlite: List rows: %w", err)
@@ -169,13 +177,10 @@ func (s *Store) List(ctx context.Context, particle string) ([]credentials.ListEn
 	return out, nil
 }
 
-// Put sets the particle's credential, enforcing the "one
-// credential per particle" invariant atomically: any existing
-// credential for `particle` under a name OTHER than `name` is
-// evicted in the same transaction as the new write. Re-Putting
-// under the same name preserves the entry's ID and untouched
-// secrets (the OAuth-refresh path).
-func (s *Store) Put(ctx context.Context, particle, name string, meta credentials.Metadata, secrets ...credentials.Secret) (credentials.Descriptor, error) {
+// Put configures the (particle, name) credential — see the
+// [credentials.Store] interface for the full contract. Atomic via a
+// single transaction.
+func (s *Store) Put(ctx context.Context, particle, name, method string, meta credentials.Metadata, secrets ...credentials.Secret) (credentials.Descriptor, error) {
 	if s.sealer == nil {
 		return credentials.Descriptor{}, errNoSealer
 	}
@@ -185,10 +190,7 @@ func (s *Store) Put(ctx context.Context, particle, name string, meta credentials
 	}
 	defer tx.Rollback()
 
-	if err := s.evictOtherCredentialsInTx(ctx, tx, particle, name); err != nil {
-		return credentials.Descriptor{}, err
-	}
-	desc, err := s.putInTx(ctx, tx, particle, name, meta, secrets)
+	desc, err := s.putInTx(ctx, tx, particle, name, method, meta, secrets)
 	if err != nil {
 		return credentials.Descriptor{}, err
 	}
@@ -198,34 +200,37 @@ func (s *Store) Put(ctx context.Context, particle, name string, meta credentials
 	return desc, nil
 }
 
-// ConfiguredMethod returns the name of the (single) credential
-// stored under particle, or "" when none. Deterministic by name
-// if the importer's "one credential per particle" invariant is
-// ever broken.
-func (s *Store) ConfiguredMethod(ctx context.Context, particle string) (string, error) {
-	var name string
+// ConfiguredMethod returns the method name stored for
+// (particle, name), or "" when no credential is configured under
+// that name.
+func (s *Store) ConfiguredMethod(ctx context.Context, particle, name string) (string, error) {
+	var method string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT name FROM particle_credentials WHERE particle = ? ORDER BY name LIMIT 1`,
-		particle).Scan(&name)
+		`SELECT method FROM particle_credentials WHERE particle = ? AND name = ?`,
+		particle, name).Scan(&method)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("credentials/sqlite: ConfiguredMethod: %w", err)
 	}
-	return name, nil
+	return method, nil
 }
 
 // putInTx is the validation + insert-or-update body of Put. Runs
-// inside the caller's transaction; the caller is responsible for
-// the evict-others step (so the "one credential per particle"
-// invariant holds at commit time) and for committing.
-func (s *Store) putInTx(ctx context.Context, tx *sql.Tx, particle, name string, meta credentials.Metadata, secrets []credentials.Secret) (credentials.Descriptor, error) {
+// inside the caller's transaction. Same-(name, method) re-Put
+// preserves the existing ID and unmentioned secrets; switching
+// method wipes every prior secret for the row before writing new
+// ones.
+func (s *Store) putInTx(ctx context.Context, tx *sql.Tx, particle, name, method string, meta credentials.Metadata, secrets []credentials.Secret) (credentials.Descriptor, error) {
 	if meta == nil {
 		return credentials.Descriptor{}, fmt.Errorf("credentials/sqlite: requires a non-nil Metadata")
 	}
 	if name == "" {
 		return credentials.Descriptor{}, fmt.Errorf("credentials/sqlite: requires a non-empty name")
+	}
+	if method == "" {
+		return credentials.Descriptor{}, fmt.Errorf("credentials/sqlite: requires a non-empty method")
 	}
 	for i, sec := range secrets {
 		if sec.Role == "" {
@@ -239,24 +244,37 @@ func (s *Store) putInTx(ctx context.Context, tx *sql.Tx, particle, name string, 
 	}
 
 	// Look up existing entry by (particle, name) to decide
-	// create-vs-update and to preserve the existing ID on
-	// metadata-only re-Puts.
-	var id string
+	// create-vs-update and to detect a method switch.
+	var (
+		id        string
+		oldMethod string
+	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM particle_credentials WHERE particle = ? AND name = ?`,
-		particle, name).Scan(&id)
+		`SELECT id, method FROM particle_credentials WHERE particle = ? AND name = ?`,
+		particle, name).Scan(&id, &oldMethod)
 	switch {
 	case err == nil:
+		if oldMethod != method {
+			// Method changed — wipe the row's existing
+			// secrets before writing the new ones so a
+			// "pat" → "oauth" switch doesn't leave the old
+			// api-key bytes lying around.
+			if _, err := tx.ExecContext(ctx,
+				`DELETE FROM particle_credential_secrets WHERE particle = ? AND entry_id = ?`,
+				particle, id); err != nil {
+				return credentials.Descriptor{}, fmt.Errorf("credentials/sqlite: wipe secrets on method switch: %w", err)
+			}
+		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE particle_credentials SET kind = ?, meta_json = ? WHERE particle = ? AND id = ?`,
-			kind, metaJSON, particle, id); err != nil {
+			`UPDATE particle_credentials SET method = ?, kind = ?, meta_json = ? WHERE particle = ? AND id = ?`,
+			method, kind, metaJSON, particle, id); err != nil {
 			return credentials.Descriptor{}, fmt.Errorf("credentials/sqlite: update: %w", err)
 		}
 	case errors.Is(err, sql.ErrNoRows):
 		id = s.idGenerator()
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO particle_credentials (particle, id, name, kind, meta_json) VALUES (?, ?, ?, ?, ?)`,
-			particle, id, name, kind, metaJSON); err != nil {
+			`INSERT INTO particle_credentials (particle, id, name, method, kind, meta_json) VALUES (?, ?, ?, ?, ?, ?)`,
+			particle, id, name, method, kind, metaJSON); err != nil {
 			return credentials.Descriptor{}, fmt.Errorf("credentials/sqlite: insert: %w", err)
 		}
 	default:
@@ -276,31 +294,7 @@ func (s *Store) putInTx(ctx context.Context, tx *sql.Tx, particle, name string, 
 			return credentials.Descriptor{}, fmt.Errorf("credentials/sqlite: write secret %s: %w", sec.Role, err)
 		}
 	}
-	return credentials.Descriptor{ID: id, Name: name, Meta: meta}, nil
-}
-
-// evictOtherCredentialsInTx removes every credential for
-// `particle` whose name does NOT match `keepName`, plus the
-// associated secrets. Idempotent: harmless when no such row
-// exists (the first-install case). Runs inside the caller's
-// transaction so the eviction and the subsequent insert/update
-// commit together — readers never observe two credentials for
-// one particle.
-func (s *Store) evictOtherCredentialsInTx(ctx context.Context, tx *sql.Tx, particle, keepName string) error {
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM particle_credential_secrets
-		 WHERE particle = ? AND entry_id IN (
-		   SELECT id FROM particle_credentials WHERE particle = ? AND name != ?
-		 )`,
-		particle, particle, keepName); err != nil {
-		return fmt.Errorf("credentials/sqlite: evict secrets: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM particle_credentials WHERE particle = ? AND name != ?`,
-		particle, keepName); err != nil {
-		return fmt.Errorf("credentials/sqlite: evict entries: %w", err)
-	}
-	return nil
+	return credentials.Descriptor{ID: id, Name: name, Method: method, Meta: meta}, nil
 }
 
 // Delete removes the entire entry — metadata and every secret.

@@ -54,12 +54,18 @@ import (
 // operations are scoped by particle name: each particle gets its
 // own credential namespace.
 //
-// Names are user-facing and unique within their particle (one
-// "github_oauth" per particle). IDs are store-generated and stable
-// — survive renames, secret rotations, and other in-place
-// modifications. The interface contract requires IDs to be ASCII
-// with no whitespace or punctuation; concrete implementations are
-// free to choose their own scheme.
+// A "credential" is identified by a particle-scoped name (e.g.,
+// "github" or "openai" — what the manifest's top-level
+// `credentials` map keys are). Each credential has one currently-
+// configured method, identified by its method name (e.g., "pat",
+// "oauth"); the per-credential method choice is recorded alongside
+// the metadata.
+//
+// IDs are store-generated and stable — survive renames, secret
+// rotations, and other in-place modifications. The interface
+// contract requires IDs to be ASCII with no whitespace or
+// punctuation; concrete implementations are free to choose their
+// own scheme.
 //
 // Implementations should be safe for concurrent use.
 type Store interface {
@@ -82,49 +88,45 @@ type Store interface {
 	// particle's namespace.
 	List(ctx context.Context, particle string) ([]ListEntry, error)
 
-	// Put sets the particle's credential.
+	// Put configures the (particle, name) credential with the
+	// given method and metadata, replacing any prior configuration
+	// for the same (particle, name).
 	//
-	// Each particle has at most one credential at any time —
-	// Put enforces that invariant atomically: any existing
-	// credential for `particle` under a name OTHER than `name` is
-	// removed in the same transaction as the new write, so
-	// readers never observe two credentials for one particle.
-	// Used both for first-time setup and for switching auth
-	// methods (e.g., during Reconfigure).
+	// Each (particle, name) holds at most one row — Put enforces
+	// the invariant atomically:
 	//
-	// Behavior when `name` already exists for the particle:
-	//   - The existing ID is preserved (no churn for downstream
-	//     callers that captured a Descriptor).
-	//   - `meta` replaces the existing metadata.
-	//   - Secrets named in `secrets` replace any prior values;
-	//     secrets NOT listed are preserved untouched. This is
-	//     what lets OAuth refresh write a new access token and
-	//     ExpiresAt while leaving the refresh token in place.
+	//   - If no prior row exists, a fresh entry is inserted with a
+	//     new ID.
+	//   - If a prior row exists under the same `method`, the
+	//     existing ID is preserved; metadata is replaced; secrets
+	//     listed in `secrets` UPSERT over their prior values;
+	//     secrets NOT listed are preserved untouched. (Effectively
+	//     a Reconfigure-with-same-method.)
+	//   - If a prior row exists under a DIFFERENT `method`, every
+	//     secret previously stored for that row is wiped and the
+	//     row is rewritten with the new method + metadata + the
+	//     supplied secrets. (Method switching never leaves stray
+	//     secrets from the old method behind.)
 	//
-	// When `name` is a different name than the particle's
-	// existing credential (the method-switch case), the prior
-	// credential and all of its secrets are deleted and a fresh
-	// entry is created under `name`.
+	// Different (particle, name) credentials coexist freely — a
+	// particle declaring both "github" and "openai" gets two rows.
 	//
 	// Returns the resulting descriptor.
-	Put(ctx context.Context, particle, name string, meta Metadata, secrets ...Secret) (Descriptor, error)
+	Put(ctx context.Context, particle, name, method string, meta Metadata, secrets ...Secret) (Descriptor, error)
 
 	// Delete removes the entire entry — metadata and every
 	// secret. Idempotent: returns nil if no such entry existed.
 	Delete(ctx context.Context, particle, id string) error
 
-	// ConfiguredMethod returns the name of the credential
-	// currently stored for the particle, or "" when none is. The
-	// store enforces "at most one credential per particle" via
-	// Put, so the answer is unambiguous; implementations should
-	// still be deterministic (smallest name wins) in case the
-	// invariant is ever broken by manual DB editing.
+	// ConfiguredMethod returns the method name currently stored
+	// for (particle, name), or "" when no credential is configured
+	// under that name.
 	//
 	// Used to drive the "which authentication method is
-	// configured?" question — the answer the runtime surfaces
-	// to particles via getConfiguredMethod() and the CLI shows
+	// configured?" question — the answer the runtime surfaces to
+	// particles via getConfiguredMethod(name) and the CLI shows
 	// in `particle list`.
-	ConfiguredMethod(ctx context.Context, particle string) (string, error)
+	ConfiguredMethod(ctx context.Context, particle, name string) (string, error)
 
 	// -------- secret-level operations --------
 	//
@@ -161,21 +163,23 @@ type Store interface {
 }
 
 // Descriptor is the metadata-level record for an entry: stable ID,
-// user-facing name, and the typed metadata. Returned by GetByID,
-// GetByName, and Put. Does NOT carry secret values — read those
-// separately via Store.ReadSecret.
+// credential name, configured method name, and the typed metadata.
+// Returned by GetByID, GetByName, and Put. Does NOT carry secret
+// values — read those separately via Store.ReadSecret.
 type Descriptor struct {
-	ID   string
-	Name string
-	Meta Metadata
+	ID     string
+	Name   string // credential name (e.g., "github")
+	Method string // configured method name (e.g., "pat", "oauth")
+	Meta   Metadata
 }
 
 // ListEntry is the lightweight summary surfaced by Store.List —
 // metadata-key fields only.
 type ListEntry struct {
-	ID   string
-	Name string
-	Kind Kind
+	ID     string
+	Name   string
+	Method string
+	Kind   Kind
 }
 
 // Secret is a (role, value) pair used as the payload for
@@ -233,7 +237,7 @@ var ErrSecretNotSet = fmt.Errorf("%w: secret not set", ErrNotFound)
 // -----------------------------------------------------------------------------
 
 // Kind names a credential variant. Matches the `type:` strings used
-// in particle manifest `capabilities.credentials.<name>`
+// in particle manifest `credentials.<name>.methods.<method>.type`
 // declarations, so a manifest reader can compare against this type
 // directly.
 type Kind string

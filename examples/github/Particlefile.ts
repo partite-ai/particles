@@ -2,9 +2,9 @@
  * Example particle exposing a few GitHub REST endpoints as tools.
  *
  * Authentication: two alternatives — OAuth 2.0 or a personal access
- * token (PAT). At setup the user picks one. Tools call
- * `credentials.getConfiguredMethod()` to discover which method
- * was chosen, then route through `credentials.fetcher(name)`.
+ * token (PAT). At setup the user picks one; both substitute into
+ * `Authorization: Bearer <token>`, so the JS doesn't need to branch
+ * on which method is active.
  *
  *   particle build           # walks `particle setup` interactively
  *   particle ping github-tools
@@ -14,23 +14,11 @@
 
 import { credentials } from "@partite-ai/particle-credentials";
 
-// Resolve the active credential's name. The host call is sync and
-// the result is fixed at setup time, so we just read it directly
-// where we need it.
-function authMethod(): string {
-  const m = credentials.getConfiguredMethod();
-  if (m === null) {
-    throw new Error("github-tools is unauthenticated; run `particle build` to set up oauth or a PAT");
-  }
-  return m;
-}
-
-// Convenience wrapper: every tool reads the configured credential,
-// sets the recommended Accept header, and bubbles non-2xx as a
-// thrown error so the runtime returns a HandlerError with the
-// API's message.
+// Convenience wrapper: every tool reuses the same fetcher, sets the
+// recommended Accept header, and bubbles non-2xx as a thrown error
+// so the runtime returns a HandlerError with the API's message.
 async function gh(path: string, init: RequestInit = {}): Promise<unknown> {
-  const fetcher = await credentials.fetcher(authMethod());
+  const fetcher = await credentials.fetcher("github");
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/vnd.github+json");
   if (init.body && !headers.has("Content-Type")) {
@@ -51,7 +39,15 @@ export default {
 
   capabilities: {
     http: { allowedHosts: ["api.github.com"] },
-    credentials: {
+  },
+
+  credentials: {
+    github: {
+      // Substitution only fires on requests to api.github.com —
+      // mapping defense-in-depth: if the script ever planted the
+      // placeholder in a non-GitHub request, it'd transmit
+      // literally and the upstream would 401.
+      hosts: ["api.github.com"],
       required: true,
       methods: {
         // OAuth: full account-level access. Best for interactive
@@ -174,11 +170,11 @@ export default {
   // login on success; degrades to "unhealthy" if GitHub rejects the
   // token (refresh likely failed or the user revoked the grant).
   ping: async () => {
-    const method = credentials.getConfiguredMethod();
+    const method = credentials.getConfiguredMethod("github");
     if (method === null) {
       return { status: "unhealthy" as const, message: "no credential configured" };
     }
-    const fetcher = await credentials.fetcher(method);
+    const fetcher = await credentials.fetcher("github");
     const res = await fetcher("https://api.github.com/user");
     if (res.ok) {
       const u = (await res.json()) as { login?: string };

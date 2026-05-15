@@ -25,6 +25,7 @@ type fakeStore struct {
 type fakeRecord struct {
 	id      string
 	name    string
+	method  string
 	meta    Metadata
 	secrets map[SecretRole][]byte
 }
@@ -37,7 +38,7 @@ func (s *fakeStore) GetByID(_ context.Context, particle, id string) (Descriptor,
 	if !ok {
 		return Descriptor{}, ErrNotFound
 	}
-	return Descriptor{ID: rec.id, Name: rec.name, Meta: rec.meta}, nil
+	return Descriptor{ID: rec.id, Name: rec.name, Method: rec.method, Meta: rec.meta}, nil
 }
 
 func (s *fakeStore) GetByName(_ context.Context, particle, name string) (Descriptor, error) {
@@ -48,59 +49,51 @@ func (s *fakeStore) GetByName(_ context.Context, particle, name string) (Descrip
 	if !ok {
 		return Descriptor{}, ErrNotFound
 	}
-	return Descriptor{ID: rec.id, Name: rec.name, Meta: rec.meta}, nil
+	return Descriptor{ID: rec.id, Name: rec.name, Method: rec.method, Meta: rec.meta}, nil
 }
 
 func (s *fakeStore) List(_ context.Context, particle string) ([]ListEntry, error) {
 	var out []ListEntry
 	for k, rec := range s.byName {
 		if k[0] == particle {
-			out = append(out, ListEntry{ID: rec.id, Name: rec.name, Kind: rec.meta.Kind()})
+			out = append(out, ListEntry{ID: rec.id, Name: rec.name, Method: rec.method, Kind: rec.meta.Kind()})
 		}
 	}
 	return out, nil
 }
 
-func (s *fakeStore) Put(_ context.Context, particle, name string, meta Metadata, secrets ...Secret) (Descriptor, error) {
+func (s *fakeStore) Put(_ context.Context, particle, name, method string, meta Metadata, secrets ...Secret) (Descriptor, error) {
 	if s.byName == nil {
 		s.byName = map[[2]string]*fakeRecord{}
 		s.byID = map[[2]string]*fakeRecord{}
 	}
-	// Evict any other credential for this particle so the
-	// "one credential per particle" invariant matches the
-	// contract real stores enforce.
-	for k, rec := range s.byName {
-		if k[0] != particle || k[1] == name {
-			continue
-		}
-		delete(s.byName, k)
-		delete(s.byID, [2]string{particle, rec.id})
-	}
 	rec, ok := s.byName[[2]string{particle, name}]
 	if !ok {
-		rec = &fakeRecord{id: "id-" + name, name: name, meta: meta, secrets: map[SecretRole][]byte{}}
+		rec = &fakeRecord{id: "id-" + name, name: name, method: method, meta: meta, secrets: map[SecretRole][]byte{}}
 		s.byName[[2]string{particle, name}] = rec
 		s.byID[[2]string{particle, rec.id}] = rec
 	} else {
+		if rec.method != method {
+			// Mirror the production "method switch wipes
+			// secrets" behavior so adapter tests see the
+			// real failure mode.
+			rec.secrets = map[SecretRole][]byte{}
+		}
+		rec.method = method
 		rec.meta = meta
 	}
 	for _, sec := range secrets {
 		rec.secrets[sec.Role] = append([]byte(nil), sec.Value...)
 	}
-	return Descriptor{ID: rec.id, Name: rec.name, Meta: rec.meta}, nil
+	return Descriptor{ID: rec.id, Name: rec.name, Method: rec.method, Meta: rec.meta}, nil
 }
 
-func (s *fakeStore) ConfiguredMethod(_ context.Context, particle string) (string, error) {
-	best := ""
-	for k := range s.byName {
-		if k[0] != particle {
-			continue
-		}
-		if best == "" || k[1] < best {
-			best = k[1]
-		}
+func (s *fakeStore) ConfiguredMethod(_ context.Context, particle, name string) (string, error) {
+	rec, ok := s.byName[[2]string{particle, name}]
+	if !ok {
+		return "", nil
 	}
-	return best, nil
+	return rec.method, nil
 }
 
 func (s *fakeStore) Delete(_ context.Context, particle, id string) error {
@@ -150,13 +143,15 @@ func (s *fakeStore) DeleteSecret(_ context.Context, particle, id string, role Se
 
 // putWithSecrets is a tiny helper that pre-populates an entry with
 // its metadata and (optionally) some secret values for adapter
-// tests.
+// tests. The credential's `method` defaults to its `name` — every
+// caller used the old "name == method" convention, so the helper
+// preserves that.
 func (s *fakeStore) putWithSecrets(particle, id, name string, meta Metadata, secrets map[SecretRole][]byte) {
 	if s.byName == nil {
 		s.byName = map[[2]string]*fakeRecord{}
 		s.byID = map[[2]string]*fakeRecord{}
 	}
-	rec := &fakeRecord{id: id, name: name, meta: meta, secrets: map[SecretRole][]byte{}}
+	rec := &fakeRecord{id: id, name: name, method: name, meta: meta, secrets: map[SecretRole][]byte{}}
 	for k, v := range secrets {
 		rec.secrets[k] = append([]byte(nil), v...)
 	}
@@ -593,7 +588,7 @@ func TestMetadataKind(t *testing.T) {
 // are the authoritative coverage of Put semantics.
 func TestFakeStore_PutWithSecretsAtomic(t *testing.T) {
 	s := &fakeStore{}
-	desc, err := s.Put(context.Background(), "yaml-tools", "gh", OAuth2Meta{ClientID: "c"},
+	desc, err := s.Put(context.Background(), "yaml-tools", "gh", "gh", OAuth2Meta{ClientID: "c"},
 		Secret{Role: SecretRoleAccessToken, Value: []byte("at")},
 		Secret{Role: SecretRoleRefreshToken, Value: []byte("rt")},
 	)

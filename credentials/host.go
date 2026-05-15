@@ -75,26 +75,20 @@ func (a *adapter) GetPlaceholder(ctx context.Context, name string) (gen.ResultPl
 	}, nil
 }
 
-// GetConfiguredMethod returns the name of the credential method
-// the user configured at setup, or none when no credential is
-// set for this particle. Particles that declare multiple
-// alternative authentication methods (e.g. oauth2 + apikey) call
-// this to discover which one the host is holding.
-//
-// "Configured" means at least one entry exists in the store under
-// (particle, *). When more than one is set we return the first by
-// store order — the importer enforces "exactly one method" at
-// setup time, so multiple-set is only reachable when the host is
-// driven directly through the API.
-func (a *adapter) GetConfiguredMethod(ctx context.Context) (gen.ResultOptionStringCredentialError, error) {
-	entries, err := a.store.List(ctx, a.particle)
+// GetConfiguredMethod returns the method name the user configured
+// for the named credential at setup, or none when no method is
+// set for (particle, name). Particles that declare multiple
+// alternative methods (e.g. oauth2 + apikey) call this to find
+// out which method backs the named credential.
+func (a *adapter) GetConfiguredMethod(ctx context.Context, name string) (gen.ResultOptionStringCredentialError, error) {
+	method, err := a.store.ConfiguredMethod(ctx, a.particle, name)
 	if err != nil {
 		return gen.ResultOptionStringCredentialErrorErr{Value: errToCredentialError(err)}, nil
 	}
-	if len(entries) == 0 {
+	if method == "" {
 		return gen.ResultOptionStringCredentialErrorOk{Value: gen.NoneString()}, nil
 	}
-	return gen.ResultOptionStringCredentialErrorOk{Value: gen.SomeString(entries[0].Name)}, nil
+	return gen.ResultOptionStringCredentialErrorOk{Value: gen.SomeString(method)}, nil
 }
 
 // GetRaw is the only adapter method that reads a secret — the

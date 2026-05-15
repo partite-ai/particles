@@ -19,10 +19,10 @@ import (
 type PermissionMode int
 
 const (
-	// PermissionAuto prompts only when the capabilities differ
-	// from the most recent registered version. New installs
-	// always prompt. Particles declaring no capabilities never
-	// prompt.
+	// PermissionAuto prompts only when the capabilities or
+	// credentials differ from the most recent registered
+	// version. New installs always prompt. Particles declaring
+	// neither never prompt.
 	PermissionAuto PermissionMode = iota
 
 	// PermissionSkip auto-accepts every permission declaration.
@@ -31,22 +31,24 @@ const (
 	PermissionSkip
 
 	// PermissionForce prompts on every install, even when the
-	// capabilities match the prior version. Useful when the
+	// permission set matches the prior version. Useful when the
 	// user wants to re-confirm — or has explicitly asked to.
 	PermissionForce
 )
 
-// confirmPermissions surfaces the manifest's capabilities to the
-// user and asks them to confirm. Behavior is governed by
-// opts.PermissionMode; see [PermissionMode] for the three modes.
+// confirmPermissions surfaces the manifest's capabilities +
+// credentials to the user and asks them to confirm. Behavior is
+// governed by opts.PermissionMode; see [PermissionMode] for the
+// three modes.
 //
 // Returns nil when the install is approved (either by user
 // confirmation or because we never prompted). Returns an error
 // when the user declines.
 func confirmPermissions(ctx context.Context, opts Options, mf manifest) error {
 	nextCaps := mf.CapabilitiesRaw
+	nextCreds := mf.CredentialsRaw
 
-	prev, prevVer, _ := loadPriorCapabilities(ctx, opts.Registry, mf.Name)
+	prevCaps, prevCreds, prevVer, _ := loadPriorPermissions(ctx, opts.Registry, mf.Name)
 
 	switch opts.PermissionMode {
 	case PermissionSkip:
@@ -54,17 +56,21 @@ func confirmPermissions(ctx context.Context, opts Options, mf manifest) error {
 	case PermissionForce:
 		// fall through to prompt
 	case PermissionAuto:
-		// No capabilities → nothing to confirm.
-		if len(nextCaps) == 0 {
+		// No capabilities AND no credentials → nothing to confirm.
+		if len(nextCaps) == 0 && len(nextCreds) == 0 {
 			return nil
 		}
-		// Prior version with identical caps → silent reinstall.
-		if prev != nil {
-			same, err := capsEqual(prev, nextCaps)
+		// Prior version with identical permissions → silent reinstall.
+		if prevVer != "" {
+			capsSame, err := jsonEqual(prevCaps, nextCaps)
 			if err != nil {
 				return fmt.Errorf("compare capabilities: %w", err)
 			}
-			if same {
+			credsSame, err := jsonEqual(prevCreds, nextCreds)
+			if err != nil {
+				return fmt.Errorf("compare credentials: %w", err)
+			}
+			if capsSame && credsSame {
 				return nil
 			}
 		}
@@ -73,7 +79,7 @@ func confirmPermissions(ctx context.Context, opts Options, mf manifest) error {
 	if opts.Prompter == nil {
 		return errors.New("importer: permission confirmation requires a Prompter")
 	}
-	summary := formatPermissions(mf, nextCaps, prev, prevVer)
+	summary := formatPermissions(mf, nextCaps, nextCreds, prevVer)
 	opts.Prompter.Info(summary)
 	ok, err := opts.Prompter.Confirm("Allow these permissions?", false)
 	if err != nil {
@@ -85,39 +91,39 @@ func confirmPermissions(ctx context.Context, opts Options, mf manifest) error {
 	return nil
 }
 
-// loadPriorCapabilities returns the most recent version of name
-// already in the registry, along with its parsed capabilities
-// block. Returns (nil, "", nil) when the particle has never been
-// registered — that's the "fresh install" case the caller treats
-// as "must prompt".
-func loadPriorCapabilities(ctx context.Context, reg registry.Registry, name string) (map[string]json.RawMessage, string, error) {
+// loadPriorPermissions returns the capabilities + credentials of
+// the most recently registered version of name, plus that
+// version. Returns ("", nil, nil, nil) when the particle has
+// never been registered — that's the "fresh install" case the
+// caller treats as "must prompt".
+func loadPriorPermissions(ctx context.Context, reg registry.Registry, name string) (caps, creds map[string]json.RawMessage, version string, err error) {
 	ver, err := highestRegisteredVersion(ctx, reg, name)
 	if err != nil {
 		// "not registered" isn't a real failure here — it just
 		// means the install is fresh. Surface unexpected errors
 		// (registry storage failure, etc.).
 		if strings.Contains(err.Error(), "not registered") {
-			return nil, "", nil
+			return nil, nil, "", nil
 		}
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	entry, err := reg.Get(ctx, name, ver)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	mf, err := readManifest(entry.Particle)
 	if err != nil {
-		return nil, ver, fmt.Errorf("read prior manifest: %w", err)
+		return nil, nil, ver, fmt.Errorf("read prior manifest: %w", err)
 	}
-	return mf.CapabilitiesRaw, ver, nil
+	return mf.CapabilitiesRaw, mf.CredentialsRaw, ver, nil
 }
 
-// capsEqual reports whether two manifest capability blocks
-// describe the same permissions, regardless of JSON key ordering
-// or whitespace. Implemented by unmarshaling both trees into Go
-// values (which has stable equality semantics) — sidestepping
-// every "is this byte-equal?" pitfall.
-func capsEqual(a, b map[string]json.RawMessage) (bool, error) {
+// jsonEqual reports whether two manifest blocks describe the same
+// JSON tree, regardless of key ordering or whitespace. Implemented
+// by canonicalizing both sides through a generic decoder
+// (map[string]any) — which has stable equality semantics — and
+// comparing the canonical bytes.
+func jsonEqual(a, b map[string]json.RawMessage) (bool, error) {
 	ca, err := canonical(a)
 	if err != nil {
 		return false, err
@@ -151,30 +157,34 @@ func canonical(v any) ([]byte, error) {
 // formatPermissions builds the human-readable summary shown
 // before the y/n prompt. Aims for "scannable in 2 seconds" —
 // indentation conveys the manifest's structure, one line per
-// notable capability.
-func formatPermissions(mf manifest, caps, prev map[string]json.RawMessage, prevVer string) string {
+// notable capability / credential.
+func formatPermissions(mf manifest, caps, creds map[string]json.RawMessage, prevVer string) string {
 	var b strings.Builder
 	header := fmt.Sprintf("%s@%s requests:", mf.Name, mf.Version)
-	if prev != nil {
+	if prevVer != "" {
 		header = fmt.Sprintf("%s@%s requests these permissions (changed from %s):", mf.Name, mf.Version, prevVer)
 	}
 	b.WriteString(header)
 	b.WriteString("\n")
 
-	if len(caps) == 0 {
+	if len(caps) == 0 && len(creds) == 0 {
 		b.WriteString("\n  (no permissions)\n")
 		return b.String()
 	}
 
-	keys := make([]string, 0, len(caps))
+	capKeys := make([]string, 0, len(caps))
 	for k := range caps {
-		keys = append(keys, k)
+		capKeys = append(capKeys, k)
 	}
-	sort.Strings(keys)
-
-	for _, k := range keys {
+	sort.Strings(capKeys)
+	for _, k := range capKeys {
 		fmt.Fprintln(&b)
 		writeCapability(&b, k, caps[k])
+	}
+
+	if len(creds) > 0 {
+		fmt.Fprintln(&b)
+		writeCredentials(&b, creds)
 	}
 	return b.String()
 }
@@ -193,25 +203,6 @@ func writeCapability(b *strings.Builder, name string, raw json.RawMessage) {
 		}
 		for _, h := range v.AllowedHosts {
 			fmt.Fprintf(b, "    %s\n", h)
-		}
-	case "credentials":
-		var v struct {
-			Required bool                       `json:"required"`
-			Methods  map[string]json.RawMessage `json:"methods"`
-		}
-		_ = json.Unmarshal(raw, &v)
-		req := "optional"
-		if v.Required {
-			req = "required, pick one"
-		}
-		fmt.Fprintf(b, "  Credentials — %s:\n", req)
-		methods := make([]string, 0, len(v.Methods))
-		for n := range v.Methods {
-			methods = append(methods, n)
-		}
-		sort.Strings(methods)
-		for _, n := range methods {
-			writeCredentialMethod(b, n, v.Methods[n])
 		}
 	case "sockets":
 		var v struct {
@@ -236,14 +227,67 @@ func writeCapability(b *strings.Builder, name string, raw json.RawMessage) {
 	}
 }
 
-// writeCredentialMethod renders one method declaration inside the
-// `credentials` capability summary. For oauth2 it surfaces the
-// authorizationUrl / tokenUrl (so a hostile manifest can't slip a
-// phishing URL past a user who only read the install prompt); for
-// apikey it surfaces the apply-spec location (so the user can
-// tell whether their key will be sent in a header that CDNs see
-// vs. in a URL parameter that gets logged everywhere).
-func writeCredentialMethod(b *strings.Builder, name string, raw json.RawMessage) {
+// writeCredentials renders the top-level credentials block as a
+// sorted list of named credentials with their host scope and
+// methods. Host scope matters most for review — "this credential
+// will be sent to api.openai.com" is the part the user has to
+// actually trust. Multiple methods are explicitly framed as
+// alternatives ("pick one of") so the reader doesn't think
+// they're additive.
+func writeCredentials(b *strings.Builder, creds map[string]json.RawMessage) {
+	names := make([]string, 0, len(creds))
+	for n := range creds {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	fmt.Fprintf(b, "  Credentials:\n")
+	for _, n := range names {
+		var c struct {
+			Hosts    []string                   `json:"hosts"`
+			Required bool                       `json:"required"`
+			Methods  map[string]json.RawMessage `json:"methods"`
+		}
+		_ = json.Unmarshal(creds[n], &c)
+		req := "optional"
+		if c.Required {
+			req = "required"
+		}
+		fmt.Fprintf(b, "    %s — %s", n, req)
+		if len(c.Hosts) > 0 {
+			fmt.Fprintf(b, ", on %s", strings.Join(c.Hosts, ", "))
+		}
+		fmt.Fprintln(b)
+
+		methodNames := make([]string, 0, len(c.Methods))
+		for mn := range c.Methods {
+			methodNames = append(methodNames, mn)
+		}
+		sort.Strings(methodNames)
+		// Headline the alternative semantics when there's a choice
+		// — without this, "oauth" + "pat" reads as both being
+		// required, instead of "user picks one".
+		if len(methodNames) > 1 {
+			fmt.Fprintf(b, "      authenticate with one of:\n")
+		}
+		for _, mn := range methodNames {
+			writeCredentialMethod(b, mn, c.Methods[mn], len(methodNames) > 1)
+		}
+	}
+}
+
+// writeCredentialMethod renders one method declaration inside a
+// credential. For oauth2 it surfaces the authorizationUrl /
+// tokenUrl (so a hostile manifest can't slip a phishing URL past
+// a user who only read the install prompt); for apikey it
+// surfaces the apply-spec location (so the user can tell whether
+// their key will be sent in a header that CDNs see vs. in a URL
+// parameter that gets logged everywhere).
+//
+// `nested` indents one level deeper when the credential offers
+// multiple alternative methods (sits under an "authenticate with
+// one of:" subhead); the single-method case skips that frame and
+// renders the method flush with the credential header.
+func writeCredentialMethod(b *strings.Builder, name string, raw json.RawMessage, nested bool) {
 	var m struct {
 		Type        string `json:"type"`
 		Description string `json:"description"`
@@ -266,32 +310,37 @@ func writeCredentialMethod(b *strings.Builder, name string, raw json.RawMessage)
 	}
 	_ = json.Unmarshal(raw, &m)
 
+	indent, detailIndent := "      ", "        "
+	if nested {
+		indent, detailIndent = "        ", "          "
+	}
+
 	label := fmt.Sprintf("%s (%s)", name, m.Type)
 	if m.Description != "" {
 		label += " — " + m.Description
 	}
-	fmt.Fprintf(b, "    %s\n", label)
+	fmt.Fprintf(b, "%s%s\n", indent, label)
 
 	switch m.Type {
 	case "oauth2":
 		if m.Provider != "" {
-			fmt.Fprintf(b, "      provider: %s\n", m.Provider)
+			fmt.Fprintf(b, "%sprovider: %s\n", detailIndent, m.Provider)
 		}
 		if m.AuthorizationURL != "" {
-			fmt.Fprintf(b, "      authorize: %s\n", m.AuthorizationURL)
+			fmt.Fprintf(b, "%sauthorize: %s\n", detailIndent, m.AuthorizationURL)
 		}
 		if m.TokenURL != "" {
-			fmt.Fprintf(b, "      token:     %s\n", m.TokenURL)
+			fmt.Fprintf(b, "%stoken:     %s\n", detailIndent, m.TokenURL)
 		}
 		if m.DeviceAuthURL != "" {
-			fmt.Fprintf(b, "      device:    %s\n", m.DeviceAuthURL)
+			fmt.Fprintf(b, "%sdevice:    %s\n", detailIndent, m.DeviceAuthURL)
 		}
 		if len(m.Scopes) > 0 {
-			fmt.Fprintf(b, "      scopes:    %s\n", strings.Join(m.Scopes, ", "))
+			fmt.Fprintf(b, "%sscopes:    %s\n", detailIndent, strings.Join(m.Scopes, ", "))
 		}
 	case "apikey":
 		if m.Location != nil {
-			fmt.Fprintf(b, "      sent via:  %s\n", describeAPIKeyLocation(m.Location.Kind, m.Location.Name, m.Location.Scheme))
+			fmt.Fprintf(b, "%ssent via:  %s\n", detailIndent, describeAPIKeyLocation(m.Location.Kind, m.Location.Name, m.Location.Scheme))
 		}
 	}
 }
@@ -310,4 +359,3 @@ func describeAPIKeyLocation(kind, name, scheme string) string {
 	}
 	return "(unrecognized location)"
 }
-

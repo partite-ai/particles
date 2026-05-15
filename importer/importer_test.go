@@ -88,9 +88,18 @@ func newRegistry(t *testing.T) registry.Registry {
 	return r
 }
 
-func mkParticleFS(name, version, capabilitiesJSON string) fstest.MapFS {
-	manifest := fmt.Sprintf(`{"name":%q,"description":"test","version":%q,"capabilities":%s,"tools":[]}`,
-		name, version, capabilitiesJSON)
+// mkParticleFS builds a synthetic particle FS with the given
+// top-level `capabilities` and `credentials` JSON. Pass "{}" for
+// either when the test doesn't exercise that field.
+func mkParticleFS(name, version, capabilitiesJSON, credentialsJSON string) fstest.MapFS {
+	if capabilitiesJSON == "" {
+		capabilitiesJSON = "{}"
+	}
+	if credentialsJSON == "" {
+		credentialsJSON = "{}"
+	}
+	manifest := fmt.Sprintf(`{"name":%q,"description":"test","version":%q,"capabilities":%s,"credentials":%s,"tools":[]}`,
+		name, version, capabilitiesJSON, credentialsJSON)
 	return fstest.MapFS{
 		"manifest.json": &fstest.MapFile{Data: []byte(manifest)},
 		"bundle.js":     &fstest.MapFile{Data: []byte("export default {};")},
@@ -103,7 +112,7 @@ func mkParticleFS(name, version, capabilitiesJSON string) fstest.MapFS {
 
 func TestImport_NoCredentials_RegistersDirectly(t *testing.T) {
 	reg := newRegistry(t)
-	entry, err := importer.Import(context.Background(), mkParticleFS("p", "0.1.0", "{}"), importer.Options{
+	entry, err := importer.Import(context.Background(), mkParticleFS("p", "0.1.0", "{}", "{}"), importer.Options{
 		Registry: reg,
 	})
 	if err != nil {
@@ -124,7 +133,7 @@ func TestImport_RejectsBadManifest(t *testing.T) {
 
 func TestImport_RequiresPrompterWhenCredsDeclared(t *testing.T) {
 	reg := newRegistry(t)
-	fs := mkParticleFS("p", "0.1.0", `{"credentials":{"required":true,"methods":{"db":{"type":"basic"}}}}`)
+	fs := mkParticleFS("p", "0.1.0", "{}", `{"auth":{"required":true,"methods":{"db":{"type":"basic"}}}}`)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry:    reg,
 		Credentials: credmem.New(),
@@ -135,7 +144,7 @@ func TestImport_RequiresPrompterWhenCredsDeclared(t *testing.T) {
 
 func TestImport_RequiresStoreWhenCredsDeclared(t *testing.T) {
 	reg := newRegistry(t)
-	fs := mkParticleFS("p", "0.1.0", `{"credentials":{"required":true,"methods":{"db":{"type":"basic"}}}}`)
+	fs := mkParticleFS("p", "0.1.0", "{}", `{"auth":{"required":true,"methods":{"db":{"type":"basic"}}}}`)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry:       reg,
 		Prompter:       &scriptedPrompter{t: t},
@@ -154,8 +163,10 @@ func TestImport_AlreadyConfigured_SkipsPrompts(t *testing.T) {
 	store := credmem.New()
 	ctx := context.Background()
 
-	// Pre-populate the credential.
-	if _, err := store.Put(ctx, "p", "db",
+	// Pre-populate the credential — the fixture below declares
+	// one credential named "auth" with method "db"; pre-config
+	// matches.
+	if _, err := store.Put(ctx, "p", "auth", "db",
 		credentials.BasicMeta{Username: "alice"},
 		credentials.Secret{Role: credentials.SecretRolePassword, Value: []byte("hunter2")},
 	); err != nil {
@@ -165,7 +176,7 @@ func TestImport_AlreadyConfigured_SkipsPrompts(t *testing.T) {
 	// Empty-prompter: the test fails if any prompt is invoked.
 	prompter := &scriptedPrompter{t: t}
 
-	fs := mkParticleFS("p", "0.1.0", `{"credentials":{"required":true,"methods":{"db":{"type":"basic"}}}}`)
+	fs := mkParticleFS("p", "0.1.0", "{}", `{"auth":{"required":true,"methods":{"db":{"type":"basic"}}}}`)
 	if _, err := importer.Import(ctx, fs, importer.Options{
 		Registry:       reg,
 		Credentials:    store,
@@ -198,13 +209,13 @@ func TestImport_Basic_PromptsForUsernameAndPassword(t *testing.T) {
 		strings: []string{"alice"},
 		secrets: []string{"hunter2"},
 	}
-	fs := mkParticleFS("p", "0.1.0", `{"credentials":{"required":true,"methods":{"db":{"type":"basic"}}}}`)
+	fs := mkParticleFS("p", "0.1.0", "{}", `{"auth":{"required":true,"methods":{"db":{"type":"basic"}}}}`)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	desc, err := store.GetByName(context.Background(), "p", "db")
+	desc, err := store.GetByName(context.Background(), "p", "auth")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,13 +238,13 @@ func TestImport_APIKey_HeaderLocation(t *testing.T) {
 		strings: []string{"X-Stripe-Key"},
 		secrets: []string{"sk_live_xxx"},
 	}
-	fs := mkParticleFS("p", "0.1.0", `{"credentials":{"required":true,"methods":{"stripe":{"type":"apikey"}}}}`)
+	fs := mkParticleFS("p", "0.1.0", "{}", `{"auth":{"required":true,"methods":{"stripe":{"type":"apikey"}}}}`)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	desc, _ := store.GetByName(context.Background(), "p", "stripe")
+	desc, _ := store.GetByName(context.Background(), "p", "auth")
 	meta := desc.Meta.(credentials.APIKeyMeta)
 	if meta.Location.Kind != credentials.ApplyHeader || meta.Location.Name != "X-Stripe-Key" {
 		t.Errorf("location = %+v", meta.Location)
@@ -249,13 +260,13 @@ func TestImport_APIKey_AuthSchemeLocation(t *testing.T) {
 		strings: []string{"Token"},
 		secrets: []string{"tok_xxx"},
 	}
-	fs := mkParticleFS("p", "0.1.0", `{"credentials":{"required":true,"methods":{"k":{"type":"apikey"}}}}`)
+	fs := mkParticleFS("p", "0.1.0", "{}", `{"auth":{"required":true,"methods":{"k":{"type":"apikey"}}}}`)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	desc, _ := store.GetByName(context.Background(), "p", "k")
+	desc, _ := store.GetByName(context.Background(), "p", "auth")
 	meta := desc.Meta.(credentials.APIKeyMeta)
 	if meta.Location.Kind != credentials.ApplyAuthScheme || meta.Location.Scheme != "Token" {
 		t.Errorf("location = %+v", meta.Location)
@@ -273,17 +284,17 @@ func TestImport_APIKey_LocationFromManifest_SkipsLocationPrompt(t *testing.T) {
 		// Empty `choices` and `strings` queues — any prompt
 		// for the location would fail the test.
 	}
-	caps := `{"credentials":{"required":true,"methods":{"k":{
+	caps := `{"auth":{"required":true,"methods":{"k":{
 		"type":"apikey",
 		"location":{"kind":"auth-scheme","scheme":"Bearer"}
 	}}}}`
-	fs := mkParticleFS("p", "0.1.0", caps)
+	fs := mkParticleFS("p", "0.1.0", "{}", caps)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	desc, _ := store.GetByName(context.Background(), "p", "k")
+	desc, _ := store.GetByName(context.Background(), "p", "auth")
 	meta := desc.Meta.(credentials.APIKeyMeta)
 	if meta.Location.Kind != credentials.ApplyAuthScheme || meta.Location.Scheme != "Bearer" {
 		t.Errorf("location = %+v, want auth-scheme Bearer", meta.Location)
@@ -295,17 +306,17 @@ func TestImport_APIKey_LocationFromManifest_Header(t *testing.T) {
 	reg := newRegistry(t)
 	store := credmem.New()
 	prompter := &scriptedPrompter{t: t, secrets: []string{"k"}}
-	caps := `{"credentials":{"required":true,"methods":{"k":{
+	caps := `{"auth":{"required":true,"methods":{"k":{
 		"type":"apikey",
 		"location":{"kind":"header","name":"X-API-Key"}
 	}}}}`
-	fs := mkParticleFS("p", "0.1.0", caps)
+	fs := mkParticleFS("p", "0.1.0", "{}", caps)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	desc, _ := store.GetByName(context.Background(), "p", "k")
+	desc, _ := store.GetByName(context.Background(), "p", "auth")
 	meta := desc.Meta.(credentials.APIKeyMeta)
 	if meta.Location.Kind != credentials.ApplyHeader || meta.Location.Name != "X-API-Key" {
 		t.Errorf("location = %+v", meta.Location)
@@ -330,8 +341,8 @@ func TestImport_APIKey_LocationFromManifest_ValidationErrors(t *testing.T) {
 			reg := newRegistry(t)
 			store := credmem.New()
 			prompter := &scriptedPrompter{t: t}
-			caps := `{"credentials":{"required":true,"methods":{"k":{"type":"apikey","location":` + c.json + `}}}}`
-			fs := mkParticleFS("p", "0.1.0", caps)
+			caps := `{"auth":{"required":true,"methods":{"k":{"type":"apikey","location":` + c.json + `}}}}`
+			fs := mkParticleFS("p", "0.1.0", "{}", caps)
 			_, err := importer.Import(context.Background(), fs, importer.Options{
 				Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 			})
@@ -351,13 +362,13 @@ func TestImport_APIKey_QueryParamLocation(t *testing.T) {
 		strings: []string{"api_key"},
 		secrets: []string{"qq"},
 	}
-	fs := mkParticleFS("p", "0.1.0", `{"credentials":{"required":true,"methods":{"k":{"type":"apikey"}}}}`)
+	fs := mkParticleFS("p", "0.1.0", "{}", `{"auth":{"required":true,"methods":{"k":{"type":"apikey"}}}}`)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	desc, _ := store.GetByName(context.Background(), "p", "k")
+	desc, _ := store.GetByName(context.Background(), "p", "auth")
 	meta := desc.Meta.(credentials.APIKeyMeta)
 	if meta.Location.Kind != credentials.ApplyQueryParam || meta.Location.Name != "api_key" {
 		t.Errorf("location = %+v", meta.Location)
@@ -371,14 +382,14 @@ func TestImport_SigningKey_PromptsForKey(t *testing.T) {
 		t:       t,
 		secrets: []string{"deadbeef"},
 	}
-	fs := mkParticleFS("p", "0.1.0",
-		`{"credentials":{"required":true,"methods":{"hmac":{"type":"signing-key","algorithm":"hmac-sha256"}}}}`)
+	fs := mkParticleFS("p", "0.1.0", "{}",
+		`{"auth":{"required":true,"methods":{"hmac":{"type":"signing-key","algorithm":"hmac-sha256"}}}}`)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	desc, _ := store.GetByName(context.Background(), "p", "hmac")
+	desc, _ := store.GetByName(context.Background(), "p", "auth")
 	meta := desc.Meta.(credentials.SigningKeyMeta)
 	if meta.Algorithm != "hmac-sha256" {
 		t.Errorf("algorithm = %q", meta.Algorithm)
@@ -393,7 +404,7 @@ func TestImport_SigningKey_RejectsMissingAlgorithm(t *testing.T) {
 	reg := newRegistry(t)
 	store := credmem.New()
 	prompter := &scriptedPrompter{t: t}
-	fs := mkParticleFS("p", "0.1.0", `{"credentials":{"required":true,"methods":{"k":{"type":"signing-key"}}}}`)
+	fs := mkParticleFS("p", "0.1.0", "{}", `{"auth":{"required":true,"methods":{"k":{"type":"signing-key"}}}}`)
 	_, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	})
@@ -408,7 +419,7 @@ func TestImport_Raw_RequiresConfirmation(t *testing.T) {
 
 	// User declines the warning → setup aborts.
 	declined := &scriptedPrompter{t: t, confirms: []bool{false}}
-	fs := mkParticleFS("p", "0.1.0", `{"credentials":{"required":true,"methods":{"r":{"type":"raw"}}}}`)
+	fs := mkParticleFS("p", "0.1.0", "{}", `{"auth":{"required":true,"methods":{"r":{"type":"raw"}}}}`)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: declined, PermissionMode: importer.PermissionSkip,
 	}); err == nil {
@@ -422,7 +433,7 @@ func TestImport_Raw_RequiresConfirmation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	desc, _ := store.GetByName(context.Background(), "p", "r")
+	desc, _ := store.GetByName(context.Background(), "p", "auth")
 	v, _ := store.ReadSecret(context.Background(), "p", desc.ID, credentials.SecretRoleValue)
 	if string(v) != "sneaky" {
 		t.Errorf("value = %q", v)
@@ -450,26 +461,27 @@ func TestImport_MultipleMethods_PicksOne(t *testing.T) {
 		strings: []string{"X-API-Key"},
 		secrets: []string{"hunter2"},
 	}
-	caps := `{"credentials":{"required":true,"methods":{
+	caps := `{"auth":{"required":true,"methods":{
 		"oauth":{"type":"oauth2","flows":["authorization-code-pkce"],"scopes":["repo"]},
 		"pat":{"type":"apikey"}
 	}}}`
 	// Need a Choice for apikey location too — script it.
 	prompter.choices = append(prompter.choices, "header")
 
-	fs := mkParticleFS("p", "0.1.0", caps)
+	fs := mkParticleFS("p", "0.1.0", "{}", caps)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	// Only "pat" should be present; "oauth" must NOT have been set up.
-	if _, err := store.GetByName(context.Background(), "p", "pat"); err != nil {
-		t.Errorf("expected pat configured: %v", err)
+	// "auth" exists, backed by the "pat" method — NOT "oauth".
+	desc, err := store.GetByName(context.Background(), "p", "auth")
+	if err != nil {
+		t.Fatalf("expected auth configured: %v", err)
 	}
-	if _, err := store.GetByName(context.Background(), "p", "oauth"); !errors.Is(err, credentials.ErrNotFound) {
-		t.Errorf("expected oauth NOT configured (user picked pat); err = %v", err)
+	if desc.Method != "pat" {
+		t.Errorf("auth.Method = %q, want pat (the alternative the user picked)", desc.Method)
 	}
 }
 
@@ -480,8 +492,9 @@ func TestImport_AnyMethodConfigured_SkipsPrompting(t *testing.T) {
 	store := credmem.New()
 	ctx := context.Background()
 
-	// Pre-populate "pat" — re-import should NOT prompt for "oauth".
-	if _, err := store.Put(ctx, "p", "pat",
+	// Pre-populate credential "auth" with method "pat" — re-import
+	// must NOT prompt for the "oauth" alternative method.
+	if _, err := store.Put(ctx, "p", "auth", "pat",
 		credentials.APIKeyMeta{Location: credentials.ApplySpec{Kind: credentials.ApplyHeader, Name: "X-Key"}},
 		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte("k")},
 	); err != nil {
@@ -490,11 +503,11 @@ func TestImport_AnyMethodConfigured_SkipsPrompting(t *testing.T) {
 
 	prompter := &scriptedPrompter{t: t} // empty queues; any prompt fails the test
 
-	caps := `{"credentials":{"required":true,"methods":{
+	caps := `{"auth":{"required":true,"methods":{
 		"oauth":{"type":"oauth2","flows":["authorization-code-pkce"],"scopes":["repo"]},
 		"pat":{"type":"apikey"}
 	}}}`
-	fs := mkParticleFS("p", "0.1.0", caps)
+	fs := mkParticleFS("p", "0.1.0", "{}", caps)
 	if _, err := importer.Import(ctx, fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	}); err != nil {
@@ -515,17 +528,17 @@ func TestImport_RecordsSelectedMethodInCredentialsStore(t *testing.T) {
 		strings: []string{"X-API-Key"},
 		secrets: []string{"k"},
 	}
-	caps := `{"credentials":{"required":true,"methods":{
+	caps := `{"auth":{"required":true,"methods":{
 		"oauth":{"type":"oauth2","flows":["authorization-code-pkce"],"scopes":["repo"]},
 		"pat":{"type":"apikey"}
 	}}}`
-	fs := mkParticleFS("p", "0.1.0", caps)
+	fs := mkParticleFS("p", "0.1.0", "{}", caps)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.ConfiguredMethod(context.Background(), "p")
+	got, err := store.ConfiguredMethod(context.Background(), "p", "auth")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,16 +554,16 @@ func TestImport_OptionalAuth_SkipsSetup(t *testing.T) {
 	store := credmem.New()
 	prompter := &scriptedPrompter{t: t} // empty; any prompt fails the test
 
-	caps := `{"credentials":{"required":false,"methods":{
+	caps := `{"auth":{"required":false,"methods":{
 		"pat":{"type":"apikey"}
 	}}}`
-	fs := mkParticleFS("p", "0.1.0", caps)
+	fs := mkParticleFS("p", "0.1.0", "{}", caps)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.GetByName(context.Background(), "p", "pat"); !errors.Is(err, credentials.ErrNotFound) {
+	if _, err := store.GetByName(context.Background(), "p", "auth"); !errors.Is(err, credentials.ErrNotFound) {
 		t.Errorf("expected nothing configured for optional auth; err = %v", err)
 	}
 }
@@ -569,7 +582,7 @@ func reconfigureSetup(t *testing.T, manifestCaps string, initialChoices, initial
 	prompter := &scriptedPrompter{
 		t: t, choices: initialChoices, strings: initialStrings, secrets: initialSecrets,
 	}
-	fs := mkParticleFS("p", "0.1.0", manifestCaps)
+	fs := mkParticleFS("p", "0.1.0", "{}", manifestCaps)
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	}); err != nil {
@@ -583,7 +596,7 @@ func reconfigureSetup(t *testing.T, manifestCaps string, initialChoices, initial
 // successful reconfigure always leaves exactly one method
 // configured.
 func TestReconfigure_SwitchMethod_RemovesPrevious(t *testing.T) {
-	caps := `{"credentials":{"required":true,"methods":{
+	caps := `{"auth":{"required":true,"methods":{
 		"oauth":{"type":"oauth2","flows":["authorization-code-pkce"],"scopes":["repo"]},
 		"pat":{"type":"apikey","location":{"kind":"auth-scheme","scheme":"Bearer"}}
 	}}}`
@@ -601,7 +614,7 @@ func TestReconfigure_SwitchMethod_RemovesPrevious(t *testing.T) {
 		choices: []string{"pat"},
 		secrets: []string{"new-pat"},
 	}
-	_, method, err := importer.Reconfigure(context.Background(), "p", importer.Options{
+	_, method, err := importer.Reconfigure(context.Background(), "p", "", importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	})
 	if err != nil {
@@ -610,7 +623,7 @@ func TestReconfigure_SwitchMethod_RemovesPrevious(t *testing.T) {
 	if method != "pat" {
 		t.Errorf("Reconfigure returned method = %q, want pat", method)
 	}
-	desc, _ := store.GetByName(context.Background(), "p", "pat")
+	desc, _ := store.GetByName(context.Background(), "p", "auth")
 	v, _ := store.ReadSecret(context.Background(), "p", desc.ID, credentials.SecretRoleKey)
 	if string(v) != "new-pat" {
 		t.Errorf("pat key = %q, want new-pat (overwritten in place)", v)
@@ -619,7 +632,7 @@ func TestReconfigure_SwitchMethod_RemovesPrevious(t *testing.T) {
 
 // Picking a different method deletes the prior credential.
 func TestReconfigure_DifferentMethod_DropsPrevious(t *testing.T) {
-	caps := `{"credentials":{"required":true,"methods":{
+	caps := `{"auth":{"required":true,"methods":{
 		"a":{"type":"basic"},
 		"b":{"type":"apikey","location":{"kind":"header","name":"X-K"}}
 	}}}`
@@ -635,7 +648,7 @@ func TestReconfigure_DifferentMethod_DropsPrevious(t *testing.T) {
 		choices: []string{"b"},        // method choice
 		secrets: []string{"key-value"}, // apikey secret
 	}
-	_, method, err := importer.Reconfigure(context.Background(), "p", importer.Options{
+	_, method, err := importer.Reconfigure(context.Background(), "p", "", importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	})
 	if err != nil {
@@ -644,13 +657,18 @@ func TestReconfigure_DifferentMethod_DropsPrevious(t *testing.T) {
 	if method != "b" {
 		t.Errorf("Reconfigure returned method = %q, want b", method)
 	}
-	// "b" present, "a" gone — Put atomically evicted the prior
-	// credential as part of writing the new one.
-	if _, err := store.GetByName(context.Background(), "p", "b"); err != nil {
-		t.Errorf("expected b configured: %v", err)
+	// One row under credential "auth"; method = "b". Method switch
+	// in Put wiped the prior method's secrets in the same tx.
+	desc, err := store.GetByName(context.Background(), "p", "auth")
+	if err != nil {
+		t.Fatalf("expected auth configured: %v", err)
 	}
-	if _, err := store.GetByName(context.Background(), "p", "a"); !errors.Is(err, credentials.ErrNotFound) {
-		t.Errorf("expected a removed; err = %v", err)
+	if desc.Method != "b" {
+		t.Errorf("auth.Method = %q, want b", desc.Method)
+	}
+	// The prior method's password secret must have been wiped.
+	if _, err := store.ReadSecret(context.Background(), "p", desc.ID, credentials.SecretRolePassword); !errors.Is(err, credentials.ErrSecretNotSet) {
+		t.Errorf("prior basic password should be wiped after method switch; err = %v", err)
 	}
 }
 
@@ -658,7 +676,7 @@ func TestReconfigure_DifferentMethod_DropsPrevious(t *testing.T) {
 // must remain intact — we don't drop it until the new one writes
 // successfully.
 func TestReconfigure_SetupError_PreservesPrevious(t *testing.T) {
-	caps := `{"credentials":{"required":true,"methods":{
+	caps := `{"auth":{"required":true,"methods":{
 		"a":{"type":"basic"},
 		"b":{"type":"raw"}
 	}}}`
@@ -675,21 +693,21 @@ func TestReconfigure_SetupError_PreservesPrevious(t *testing.T) {
 		choices:  []string{"b"},
 		confirms: []bool{false},
 	}
-	if _, _, err := importer.Reconfigure(context.Background(), "p", importer.Options{
+	if _, _, err := importer.Reconfigure(context.Background(), "p", "", importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	}); err == nil {
 		t.Fatal("expected error for declined raw setup")
 	}
-	if _, err := store.GetByName(context.Background(), "p", "a"); err != nil {
-		t.Errorf("previous credential 'a' should still be present after failed reconfigure; err = %v", err)
+	// The "auth" credential is still configured with method "a";
+	// the failed setup never wrote the new row.
+	desc, err := store.GetByName(context.Background(), "p", "auth")
+	if err != nil {
+		t.Fatalf("previous credential should still be present after failed reconfigure; err = %v", err)
 	}
-	if _, err := store.GetByName(context.Background(), "p", "b"); !errors.Is(err, credentials.ErrNotFound) {
-		t.Errorf("partial new credential 'b' should not exist; err = %v", err)
+	if desc.Method != "a" {
+		t.Errorf("auth.Method = %q, want a (preserved)", desc.Method)
 	}
-	// ConfiguredMethod still resolves to "a" — the failed Put
-	// rolled back, so the prior credential is the only one
-	// present.
-	method, _ := store.ConfiguredMethod(context.Background(), "p")
+	method, _ := store.ConfiguredMethod(context.Background(), "p", "auth")
 	if method != "a" {
 		t.Errorf("ConfiguredMethod = %q, want a (preserved)", method)
 	}
@@ -700,7 +718,7 @@ func TestReconfigure_SetupError_PreservesPrevious(t *testing.T) {
 func TestReconfigure_NotRegistered(t *testing.T) {
 	reg := newRegistry(t)
 	store := credmem.New()
-	_, _, err := importer.Reconfigure(context.Background(), "absent", importer.Options{
+	_, _, err := importer.Reconfigure(context.Background(), "absent", "", importer.Options{
 		Registry: reg, Credentials: store, Prompter: &scriptedPrompter{t: t}, PermissionMode: importer.PermissionSkip,
 	})
 	if err == nil {
@@ -713,10 +731,10 @@ func TestReconfigure_NotRegistered(t *testing.T) {
 // success.
 func TestReconfigure_NoCredentialsDeclared(t *testing.T) {
 	reg := newRegistry(t)
-	if err := reg.Put(context.Background(), "p", "0.1.0", mkParticleFS("p", "0.1.0", "{}")); err != nil {
+	if err := reg.Put(context.Background(), "p", "0.1.0", mkParticleFS("p", "0.1.0", "{}", "{}")); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := importer.Reconfigure(context.Background(), "p", importer.Options{
+	_, _, err := importer.Reconfigure(context.Background(), "p", "", importer.Options{
 		Registry: reg, Credentials: credmem.New(), Prompter: &scriptedPrompter{t: t}, PermissionMode: importer.PermissionSkip,
 	})
 	if err == nil || !strings.Contains(err.Error(), "no credentials") {
@@ -733,7 +751,7 @@ func TestImport_UnknownCredentialType(t *testing.T) {
 	reg := newRegistry(t)
 	store := credmem.New()
 	prompter := &scriptedPrompter{t: t}
-	fs := mkParticleFS("p", "0.1.0", `{"credentials":{"required":true,"methods":{"x":{"type":"telepathy"}}}}`)
+	fs := mkParticleFS("p", "0.1.0", "{}", `{"auth":{"required":true,"methods":{"x":{"type":"telepathy"}}}}`)
 	_, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	})
@@ -755,11 +773,11 @@ func (s *errStore) GetByName(context.Context, string, string) (credentials.Descr
 	return credentials.Descriptor{}, s.err
 }
 func (s *errStore) List(context.Context, string) ([]credentials.ListEntry, error) { return nil, s.err }
-func (s *errStore) Put(context.Context, string, string, credentials.Metadata, ...credentials.Secret) (credentials.Descriptor, error) {
+func (s *errStore) Put(context.Context, string, string, string, credentials.Metadata, ...credentials.Secret) (credentials.Descriptor, error) {
 	return credentials.Descriptor{}, s.err
 }
 func (s *errStore) Delete(context.Context, string, string) error { return s.err }
-func (s *errStore) ConfiguredMethod(context.Context, string) (string, error) {
+func (s *errStore) ConfiguredMethod(context.Context, string, string) (string, error) {
 	return "", s.err
 }
 func (s *errStore) ReadSecret(context.Context, string, string, credentials.SecretRole) ([]byte, error) {
@@ -776,7 +794,7 @@ func TestImport_StoreLookupError_Propagates(t *testing.T) {
 	reg := newRegistry(t)
 	boom := errors.New("disk failed")
 	prompter := &scriptedPrompter{t: t}
-	fs := mkParticleFS("p", "0.1.0", `{"credentials":{"required":true,"methods":{"db":{"type":"basic"}}}}`)
+	fs := mkParticleFS("p", "0.1.0", "{}", `{"auth":{"required":true,"methods":{"db":{"type":"basic"}}}}`)
 	_, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: &errStore{err: boom}, Prompter: prompter, PermissionMode: importer.PermissionSkip,
 	})

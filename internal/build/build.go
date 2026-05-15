@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"sort"
 	"strings"
 	"testing/fstest"
 	"time"
@@ -277,17 +278,47 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}, nil
 }
 
+// knownCapabilities is the set of capability category names the
+// runtime recognizes. Any other key under `capabilities`
+// indicates a typo or a stale schema and fails the build —
+// silently ignoring would let a manifest declare permissions the
+// runtime never actually enforces. Update this list when a new
+// capability lands in types/particle.d.ts.
+var knownCapabilities = map[string]struct{}{
+	"http":    {},
+	"sockets": {},
+	"env":     {},
+}
+
 // validateExtractedManifest runs the Go-side gates on the JSON
-// the introspect WASM produced. Today the only gate is strict
-// SemVer 2.0.0 on `version` (shared with the registry via
-// `internal/semver`, so a tarball that bypasses the build path
-// still can't slip a bad version past `registry.Put`). Other
-// shape checks — name non-empty, tools well-formed — already
-// happen inside introspect.ts; this layer is the host-side gate
-// that doesn't depend on guest-language code being correct.
+// the introspect WASM produced:
+//
+//  1. Strict SemVer 2.0.0 on `version` (shared with the registry
+//     via `internal/semver`, so a tarball that bypasses the build
+//     path still can't slip a bad version past `registry.Put`).
+//
+//  2. Every key under `capabilities` must be a recognized
+//     category. `credentials` was a capability in pre-1.0 and
+//     this is the migration-aware error users hit when they
+//     update particle but not their manifest.
+//
+//  3. Every host listed under `credentials.<name>.hosts` must
+//     also appear in `capabilities.http.allowedHosts`. A
+//     credential bound to a host the particle can't actually
+//     reach is either a typo or a layering bug — fail loud at
+//     build time rather than at substitution time.
+//
+// Other shape checks — name non-empty, tools well-formed —
+// already happen inside introspect.ts; this layer is the
+// host-side gate that doesn't depend on guest-language code
+// being correct.
 func validateExtractedManifest(manifestJSON []byte) error {
 	var mf struct {
-		Version string `json:"version"`
+		Version      string                     `json:"version"`
+		Capabilities map[string]json.RawMessage `json:"capabilities"`
+		Credentials  map[string]struct {
+			Hosts []string `json:"hosts"`
+		} `json:"credentials"`
 	}
 	if err := json.Unmarshal(manifestJSON, &mf); err != nil {
 		return fmt.Errorf("parse extracted manifest: %w", err)
@@ -295,7 +326,44 @@ func validateExtractedManifest(manifestJSON []byte) error {
 	if !semver.IsValid(mf.Version) {
 		return fmt.Errorf("particle.version %q is not a valid semver string (e.g. \"1.2.3\", \"0.1.0-rc.1\", \"1.0.0+build.7\")", mf.Version)
 	}
+	for cap := range mf.Capabilities {
+		if _, ok := knownCapabilities[cap]; !ok {
+			return fmt.Errorf("capabilities.%s is not a recognized capability (known: %s)", cap, knownCapabilitiesList())
+		}
+	}
+	var allowed map[string]struct{}
+	if rawHTTP, ok := mf.Capabilities["http"]; ok {
+		var v struct {
+			AllowedHosts []string `json:"allowedHosts"`
+		}
+		if err := json.Unmarshal(rawHTTP, &v); err != nil {
+			return fmt.Errorf("parse capabilities.http: %w", err)
+		}
+		allowed = make(map[string]struct{}, len(v.AllowedHosts))
+		for _, h := range v.AllowedHosts {
+			allowed[strings.ToLower(h)] = struct{}{}
+		}
+	}
+	for credName, cred := range mf.Credentials {
+		for _, h := range cred.Hosts {
+			if _, ok := allowed[strings.ToLower(h)]; !ok {
+				return fmt.Errorf("credentials.%s.hosts: %q is not in capabilities.http.allowedHosts — add it there or remove it from this credential", credName, h)
+			}
+		}
+	}
 	return nil
+}
+
+// knownCapabilitiesList returns the recognized capability names
+// in sorted order, comma-joined — used to build error messages
+// that show the author what's actually accepted.
+func knownCapabilitiesList() string {
+	names := make([]string, 0, len(knownCapabilities))
+	for n := range knownCapabilities {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // resolveEntryPoint picks the conventional entry point. Spec §4: the

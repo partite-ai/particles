@@ -23,7 +23,7 @@ func TestImport_Permission_FreshInstall_Prompts(t *testing.T) {
 		t:        t,
 		confirms: []bool{true}, // accept perms
 	}
-	fs := mkParticleFS("p", "0.1.0", `{"http":{"allowedHosts":["api.example.com"]}}`)
+	fs := mkParticleFS("p", "0.1.0", `{"http":{"allowedHosts":["api.example.com"]}}`, "{}")
 	if _, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter,
 	}); err != nil {
@@ -42,7 +42,7 @@ func TestImport_Permission_Declined_Aborts(t *testing.T) {
 		t:        t,
 		confirms: []bool{false}, // decline
 	}
-	fs := mkParticleFS("p", "0.1.0", `{"http":{"allowedHosts":["api.example.com"]}}`)
+	fs := mkParticleFS("p", "0.1.0", `{"http":{"allowedHosts":["api.example.com"]}}`, "{}")
 	_, err := importer.Import(context.Background(), fs, importer.Options{
 		Registry: reg, Credentials: store, Prompter: prompter,
 	})
@@ -60,7 +60,7 @@ func TestImport_Permission_UnchangedCaps_Silent(t *testing.T) {
 	// First install: accept perms.
 	first := &scriptedPrompter{t: t, confirms: []bool{true}}
 	if _, err := importer.Import(context.Background(),
-		mkParticleFS("p", "0.1.0", caps),
+		mkParticleFS("p", "0.1.0", caps, "{}"),
 		importer.Options{Registry: reg, Credentials: store, Prompter: first},
 	); err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestImport_Permission_UnchangedCaps_Silent(t *testing.T) {
 	// queue — any prompt fails the test.
 	second := &scriptedPrompter{t: t}
 	if _, err := importer.Import(context.Background(),
-		mkParticleFS("p", "0.2.0", caps),
+		mkParticleFS("p", "0.2.0", caps, "{}"),
 		importer.Options{Registry: reg, Credentials: store, Prompter: second},
 	); err != nil {
 		t.Fatal(err)
@@ -85,7 +85,7 @@ func TestImport_Permission_ChangedCaps_Prompts(t *testing.T) {
 	// First install: one allowed host.
 	first := &scriptedPrompter{t: t, confirms: []bool{true}}
 	if _, err := importer.Import(context.Background(),
-		mkParticleFS("p", "0.1.0", `{"http":{"allowedHosts":["api.example.com"]}}`),
+		mkParticleFS("p", "0.1.0", `{"http":{"allowedHosts":["api.example.com"]}}`, "{}"),
 		importer.Options{Registry: reg, Credentials: store, Prompter: first},
 	); err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestImport_Permission_ChangedCaps_Prompts(t *testing.T) {
 	// re-fire.
 	second := &scriptedPrompter{t: t, confirms: []bool{true}}
 	if _, err := importer.Import(context.Background(),
-		mkParticleFS("p", "0.2.0", `{"http":{"allowedHosts":["api.example.com","other.example.com"]}}`),
+		mkParticleFS("p", "0.2.0", `{"http":{"allowedHosts":["api.example.com","other.example.com"]}}`, "{}"),
 		importer.Options{Registry: reg, Credentials: store, Prompter: second},
 	); err != nil {
 		t.Fatal(err)
@@ -112,7 +112,7 @@ func TestImport_Permission_SkipMode_NoPrompt(t *testing.T) {
 	prompter := &scriptedPrompter{t: t} // empty — any prompt fails
 
 	if _, err := importer.Import(context.Background(),
-		mkParticleFS("p", "0.1.0", `{"http":{"allowedHosts":["api.example.com"]}}`),
+		mkParticleFS("p", "0.1.0", `{"http":{"allowedHosts":["api.example.com"]}}`, "{}"),
 		importer.Options{
 			Registry: reg, Credentials: store, Prompter: prompter,
 			PermissionMode: importer.PermissionSkip,
@@ -129,7 +129,7 @@ func TestImport_Permission_ForceMode_PromptsEvenIfUnchanged(t *testing.T) {
 	caps := `{"http":{"allowedHosts":["api.example.com"]}}`
 
 	if _, err := importer.Import(context.Background(),
-		mkParticleFS("p", "0.1.0", caps),
+		mkParticleFS("p", "0.1.0", caps, "{}"),
 		importer.Options{
 			Registry: reg, Credentials: store,
 			Prompter: &scriptedPrompter{t: t, confirms: []bool{true}},
@@ -141,7 +141,7 @@ func TestImport_Permission_ForceMode_PromptsEvenIfUnchanged(t *testing.T) {
 	// Same caps, force mode: must prompt anyway.
 	second := &scriptedPrompter{t: t, confirms: []bool{true}}
 	if _, err := importer.Import(context.Background(),
-		mkParticleFS("p", "0.2.0", caps),
+		mkParticleFS("p", "0.2.0", caps, "{}"),
 		importer.Options{
 			Registry: reg, Credentials: store, Prompter: second,
 			PermissionMode: importer.PermissionForce,
@@ -160,7 +160,7 @@ func TestImport_Permission_NoCapabilities_Silent(t *testing.T) {
 	prompter := &scriptedPrompter{t: t} // any prompt fails
 
 	if _, err := importer.Import(context.Background(),
-		mkParticleFS("p", "0.1.0", `{}`),
+		mkParticleFS("p", "0.1.0", `{}`, "{}"),
 		importer.Options{
 			Registry: reg, Prompter: prompter,
 		},
@@ -180,7 +180,7 @@ func TestImport_Permission_CanonicalComparison(t *testing.T) {
 	first := &scriptedPrompter{t: t, confirms: []bool{true}}
 	if _, err := importer.Import(context.Background(),
 		mkParticleFS("p", "0.1.0",
-			`{"http":{"allowedHosts":["a","b"]},"sockets":{"allowedEndpoints":[]}}`),
+			`{"http":{"allowedHosts":["a","b"]},"sockets":{"allowedEndpoints":[]}}`, "{}"),
 		importer.Options{Registry: reg, Credentials: store, Prompter: first},
 	); err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestImport_Permission_CanonicalComparison(t *testing.T) {
 	second := &scriptedPrompter{t: t}
 	if _, err := importer.Import(context.Background(),
 		mkParticleFS("p", "0.2.0",
-			`{"sockets":{"allowedEndpoints":[]},"http":{"allowedHosts":["a","b"]}}`),
+			`{"sockets":{"allowedEndpoints":[]},"http":{"allowedHosts":["a","b"]}}`, "{}"),
 		importer.Options{Registry: reg, Credentials: store, Prompter: second},
 	); err != nil {
 		t.Fatal(err)
@@ -208,13 +208,11 @@ func TestImport_Permission_CanonicalComparison(t *testing.T) {
 func TestImport_Permission_SummaryNamesEachCategory(t *testing.T) {
 	reg := newRegistry(t)
 	store := credmem.New()
-	caps := `{
-		"http":{"allowedHosts":["api.example.com"]},
-		"credentials":{"required":true,"methods":{"pat":{"type":"apikey","description":"PAT"}}}
-	}`
+	caps := `{"http":{"allowedHosts":["api.example.com"]}}`
+	creds := `{"svc":{"required":true,"methods":{"pat":{"type":"apikey","description":"PAT"}}}}`
 	prompter := &scriptedPrompter{t: t, confirms: []bool{false}}
 	_, _ = importer.Import(context.Background(),
-		mkParticleFS("p", "0.1.0", caps),
+		mkParticleFS("p", "0.1.0", caps, creds),
 		importer.Options{Registry: reg, Credentials: store, Prompter: prompter},
 	)
 	if len(prompter.infos) == 0 {
@@ -240,7 +238,7 @@ func TestImport_Permission_NestedArrayOrderMatters(t *testing.T) {
 	store := credmem.New()
 
 	if _, err := importer.Import(context.Background(),
-		mkParticleFS("p", "0.1.0", `{"http":{"allowedHosts":["a.com","b.com"]}}`),
+		mkParticleFS("p", "0.1.0", `{"http":{"allowedHosts":["a.com","b.com"]}}`, "{}"),
 		importer.Options{Registry: reg, Credentials: store, Prompter: &scriptedPrompter{t: t, confirms: []bool{true}}},
 	); err != nil {
 		t.Fatal(err)
@@ -248,7 +246,7 @@ func TestImport_Permission_NestedArrayOrderMatters(t *testing.T) {
 
 	second := &scriptedPrompter{t: t, confirms: []bool{true}}
 	if _, err := importer.Import(context.Background(),
-		mkParticleFS("p", "0.2.0", `{"http":{"allowedHosts":["b.com","a.com"]}}`),
+		mkParticleFS("p", "0.2.0", `{"http":{"allowedHosts":["b.com","a.com"]}}`, "{}"),
 		importer.Options{Registry: reg, Credentials: store, Prompter: second},
 	); err != nil {
 		t.Fatal(err)
@@ -266,8 +264,8 @@ func TestImport_Permission_NestedArrayOrderMatters(t *testing.T) {
 func TestImport_Permission_OAuthURLs_Surfaced(t *testing.T) {
 	reg := newRegistry(t)
 	store := credmem.New()
-	caps := `{
-		"credentials":{"required":true,"methods":{
+	creds := `{
+		"github":{"required":true,"methods":{
 			"github_oauth":{
 				"type":"oauth2",
 				"description":"Sign in with GitHub",
@@ -279,7 +277,7 @@ func TestImport_Permission_OAuthURLs_Surfaced(t *testing.T) {
 	}`
 	prompter := &scriptedPrompter{t: t, confirms: []bool{false}}
 	_, _ = importer.Import(context.Background(),
-		mkParticleFS("p", "0.1.0", caps),
+		mkParticleFS("p", "0.1.0", "{}", creds),
 		importer.Options{Registry: reg, Credentials: store, Prompter: prompter},
 	)
 	if len(prompter.infos) == 0 {
@@ -305,8 +303,8 @@ func TestImport_Permission_OAuthURLs_Surfaced(t *testing.T) {
 func TestImport_Permission_APIKeyLocation_Surfaced(t *testing.T) {
 	reg := newRegistry(t)
 	store := credmem.New()
-	caps := `{
-		"credentials":{"required":true,"methods":{
+	creds := `{
+		"svc":{"required":true,"methods":{
 			"shifty":{
 				"type":"apikey",
 				"description":"Service API key",
@@ -316,7 +314,7 @@ func TestImport_Permission_APIKeyLocation_Surfaced(t *testing.T) {
 	}`
 	prompter := &scriptedPrompter{t: t, confirms: []bool{false}}
 	_, _ = importer.Import(context.Background(),
-		mkParticleFS("p", "0.1.0", caps),
+		mkParticleFS("p", "0.1.0", "{}", creds),
 		importer.Options{Registry: reg, Credentials: store, Prompter: prompter},
 	)
 	summary := strings.Join(prompter.infos, "\n")
@@ -334,7 +332,7 @@ func TestImport_Permission_UnknownCategory_Surfaced(t *testing.T) {
 	// still print SOMETHING so the user sees what they're
 	// agreeing to.
 	_, _ = importer.Import(context.Background(),
-		mkParticleFS("p", "0.1.0", `{"telepathy":{"reach":"galaxy"}}`),
+		mkParticleFS("p", "0.1.0", `{"telepathy":{"reach":"galaxy"}}`, "{}"),
 		importer.Options{Registry: reg, Prompter: prompter},
 	)
 	if len(prompter.infos) == 0 || !strings.Contains(prompter.infos[0], "telepathy") {

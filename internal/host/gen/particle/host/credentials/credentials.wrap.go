@@ -31,12 +31,17 @@ func WrapInstance(caller *host.ComponentInstance, callee *wacogo.ComponentInstan
 	w_.fnGetRaw = host.WrapExportedFunc(callee.ExportedFunc("get-raw"))
 	return w_
 }
-func (w *credentialsWrapper) GetConfiguredMethod(ctx context.Context) (ResultOptionStringCredentialError, error) {
+func (w *credentialsWrapper) GetConfiguredMethod(ctx context.Context, name string) (ResultOptionStringCredentialError, error) {
 	var resVal_ ResultOptionStringCredentialError
 	var resErr_ error
+	arg0_ := name
 	{
 		callErr_ := w.fnGetConfiguredMethod.CallRaw(ctx, w.callerInst,
 			func(caller, callee *host.CallContext, stack []uint64) {
+				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnGetConfiguredMethod.ParamType(0), stack[0:2], arg0_); err_ != nil {
+					resErr_ = err_
+					return
+				}
 			},
 			func(caller, callee *host.CallContext, stack []uint64) {
 				if v_, err_ := liftMemResultOptionStringCredentialError(ctx, caller, callee, w.callerInst, w.fnGetConfiguredMethod.ResultType(0), uint32(stack[0])); err_ != nil {

@@ -17,12 +17,12 @@ const InterfaceName = "particle:host/credentials@0.1.0"
 // Resource-typed parameters and results appear as *<R>Handle values that can
 // be passed across component boundaries.
 type Credentials interface {
-	// Returns the name of the credential method the user configured at
-	// setup, or `none` when no method is set. Particles whose manifest
-	// declares multiple alternative authentication methods (e.g.
-	// `oauth2` + `apikey` for the same provider) use this to find out
-	// which one to call `fetcher` / `getRaw` against.
-	GetConfiguredMethod(ctx context.Context) (ResultOptionStringCredentialError, error)
+	// Returns the method name the user configured for the named
+	// credential at setup, or `none` when no method is set. Particles
+	// that declare multiple alternative methods (e.g. `oauth2` +
+	// `apikey` for the same provider) call this to find out which
+	// method backs the named credential.
+	GetConfiguredMethod(ctx context.Context, name string) (ResultOptionStringCredentialError, error)
 	// For basic, oauth2, apikey (substitution-based types).
 	GetPlaceholder(ctx context.Context, name string) (ResultPlaceholderInfoCredentialError, error)
 	// Only for type: "raw" credentials. Returns the actual stored value.

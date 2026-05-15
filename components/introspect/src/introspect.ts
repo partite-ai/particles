@@ -66,6 +66,7 @@ type UserParticle = {
   description: string;
   version: string;
   capabilities: Record<string, unknown>;
+  credentials?: Record<string, unknown>;
   tools: Record<string, UserToolDef>;
 };
 
@@ -173,6 +174,9 @@ function validateAndSerialize(p: UserParticle): string {
   if (p.capabilities && typeof p.capabilities !== "object") {
     throw new Error("particle.capabilities must be an object");
   }
+  if (p.credentials != null && typeof p.credentials !== "object") {
+    throw new Error("particle.credentials must be an object");
+  }
   if (!p.tools || typeof p.tools !== "object") {
     throw new Error("particle.tools must be an object");
   }
@@ -203,6 +207,7 @@ function validateAndSerialize(p: UserParticle): string {
     description: p.description,
     version: p.version,
     capabilities: p.capabilities ?? {},
+    credentials: p.credentials ?? {},
     tools,
   });
 }

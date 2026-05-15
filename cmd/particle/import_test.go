@@ -11,12 +11,14 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // readTar should round-trip whatever writeParticleTar produces:
 // every regular file in, same paths and bytes out. We synthesize
-// an in-memory tarball mirroring the build CLI's deterministic
-// USTAR shape.
+// an in-memory archive mirroring the build CLI's deterministic
+// zstd-of-tar shape.
 func TestReadTar_RoundTripsRegularFiles(t *testing.T) {
 	files := map[string][]byte{
 		"manifest.json": []byte(`{"name":"p","version":"0.1.0"}`),
@@ -39,7 +41,7 @@ func TestReadTar_RoundTripsRegularFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := readTar(&buf)
+	got, err := readTar(bytes.NewReader(zstdCompress(t, buf.Bytes())))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +97,7 @@ func TestReadTar_RejectsHostileNames(t *testing.T) {
 			}
 			tw.Close()
 
-			_, err := readTar(&buf)
+			_, err := readTar(bytes.NewReader(zstdCompress(t, buf.Bytes())))
 			if err == nil {
 				t.Fatalf("readTar accepted hostile name %q", c.name)
 			}
@@ -130,7 +132,7 @@ func TestReadTar_SkipsNonRegularEntries(t *testing.T) {
 	}
 	tw.Close()
 
-	got, err := readTar(&buf)
+	got, err := readTar(bytes.NewReader(zstdCompress(t, buf.Bytes())))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,9 +157,9 @@ func keysOf(m map[string][]byte) []string {
 	return out
 }
 
-// tarBytes packs a synthetic USTAR archive of name→body pairs.
-// Mirrors `writeParticleTar`'s layout closely enough for readTar
-// to round-trip through it.
+// tarBytes packs a synthetic tar archive of name→body pairs and
+// returns the zstd-compressed result. Mirrors `writeParticleTar`'s
+// layout closely enough for readTar to round-trip through it.
 func tarBytes(t *testing.T, files map[string][]byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -173,6 +175,28 @@ func tarBytes(t *testing.T, files map[string][]byte) []byte {
 		}
 	}
 	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return zstdCompress(t, buf.Bytes())
+}
+
+// zstdCompress wraps raw bytes in a zstd stream with the same level
+// + concurrency settings writeParticleTar uses, so test fixtures
+// match the on-disk format readTar expects.
+func zstdCompress(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw, err := zstd.NewWriter(&buf,
+		zstd.WithEncoderLevel(zstd.SpeedBetterCompression),
+		zstd.WithEncoderConcurrency(1),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zw.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()

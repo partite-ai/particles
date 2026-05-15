@@ -42,7 +42,7 @@ the name is forwarded to the tool.`,
 			return runRun(cmd, args, dbPath)
 		},
 	}
-	cmd.Flags().StringVar(&dbPath, "db", "", "Path to the particle state DB (default: <user-config-dir>/particle/state.db)")
+	cmd.Flags().StringVar(&dbPath, "db", "", dbFlagUsage())
 	cmd.Flags().StringVar(&profile, "profile", "", "Write CPU + heap pprof profiles with this prefix")
 	_ = cmd.Flags().MarkHidden("profile")
 	// SetInterspersed(false) tells pflag (cobra's parser) to stop
