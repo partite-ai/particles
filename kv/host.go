@@ -8,6 +8,7 @@ import (
 	"github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/host"
 
+	"github.com/partite-ai/particle/internal/hostmeter"
 	gen "github.com/partite-ai/particle/internal/host/gen/particle/host/kv"
 )
 
@@ -84,6 +85,8 @@ func newAdapter(store Store, particle string) *adapter {
 }
 
 func (a *adapter) Get(ctx context.Context, key string) (gen.ResultOptionStringKvError, error) {
+	defer hostmeter.EnterHost(ctx)()
+
 	value, found, err := a.store.Get(ctx, a.particle, key)
 	if err != nil {
 		return gen.ResultOptionStringKvErrorErr{Value: liftError(err)}, nil
@@ -95,6 +98,8 @@ func (a *adapter) Get(ctx context.Context, key string) (gen.ResultOptionStringKv
 }
 
 func (a *adapter) Set(ctx context.Context, key, value string) (gen.Result_KvError, error) {
+	defer hostmeter.EnterHost(ctx)()
+
 	if err := a.store.Set(ctx, a.particle, key, value); err != nil {
 		return gen.Result_KvErrorErr{Value: liftError(err)}, nil
 	}
@@ -102,6 +107,8 @@ func (a *adapter) Set(ctx context.Context, key, value string) (gen.Result_KvErro
 }
 
 func (a *adapter) Delete(ctx context.Context, key string) (gen.Result_KvError, error) {
+	defer hostmeter.EnterHost(ctx)()
+
 	if err := a.store.Delete(ctx, a.particle, key); err != nil {
 		return gen.Result_KvErrorErr{Value: liftError(err)}, nil
 	}
@@ -109,6 +116,8 @@ func (a *adapter) Delete(ctx context.Context, key string) (gen.Result_KvError, e
 }
 
 func (a *adapter) List(ctx context.Context, prefix string) (gen.ResultListStringKvError, error) {
+	defer hostmeter.EnterHost(ctx)()
+
 	keys, err := a.store.List(ctx, a.particle, prefix)
 	if err != nil {
 		return gen.ResultListStringKvErrorErr{Value: liftError(err)}, nil

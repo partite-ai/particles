@@ -12,6 +12,7 @@ import (
 	httptypes "github.com/partite-ai/wacogo/wasi/http/types"
 
 	"github.com/partite-ai/particle/credentials"
+	"github.com/partite-ai/particle/internal/hostmeter"
 )
 
 // HostNotAllowedError is the error a denying [httpPolicy] returns
@@ -153,6 +154,7 @@ func newHTTPPolicy(
 
 // Do implements wasi/http/types.HTTPDoer.
 func (p *httpPolicy) Do(req *http.Request) (*http.Response, error) {
+	defer hostmeter.EnterHost(req.Context())()
 	host := strings.ToLower(req.URL.Hostname())
 	if _, ok := p.allowedHosts[host]; !ok {
 		hae := &HostNotAllowedError{Host: req.URL.Hostname()}

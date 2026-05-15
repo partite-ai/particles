@@ -59,7 +59,7 @@ func (c *Components) Introspect(ctx context.Context, bundleJS []byte) (*Introspe
 	stderrBuf := &bytes.Buffer{}
 	w, err := wasi.NewWorld(ctx, c.engine, &wasi.Config{
 		Args:     []string{"particle-introspect"},
-		Preopens: preopens.NewFSPreopens(bundleFS),
+		Preopens: preopens.NewFSPreopens(preopens.ImmutableFS{FS: bundleFS}),
 		Stdin:    strings.NewReader(""),
 		Stdout:   io.Discard,
 		Stderr:   stderrBuf,

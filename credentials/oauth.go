@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/partite-ai/particle/internal/hostmeter"
 	gen "github.com/partite-ai/particle/internal/host/gen/particle/host/oauth"
 )
 
@@ -231,6 +232,8 @@ func newOAuthAdapter(store Store, refresher OAuthRefresher, particle string) *oa
 //	upstream refresh fails or store
 //	  rejects the write             → refresh-failed(message)
 func (a *oauthAdapter) Refresh(ctx context.Context, name string) (gen.Result_OauthError, error) {
+	defer hostmeter.EnterHost(ctx)()
+
 	desc, err := a.store.GetByName(ctx, a.particle, name)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {

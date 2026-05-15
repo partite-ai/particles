@@ -68,7 +68,7 @@ func (c *Components) TypeCheck(ctx context.Context, source, nodeModules fs.FS) (
 	stderrBuf := &bytes.Buffer{}
 	w, err := wasi.NewWorld(ctx, c.engine, &wasi.Config{
 		Args:     []string{"particle-typecheck"},
-		Preopens: preopens.NewFSPreopens(mounted),
+		Preopens: preopens.NewFSPreopens(preopens.ImmutableFS{FS: mounted}),
 		Stdin:    strings.NewReader(""),
 		Stdout:   io.Discard,
 		Stderr:   stderrBuf,

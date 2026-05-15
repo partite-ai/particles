@@ -191,7 +191,7 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, opts ...Par
 	stderr := &bytes.Buffer{}
 	w, err := wasi.NewWorld(ctx, r.cfg.Engine, &wasi.Config{
 		Args:     []string{"particle-runtime"},
-		Preopens: preopens.NewFSPreopens(bundleFS),
+		Preopens: preopens.NewFSPreopens(preopens.ImmutableFS{FS: bundleFS}),
 		Stdin:    strings.NewReader(""),
 		Stdout:   io.Discard,
 		Stderr:   stderr,
@@ -354,8 +354,11 @@ func (p *Particle) ensureSchemas(ctx context.Context) (map[string]*jsonschema.Re
 }
 
 // ListTools returns the metadata for every tool the particle's
-// default export declares.
-func (p *Particle) ListTools(ctx context.Context) ([]ToolDef, error) {
+// default export declares. Enters wasm to call the runtime's
+// list-tools export — the live JS is the source of truth for
+// the schema, so a stale manifest.json never silently overrides
+// what the bundle actually exposes.
+func (p *Particle) ListTools(ctx context.Context, opts ...CallOption) ([]ToolDef, error) {
 	iface := p.inst.ExportedInstance(toolsInterface)
 	if iface == nil {
 		return nil, fmt.Errorf("runtime: missing exported instance %q", toolsInterface)
@@ -364,7 +367,12 @@ func (p *Particle) ListTools(ctx context.Context) ([]ToolDef, error) {
 	if fn == nil {
 		return nil, fmt.Errorf("runtime: %s does not export list-tools", toolsInterface)
 	}
+	ctx, lim, stop := armLimit(ctx, opts)
+	defer stop()
 	results, err := fn.Call(ctx)
+	if lim != nil && lim.Tripped() {
+		return nil, &BudgetExceededError{Op: "list-tools", Budget: lim.budget, Used: lim.Used()}
+	}
 	if err != nil {
 		return nil, p.wrapTrap(err, "list-tools")
 	}
@@ -402,7 +410,7 @@ func (p *Particle) ListTools(ctx context.Context) ([]ToolDef, error) {
 // before the call enters wasm; if validation fails, the returned
 // error is *ToolError with Kind == ToolErrorKindInvalidArguments.
 // Returns the tool's JSON-encoded result on success.
-func (p *Particle) CallTool(ctx context.Context, name string, argumentsJSON []byte) ([]byte, error) {
+func (p *Particle) CallTool(ctx context.Context, name string, argumentsJSON []byte, opts ...CallOption) ([]byte, error) {
 	schemas, err := p.ensureSchemas(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: prepare tool schemas: %w", err)
@@ -427,7 +435,12 @@ func (p *Particle) CallTool(ctx context.Context, name string, argumentsJSON []by
 	if fn == nil {
 		return nil, fmt.Errorf("runtime: %s does not export call-tool", toolsInterface)
 	}
+	ctx, lim, stop := armLimit(ctx, opts)
+	defer stop()
 	results, err := fn.Call(ctx, wc.ValString(name), wc.ValString(string(argumentsJSON)))
+	if lim != nil && lim.Tripped() {
+		return nil, &BudgetExceededError{Op: "call-tool", Budget: lim.budget, Used: lim.Used()}
+	}
 	if err != nil {
 		return nil, p.wrapTrap(err, "call-tool")
 	}
@@ -451,7 +464,7 @@ func (p *Particle) CallTool(ctx context.Context, name string, argumentsJSON []by
 // Ping invokes the particle's optional `ping` health-check. Returns
 // *HealthError when the particle didn't declare ping or when the
 // handler errored.
-func (p *Particle) Ping(ctx context.Context) (*PingResult, error) {
+func (p *Particle) Ping(ctx context.Context, opts ...CallOption) (*PingResult, error) {
 	iface := p.inst.ExportedInstance(healthInterface)
 	if iface == nil {
 		return nil, fmt.Errorf("runtime: missing exported instance %q", healthInterface)
@@ -460,7 +473,12 @@ func (p *Particle) Ping(ctx context.Context) (*PingResult, error) {
 	if fn == nil {
 		return nil, fmt.Errorf("runtime: %s does not export ping", healthInterface)
 	}
+	ctx, lim, stop := armLimit(ctx, opts)
+	defer stop()
 	results, err := fn.Call(ctx)
+	if lim != nil && lim.Tripped() {
+		return nil, &BudgetExceededError{Op: "ping", Budget: lim.budget, Used: lim.Used()}
+	}
 	if err != nil {
 		return nil, p.wrapTrap(err, "ping")
 	}

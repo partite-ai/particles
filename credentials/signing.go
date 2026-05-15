@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash"
 
+	"github.com/partite-ai/particle/internal/hostmeter"
 	gen "github.com/partite-ai/particle/internal/host/gen/particle/host/signing"
 )
 
@@ -57,6 +58,8 @@ func newSigningAdapter(store Store, particle string) *signingAdapter {
 //	key slot empty                    → not-configured
 //	(other Store errors)              → invalid-input(err.Error())
 func (a *signingAdapter) Sign(ctx context.Context, name string, data []uint8) (gen.ResultListU8SigningError, error) {
+	defer hostmeter.EnterHost(ctx)()
+
 	mac, errResult, ok := a.macFor(ctx, name)
 	if !ok {
 		return gen.ResultListU8SigningErrorErr{Value: errResult}, nil
@@ -70,6 +73,8 @@ func (a *signingAdapter) Sign(ctx context.Context, name string, data []uint8) (g
 // mismatch (including length mismatch — hmac.Equal handles that
 // safely). Error variants mirror Sign.
 func (a *signingAdapter) Verify(ctx context.Context, name string, data []uint8, signature []uint8) (gen.ResultBoolSigningError, error) {
+	defer hostmeter.EnterHost(ctx)()
+
 	mac, errResult, ok := a.macFor(ctx, name)
 	if !ok {
 		return gen.ResultBoolSigningErrorErr{Value: errResult}, nil
