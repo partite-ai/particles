@@ -31,11 +31,9 @@ type credentialMethod struct {
 	// oauth2-specific
 	Flows            []string `json:"flows"`
 	Scopes           []string `json:"scopes"`
-	Provider         string   `json:"provider"`
 	AuthorizationURL string   `json:"authorizationUrl"`
 	TokenURL         string   `json:"tokenUrl"`
 	DeviceAuthURL    string   `json:"deviceAuthUrl"`
-	RevocationURL    string   `json:"revocationUrl"`
 
 	// apikey-specific. nil → setup prompts for the location;
 	// non-nil → use as-is, only the value is asked for.

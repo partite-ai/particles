@@ -88,16 +88,14 @@ type CredentialMethod struct {
 }
 
 // OAuth2Method is the per-method shape for `type: "oauth2"`.
-// Optional URLs are kept as plain strings (empty = unset);
-// the importer threads provider-hint defaults on top.
+// Optional URLs are plain strings (empty = unset); a manifest
+// either pins them or the importer prompts the user at setup.
 type OAuth2Method struct {
 	Flows            []OAuth2Flow `json:"flows"`
 	Scopes           []string     `json:"scopes"`
-	Provider         string       `json:"provider"`
 	AuthorizationURL string       `json:"authorizationUrl"`
 	TokenURL         string       `json:"tokenUrl"`
 	DeviceAuthURL    string       `json:"deviceAuthUrl"`
-	RevocationURL    string       `json:"revocationUrl"`
 }
 
 // OAuth2Flow is the OAuth 2.0 flow the importer should run.

@@ -51,14 +51,17 @@ export default {
       required: true,
       methods: {
         // OAuth: full account-level access. Best for interactive
-        // users; the device-code flow makes it work even without a
-        // local browser.
+        // users; the device-code flow makes it work even without
+        // a local browser. The endpoints are pinned in the
+        // manifest so setup never prompts the user for them.
         oauth: {
           type: "oauth2",
           description: "Sign in to GitHub via OAuth",
           flows: ["authorization-code", "device-code"],
           scopes: ["repo", "read:user"],
-          provider: "github",
+          authorizationUrl: "https://github.com/login/oauth/authorize",
+          tokenUrl:         "https://github.com/login/oauth/access_token",
+          deviceAuthUrl:    "https://github.com/login/device/code",
         },
         // PAT: a fine-grained or classic personal access token,
         // sent as `Authorization: Bearer <token>`. Best for CI /

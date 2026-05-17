@@ -482,7 +482,6 @@ func TestMetadataRoundTrip_AllKinds(t *testing.T) {
 		{"oauth2", credentials.OAuth2Meta{
 			AuthorizationURL: "https://example/authorize",
 			TokenURL:         "https://example/token",
-			RevocationURL:    "https://example/revoke",
 			ClientID:         "client-123",
 			Scopes:           []string{"read", "write"},
 			Flow:             "authorization-code-pkce",

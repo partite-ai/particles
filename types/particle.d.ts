@@ -267,32 +267,16 @@ export interface OAuth2CredentialMethod extends CredentialMethodBase {
   flows: OAuth2Flow[];
   /** Application-level scope set this credential is granted. */
   scopes: string[];
-  /**
-   * Optional well-known provider hint. Pre-fills the URL prompts
-   * (authorization / token / device-auth / revocation) at setup
-   * with that provider's well-known endpoints — the user can
-   * override at the prompt for self-hosted variants
-   * (GitHub Enterprise, etc.).
-   *
-   * Manifest-level URL overrides (the four fields below) take
-   * precedence over the provider hint. Use them when you know
-   * the exact endpoints and want setup to skip the prompts
-   * entirely.
-   */
-  provider?: "github" | "google" | "slack";
 
   /**
-   * Pre-set authorization endpoint. Set to skip the prompt.
-   * Empty / unset → setup prompts (defaulting to the provider
-   * hint's value if any).
+   * Pre-set authorization endpoint. Set to skip the prompt;
+   * empty / unset → setup prompts with no default.
    */
   authorizationUrl?: string;
   /** Pre-set token endpoint. Same prompt-vs-hardcoded behavior. */
   tokenUrl?: string;
   /** Pre-set device-authorization endpoint (used by `device-code` flow). */
   deviceAuthUrl?: string;
-  /** Pre-set revocation endpoint (used at credential removal). */
-  revocationUrl?: string;
 }
 
 export type OAuth2Flow =

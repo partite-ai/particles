@@ -18,7 +18,7 @@ import (
 // browser.
 func runDeviceCodeFlow(ctx context.Context, p Prompter, cfg *oauth2.Config) (*oauth2.Token, error) {
 	if cfg.Endpoint.DeviceAuthURL == "" {
-		return nil, errors.New("device flow needs a device-authorization endpoint; set the provider hint or supply one manually")
+		return nil, errors.New("device flow needs a device-authorization endpoint; supply one in the manifest's `deviceAuthUrl`")
 	}
 	auth, err := cfg.DeviceAuth(ctx)
 	if err != nil {

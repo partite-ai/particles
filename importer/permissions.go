@@ -276,13 +276,11 @@ func writeCredentialMethod(b *strings.Builder, name string, raw json.RawMessage,
 		Type        string `json:"type"`
 		Description string `json:"description"`
 
-		// OAuth2 fields. Provider-supplied defaults aren't
-		// surfaced — only what the manifest itself locks in,
-		// which is the attack surface.
+		// OAuth2 fields. Only what the manifest itself locks
+		// in is surfaced — that's the actual attack surface.
 		AuthorizationURL string   `json:"authorizationUrl"`
 		TokenURL         string   `json:"tokenUrl"`
 		DeviceAuthURL    string   `json:"deviceAuthUrl"`
-		Provider         string   `json:"provider"`
 		Scopes           []string `json:"scopes"`
 
 		// API-key location.
@@ -307,9 +305,6 @@ func writeCredentialMethod(b *strings.Builder, name string, raw json.RawMessage,
 
 	switch m.Type {
 	case "oauth2":
-		if m.Provider != "" {
-			fmt.Fprintf(b, "%sprovider: %s\n", detailIndent, m.Provider)
-		}
 		if m.AuthorizationURL != "" {
 			fmt.Fprintf(b, "%sauthorize: %s\n", detailIndent, m.AuthorizationURL)
 		}

@@ -31,7 +31,6 @@ func TestParseManifest_AllMethodKinds(t *testing.T) {
 						"description": "OAuth flow",
 						"flows": ["authorization-code", "device-code"],
 						"scopes": ["repo"],
-						"provider": "github",
 						"authorizationUrl": "https://example.com/auth",
 						"tokenUrl": "https://example.com/token"
 					},

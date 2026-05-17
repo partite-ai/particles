@@ -26,9 +26,9 @@ func (p *fakePrompter) Warn(string)                                            {
 func (p *fakePrompter) Info(m string)                                          { p.infos = append(p.infos, m) }
 
 // Manifest-set URL → no prompt; the value flows through verbatim.
-func TestResolveOAuthURL_ManifestOverridesPreset(t *testing.T) {
+func TestResolveOAuthURL_ManifestSkipsPrompt(t *testing.T) {
 	p := &fakePrompter{}
-	got, err := resolveOAuthURL(p, "Token URL", "https://example/token", "https://github/login/oauth/access_token")
+	got, err := resolveOAuthURL(p, "Token URL", "https://example/token")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,17 +43,14 @@ func TestResolveOAuthURL_ManifestOverridesPreset(t *testing.T) {
 	}
 }
 
-// Empty manifest value → prompts; the provider preset becomes
-// the prompt's default. We don't inspect the default here because
-// the prompter receives it through the second parameter — see
-// the StdioPrompter implementation for the visible behavior.
+// Empty manifest value → prompts the user.
 func TestResolveOAuthURL_EmptyManifestPrompts(t *testing.T) {
-	p := &fakePrompter{stringAnswer: "https://provider/token"}
-	got, err := resolveOAuthURL(p, "Token URL", "", "https://provider/token")
+	p := &fakePrompter{stringAnswer: "https://upstream/token"}
+	got, err := resolveOAuthURL(p, "Token URL", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "https://provider/token" {
+	if got != "https://upstream/token" {
 		t.Errorf("got %q", got)
 	}
 	if len(p.stringCalls) != 1 {
@@ -65,7 +62,7 @@ func TestResolveOAuthURL_EmptyManifestPrompts(t *testing.T) {
 func TestResolveOAuthURL_PromptErrorPropagates(t *testing.T) {
 	boom := errors.New("io")
 	p := &fakePrompter{stringErr: boom}
-	_, err := resolveOAuthURL(p, "Token URL", "", "")
+	_, err := resolveOAuthURL(p, "Token URL", "")
 	if !errors.Is(err, boom) {
 		t.Errorf("err = %v, want chain containing %v", err, boom)
 	}

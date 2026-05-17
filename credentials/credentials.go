@@ -286,7 +286,6 @@ type OAuth2Meta struct {
 	// Provider configuration captured at setup.
 	AuthorizationURL string
 	TokenURL         string
-	RevocationURL    string
 	ClientID         string
 	Scopes           []string
 

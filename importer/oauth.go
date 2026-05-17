@@ -78,39 +78,26 @@ func setupOAuth2(ctx context.Context, opts Options, particle, credName string, m
 // the OAuth flows need: URLs, client ID, client secret (when
 // applicable), flow choice.
 //
-// URL precedence: manifest override > provider-hint default >
-// prompt the user. So a manifest that pre-sets `tokenUrl`
-// silently uses it; one that just hints `provider: "github"`
-// pre-fills the prompt with GitHub's token URL but lets the user
-// override; one with neither prompts on a blank slate.
+// URL precedence: manifest override > prompt the user. A manifest
+// that pre-sets `tokenUrl` silently uses it; one that omits it
+// prompts on a blank slate.
 //
 // Scopes come from the manifest itself — re-prompting would
 // invite drift between the schema and what's negotiated.
 func promptOAuth2Config(p Prompter, method credentialMethod) (*oauth2.Config, string, string, credentials.OAuth2Meta, error) {
-	presets := providerPresets(method.Provider)
-
-	authURL, err := resolveOAuthURL(p, "Authorization URL", method.AuthorizationURL, presets.Auth)
+	authURL, err := resolveOAuthURL(p, "Authorization URL", method.AuthorizationURL)
 	if err != nil {
 		return nil, "", "", credentials.OAuth2Meta{}, err
 	}
-	tokenURL, err := resolveOAuthURL(p, "Token URL", method.TokenURL, presets.Token)
+	tokenURL, err := resolveOAuthURL(p, "Token URL", method.TokenURL)
 	if err != nil {
 		return nil, "", "", credentials.OAuth2Meta{}, err
 	}
-	// Device-auth and revocation aren't prompted; we use the
-	// override if set, fall through to the provider preset
-	// otherwise. If the resulting deviceURL is empty and the
-	// device-code flow is chosen, the device-flow runner errors
-	// with a clear message — there's no path that silently does
-	// the wrong thing.
+	// Device-auth isn't prompted; if the manifest omits it and
+	// the device-code flow runs, the device-flow runner errors
+	// with a clear message — no path silently does the wrong
+	// thing.
 	deviceURL := method.DeviceAuthURL
-	if deviceURL == "" {
-		deviceURL = presets.Device
-	}
-	revokeURL := method.RevocationURL
-	if revokeURL == "" {
-		revokeURL = presets.Revoke
-	}
 
 	clientID, err := p.String("Client ID", "")
 	if err != nil {
@@ -154,7 +141,6 @@ func promptOAuth2Config(p Prompter, method credentialMethod) (*oauth2.Config, st
 	meta := credentials.OAuth2Meta{
 		AuthorizationURL: authURL,
 		TokenURL:         tokenURL,
-		RevocationURL:    revokeURL,
 		ClientID:         clientID,
 		Scopes:           method.Scopes,
 		Flow:             flow,
@@ -162,15 +148,15 @@ func promptOAuth2Config(p Prompter, method credentialMethod) (*oauth2.Config, st
 	return cfg, flow, clientSecret, meta, nil
 }
 
-// resolveOAuthURL applies the manifest-override > provider-hint
-// > prompt precedence for one OAuth URL field. When the manifest
+// resolveOAuthURL applies the manifest-override > prompt
+// precedence for one OAuth URL field. When the manifest
 // pre-sets the URL, it's logged at info-level and used as-is.
-func resolveOAuthURL(p Prompter, label, manifestValue, providerDefault string) (string, error) {
+func resolveOAuthURL(p Prompter, label, manifestValue string) (string, error) {
 	if manifestValue != "" {
 		p.Info("  " + label + ": " + manifestValue)
 		return manifestValue, nil
 	}
-	return p.String(label, providerDefault)
+	return p.String(label, "")
 }
 
 // chooseFlow short-circuits when the manifest declared exactly

@@ -869,7 +869,7 @@ github_oauth: {
 ```
 
 **Manifest declares:** type, description, supported flows, scopes, optional well-known provider hint.
-**Setup captures:** authorizationUrl, tokenUrl, revocationUrl, clientId, clientSecret (only when flow requires; PKCE eliminates the need), chosen flow (when manifest offers multiple).
+**Setup captures:** authorizationUrl, tokenUrl, clientId, clientSecret (only when flow requires; PKCE eliminates the need), chosen flow (when manifest offers multiple).
 
 For known providers (`provider: "github"`, etc.), setup pre-fills URLs from a built-in registry; user can override (e.g., for GitHub Enterprise).
 
@@ -883,8 +883,6 @@ For known providers (`provider: "github"`, etc.), setup pre-fills URLs from a bu
 **Concurrency:** per `(particle, credential-name)` mutex serializes refreshes.
 
 **Re-auth on scope change:** if a manifest's scopes are not a subset of the stored token's scopes, setup forces re-auth.
-
-**Revocation:** `particle credentials remove` calls the provider's revocation endpoint when configured, then deletes the bundle locally.
 
 #### `apikey` — configurable-location key
 
@@ -1033,7 +1031,7 @@ If the match pattern doesn't fit, no substitution. The placeholder transmits lit
 ```
 StaticCredential   { Value }
 BasicCredential    { Username, Password }
-OAuthCredential    { Flow, AuthorizationURL, TokenURL, RevocationURL,
+OAuthCredential    { Flow, AuthorizationURL, TokenURL,
                      ClientID, ClientSecret, Scopes,
                      AccessToken, RefreshToken, ExpiresAt, TokenType }
 ApiKeyCredential   { Key, Location: { Kind, Name? Scheme? } }
@@ -1041,7 +1039,7 @@ SigningKey         { Algorithm, Key }
 RawCredential      { Value }
 ```
 
-Backend implementations handle each type appropriately. Particle-core encapsulates OAuth-specific logic (refresh, revocation, flow execution) so backends stay simple.
+Backend implementations handle each type appropriately. Particle-core encapsulates OAuth-specific logic (refresh, flow execution) so backends stay simple.
 
 ### Setup UX
 
@@ -1059,7 +1057,7 @@ Setup is idempotent. Re-running shows current state and lets the user update.
 
 - `particle credentials list <path>` — names + (set)/(unset)
 - `particle credentials set <path> <name>` — set or update one
-- `particle credentials remove <path> <name>` — delete one (calls revocation endpoint for OAuth)
+- `particle credentials remove <path> <name>` — delete one
 
 ### Cross-particle scope
 
