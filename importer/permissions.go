@@ -204,22 +204,6 @@ func writeCapability(b *strings.Builder, name string, raw json.RawMessage) {
 		for _, h := range v.AllowedHosts {
 			fmt.Fprintf(b, "    %s\n", h)
 		}
-	case "sockets":
-		var v struct {
-			AllowedEndpoints []struct {
-				Host string `json:"host"`
-				Port int    `json:"port"`
-			} `json:"allowedEndpoints"`
-		}
-		_ = json.Unmarshal(raw, &v)
-		fmt.Fprintf(b, "  Sockets — outbound TCP/UDP:\n")
-		if len(v.AllowedEndpoints) == 0 {
-			fmt.Fprintf(b, "    (no endpoints declared)\n")
-			return
-		}
-		for _, e := range v.AllowedEndpoints {
-			fmt.Fprintf(b, "    %s:%d\n", e.Host, e.Port)
-		}
 	default:
 		// Unknown capability category — print as raw JSON so
 		// the user can still see what they're agreeing to.

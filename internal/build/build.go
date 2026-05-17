@@ -285,9 +285,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 // runtime never actually enforces. Update this list when a new
 // capability lands in types/particle.d.ts.
 var knownCapabilities = map[string]struct{}{
-	"http":    {},
-	"sockets": {},
-	"env":     {},
+	"http": {},
 }
 
 // validateExtractedManifest runs the Go-side gates on the JSON

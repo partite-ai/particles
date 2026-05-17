@@ -118,8 +118,7 @@ Version is optional anywhere it appears — omitted resolves to the highest regi
 
 A particle only sees what its `capabilities` declare. Importing a host capability module (`@partite-ai/particle-credentials`, `@partite-ai/particle-oauth`, `@partite-ai/particle-signing`) for a category not authorized by the manifest is a build error.
 
-- `http: { allowedHosts: [...] }` — outbound HTTP. Anything else fails with a "destination prohibited" error. Host matching is case-insensitive.
-- `sockets`, `env` — declared the same way; see `types/particle.d.ts`.
+- `http: { allowedHosts: [...] }` — outbound HTTP. Anything else fails with a "destination prohibited" error. Host matching is case-insensitive. Today this is the only capability; raw sockets and other categories are tracked under "What's next".
 
 A per-particle key/value store is available via `@partite-ai/particle-kv` — it's a built-in, not a capability you declare. Two particles using the same key see independent values; one particle's storage is invisible to another.
 

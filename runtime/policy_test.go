@@ -194,32 +194,6 @@ func TestRuntime_HTTP_NoCapability_AllDenied(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Sockets — the runtime rejects particles that declare them at
-// NewParticle time (v1 limitation).
-// -----------------------------------------------------------------------------
-
-func TestRuntime_Sockets_DeclarationRejected(t *testing.T) {
-	ctx := context.Background()
-	src := `export default {
-  name: "uses-sockets",
-  description: "x",
-  version: "0.1.0",
-  capabilities: { sockets: { allowedEndpoints: [] } },
-  tools: {},
-};`
-	res := buildParticle(t, src)
-
-	rt, _, _, cleanup := newRuntime(t, ctx)
-	defer cleanup()
-	_, err := rt.NewParticle(ctx, res.Particle)
-	if err == nil {
-		t.Fatal("expected NewParticle to reject sockets declaration")
-	}
-	if !strings.Contains(err.Error(), "sockets") {
-		t.Errorf("error %q should mention sockets", err)
-	}
-}
 
 // -----------------------------------------------------------------------------
 // Helpers

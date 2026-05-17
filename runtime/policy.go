@@ -92,8 +92,8 @@ const tokenSkew = 30 * time.Second
 
 // newHTTPPolicy builds the policy for one particle.
 //
-//   - declared==false → manifest doesn't declare `http` at all →
-//     deny every outbound request.
+//   - allowedHosts is the set of hostnames outbound requests may
+//     reach. Empty or nil → every request is denied.
 //   - declaredCredentials lists the credential names the manifest
 //     authorized; substitution only ever attempts these. nil/empty
 //     → no substitution runs and any placeholder a particle
@@ -105,7 +105,6 @@ const tokenSkew = 30 * time.Second
 //   - refreshAccessToken, when non-nil, enables proactive refresh
 //     of expired bearer tokens before substitution.
 func newHTTPPolicy(
-	declared bool,
 	allowedHosts []string,
 	inner httptypes.HTTPDoer,
 	store credentials.Store,
@@ -121,17 +120,15 @@ func newHTTPPolicy(
 		declaredCredentials: declaredCredentials,
 		refreshAccessToken:  refreshAccessToken,
 	}
-	if declared {
-		// DNS hostnames are case-insensitive; the map lookup
-		// isn't. Normalize both the declared set and the request
-		// hostname (in Do) to lowercase so a manifest typo on
-		// case doesn't cause a runtime "host not allowed" that
-		// surprises a particle author.
-		p.allowedHosts = make(map[string]struct{}, len(allowedHosts))
-		for _, h := range allowedHosts {
-			if h != "" {
-				p.allowedHosts[strings.ToLower(h)] = struct{}{}
-			}
+	// DNS hostnames are case-insensitive; the map lookup
+	// isn't. Normalize both the declared set and the request
+	// hostname (in Do) to lowercase so a manifest typo on
+	// case doesn't cause a runtime "host not allowed" that
+	// surprises a particle author.
+	p.allowedHosts = make(map[string]struct{}, len(allowedHosts))
+	for _, h := range allowedHosts {
+		if h != "" {
+			p.allowedHosts[strings.ToLower(h)] = struct{}{}
 		}
 	}
 	if len(credentialHosts) > 0 {

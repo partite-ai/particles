@@ -175,23 +175,11 @@ export interface TestCase {
 
 export interface Capabilities {
   /**
-   * Outbound HTTP. Presence enables `wasi:http`; the host's policy
-   * rejects requests to hosts not in `allowedHosts`.
+   * Outbound HTTP. The host's policy denies every request whose
+   * URL hostname isn't in `allowedHosts`. Omitting `http` (or
+   * leaving `allowedHosts` empty) denies everything.
    */
   http?: HTTPCapability;
-
-  /**
-   * Outbound TCP/UDP. Off by default; listening sockets are denied
-   * unless `allowListen: true`. Phase 1 has limited support.
-   */
-  sockets?: SocketsCapability;
-
-  /**
-   * Allowlist of environment variables exposed via `process.env`.
-   * Vars not listed here are filtered out before reaching the
-   * particle.
-   */
-  env?: Record<string, EnvDecl>;
 }
 
 export interface HTTPCapability {
@@ -200,18 +188,6 @@ export interface HTTPCapability {
    * supported in v1; list each host literally.
    */
   allowedHosts?: string[];
-}
-
-export interface SocketsCapability {
-  /** Allowlist of (host, port) the particle may connect to. */
-  allowedEndpoints: { host: string; port: number }[];
-}
-
-export interface EnvDecl {
-  /** Human-readable description shown during `particle setup`. */
-  description?: string;
-  /** Whether the host should refuse to start without this var set. */
-  required?: boolean;
 }
 
 // -----------------------------------------------------------------------------

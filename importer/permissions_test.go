@@ -169,30 +169,35 @@ func TestImport_Permission_NoCapabilities_Silent(t *testing.T) {
 	}
 }
 
-// Reordering / whitespace differences in the capability JSON
-// don't trigger a fresh prompt — the canonical comparison
-// catches them.
+// Whitespace differences in the capability JSON don't trigger a
+// fresh prompt — the canonical comparison normalizes both
+// sides through json.Unmarshal so byte-shape variations of the
+// same semantic value are treated as equal.
 func TestImport_Permission_CanonicalComparison(t *testing.T) {
 	reg := newRegistry(t)
 	store := credmem.New()
 
-	// First install with one key order.
+	// First install: compact JSON.
 	first := &scriptedPrompter{t: t, confirms: []bool{true}}
 	if _, err := importer.Import(context.Background(),
 		mkParticleFS("p", "0.1.0",
-			`{"http":{"allowedHosts":["a","b"]},"sockets":{"allowedEndpoints":[]}}`, "{}"),
+			`{"http":{"allowedHosts":["a","b"]}}`, "{}"),
 		importer.Options{Registry: reg, Credentials: store, Prompter: first},
 	); err != nil {
 		t.Fatal(err)
 	}
 
-	// Re-install with keys flipped. Empty prompter — any prompt
-	// fails. The byte-for-byte JSON is different but the
-	// semantics are identical.
+	// Re-install: same caps, pretty-printed. Empty prompter —
+	// any prompt fails the test. The byte-for-byte JSON differs
+	// but the semantics are identical.
 	second := &scriptedPrompter{t: t}
 	if _, err := importer.Import(context.Background(),
 		mkParticleFS("p", "0.2.0",
-			`{"sockets":{"allowedEndpoints":[]},"http":{"allowedHosts":["a","b"]}}`, "{}"),
+			`{
+				"http": {
+					"allowedHosts": ["a", "b"]
+				}
+			}`, "{}"),
 		importer.Options{Registry: reg, Credentials: store, Prompter: second},
 	); err != nil {
 		t.Fatal(err)

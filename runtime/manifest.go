@@ -1,140 +1,337 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
-	"sort"
 )
 
-// Manifest is the parsed shape of a particle's manifest.json — the
-// file the build pipeline emits at the root of the particle FS.
-//
-// Capabilities is preserved as a map of raw JSON values so the
-// runtime can detect which capability categories are declared
-// (presence-only check) without committing to per-capability
-// schemas it'd then have to evolve in lockstep with the build.
-//
-// Credentials sits at the top level rather than under capabilities:
-// credentials describe what secret material the particle needs at
-// substitution time, not a permission the runtime gates. The map
-// is keyed by credential name (e.g., "github") and is left as raw
-// JSON for the same reason as Capabilities — the runtime only
-// needs presence + the `hosts` and `methods` shape it parses
-// lazily via helpers below.
+// Manifest is the parsed contents of a particle's manifest.json
+// — the file the build pipeline emits at the root of the
+// particle FS.
 type Manifest struct {
-	Name         string                     `json:"name"`
-	Description  string                     `json:"description"`
-	Version      string                     `json:"version"`
-	Capabilities map[string]json.RawMessage `json:"capabilities"`
-	Credentials  map[string]json.RawMessage `json:"credentials"`
-	Tools        []ManifestTool             `json:"tools"`
+	Name         string                `json:"name"`
+	Description  string                `json:"description"`
+	Version      string                `json:"version"`
+	Capabilities Capabilities          `json:"capabilities"`
+	Credentials  map[string]Credential `json:"credentials,omitempty"`
+	Tools        []ManifestTool        `json:"tools"`
 }
 
-// ManifestTool mirrors one entry in the manifest's `tools` array.
-// InputSchema is left as raw JSON; the runtime compiles it on the
-// host side at the WIT boundary.
+// Capabilities holds the runtime-policy-relevant declarations.
+// Today there's only one (http); the struct shape leaves room
+// to add more without breaking callers.
+type Capabilities struct {
+	HTTP HTTPCapability `json:"http"`
+}
+
+// HTTPCapability mirrors `capabilities.http`. An empty
+// AllowedHosts means no outbound destinations are permitted —
+// the policy denies every request.
+type HTTPCapability struct {
+	AllowedHosts []string `json:"allowedHosts"`
+}
+
+// Credential is one entry in the manifest's top-level
+// `credentials` map. The key is the credential's name (e.g.,
+// "github"); this struct holds everything underneath.
+type Credential struct {
+	// Hosts pins the credential to a set of HTTP destinations.
+	// Empty / nil → the credential is not HTTP-bound (e.g.,
+	// signing-key or raw, consumed entirely through the
+	// JS-side API).
+	Hosts []string `json:"hosts"`
+
+	// Required tells the importer to refuse to register the
+	// particle without a configured method.
+	Required bool `json:"required"`
+
+	// Methods is the set of authentication methods the user
+	// may pick from at setup. Exactly one is configured per
+	// credential.
+	Methods map[string]CredentialMethod `json:"methods"`
+}
+
+// CredentialMethodKind enumerates the supported authentication
+// method variants. Matches the `type:` strings used in the
+// manifest JSON; safe to compare against the constants below or
+// the matching credentials.Kind values from the store.
+type CredentialMethodKind string
+
+const (
+	MethodBasic      CredentialMethodKind = "basic"
+	MethodOAuth2     CredentialMethodKind = "oauth2"
+	MethodAPIKey     CredentialMethodKind = "apikey"
+	MethodSigningKey CredentialMethodKind = "signing-key"
+	MethodRaw        CredentialMethodKind = "raw"
+)
+
+// CredentialMethod is a discriminated union over Kind. Exactly
+// one of the typed sub-pointers is non-nil per kind:
+//
+//	Kind == MethodOAuth2     → OAuth2     != nil
+//	Kind == MethodAPIKey     → APIKey     != nil
+//	Kind == MethodSigningKey → SigningKey != nil
+//	Kind == MethodBasic / MethodRaw → all sub-pointers nil
+//
+// Callers switch on Kind and read the matching pointer.
+type CredentialMethod struct {
+	Kind        CredentialMethodKind
+	Description string
+
+	OAuth2     *OAuth2Method
+	APIKey     *APIKeyMethod
+	SigningKey *SigningKeyMethod
+}
+
+// OAuth2Method is the per-method shape for `type: "oauth2"`.
+// Optional URLs are kept as plain strings (empty = unset);
+// the importer threads provider-hint defaults on top.
+type OAuth2Method struct {
+	Flows            []OAuth2Flow `json:"flows"`
+	Scopes           []string     `json:"scopes"`
+	Provider         string       `json:"provider"`
+	AuthorizationURL string       `json:"authorizationUrl"`
+	TokenURL         string       `json:"tokenUrl"`
+	DeviceAuthURL    string       `json:"deviceAuthUrl"`
+	RevocationURL    string       `json:"revocationUrl"`
+}
+
+// OAuth2Flow is the OAuth 2.0 flow the importer should run.
+type OAuth2Flow string
+
+const (
+	OAuth2FlowAuthorizationCode     OAuth2Flow = "authorization-code"
+	OAuth2FlowAuthorizationCodePKCE OAuth2Flow = "authorization-code-pkce"
+	OAuth2FlowDeviceCode            OAuth2Flow = "device-code"
+)
+
+// APIKeyMethod is the per-method shape for `type: "apikey"`.
+// Location is optional in the manifest — when omitted, the
+// importer prompts the user for it.
+type APIKeyMethod struct {
+	Location *APIKeyLocation `json:"location"`
+}
+
+// APIKeyLocation describes where a credential's value gets
+// substituted in an outgoing HTTP request.
+type APIKeyLocation struct {
+	Kind   APIKeyLocationKind `json:"kind"`
+	Name   string             `json:"name"`
+	Scheme string             `json:"scheme"`
+}
+
+// APIKeyLocationKind enumerates the apikey substitution shapes.
+type APIKeyLocationKind string
+
+const (
+	APIKeyLocationHeader     APIKeyLocationKind = "header"
+	APIKeyLocationAuthScheme APIKeyLocationKind = "auth-scheme"
+	APIKeyLocationQueryParam APIKeyLocationKind = "query-param"
+)
+
+// SigningKeyMethod is the per-method shape for
+// `type: "signing-key"`.
+type SigningKeyMethod struct {
+	Algorithm SigningAlgorithm `json:"algorithm"`
+}
+
+// SigningAlgorithm names a HMAC variant. v1 supports SHA-256
+// and SHA-512; RSA / ECDSA are phase 2.
+type SigningAlgorithm string
+
+const (
+	SigningHMACSHA256 SigningAlgorithm = "hmac-sha256"
+	SigningHMACSHA512 SigningAlgorithm = "hmac-sha512"
+)
+
+// ManifestTool is one entry in the manifest's `tools` array.
+// InputSchema is kept as raw JSON: it's the author's JSON Schema
+// and the runtime compiles it on the host side at the WIT
+// boundary.
+//
+// Distinct from [ToolDef] (the live wasm-side `list-tools`
+// result), which is what callers should use when they want what
+// the bundle actually exposes — the manifest is a static
+// declaration, the wasm export is the source of truth at run
+// time.
 type ManifestTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
 }
 
-// readManifest parses manifest.json from the particle FS.
-func readManifest(particleFS fs.FS) (Manifest, error) {
-	data, err := fs.ReadFile(particleFS, "manifest.json")
+// -----------------------------------------------------------------------------
+// Load / Parse
+// -----------------------------------------------------------------------------
+
+// LoadManifest reads `manifest.json` from fsys and parses it.
+// Convenience wrapper around [ParseManifest] for the most
+// common entry point — the particle FS produced by the build
+// pipeline.
+func LoadManifest(fsys fs.FS) (Manifest, error) {
+	data, err := fs.ReadFile(fsys, "manifest.json")
 	if err != nil {
-		return Manifest{}, fmt.Errorf("read manifest.json: %w", err)
+		return Manifest{}, fmt.Errorf("manifest: read manifest.json: %w", err)
 	}
-	var m Manifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return Manifest{}, fmt.Errorf("parse manifest.json: %w", err)
-	}
-	if m.Name == "" {
-		return Manifest{}, fmt.Errorf("manifest.json: name is empty")
+	m, err := ParseManifest(bytes.NewReader(data))
+	if err != nil {
+		return Manifest{}, fmt.Errorf("manifest: %w", err)
 	}
 	return m, nil
 }
 
-// declares reports whether the manifest declares the given capability
-// category (one of "credentials", "oauth", "signing", "http",
-// "sockets"). Presence is enough — values vary per category.
-func (m Manifest) declares(capability string) bool {
-	_, ok := m.Capabilities[capability]
-	return ok
+// ParseManifest decodes a manifest from r. Errors on a missing
+// name or version (both are required for the registry's
+// `(name, version)` key) and on unknown credential method types
+// (the build pipeline already gates against these, but
+// re-validating here means a hand-crafted manifest can't
+// silently lose a method declaration).
+func ParseManifest(r io.Reader) (Manifest, error) {
+	var m Manifest
+	if err := json.NewDecoder(r).Decode(&m); err != nil {
+		return Manifest{}, fmt.Errorf("decode: %w", err)
+	}
+	if m.Name == "" {
+		return Manifest{}, errors.New("manifest is missing name")
+	}
+	if m.Version == "" {
+		return Manifest{}, errors.New("manifest is missing version")
+	}
+	return m, nil
 }
 
-// httpCapability is the parsed shape of capabilities.http.
-type httpCapability struct {
-	AllowedHosts []string `json:"allowedHosts"`
+// -----------------------------------------------------------------------------
+// Custom unmarshaling for the discriminated union.
+// -----------------------------------------------------------------------------
+
+// UnmarshalJSON routes a credential method payload to the
+// matching typed sub-struct based on the `type` discriminator.
+// Unknown types are rejected so a typo (`apike` vs `apikey`) or
+// a newer schema we don't support yet fails loud rather than
+// degrading into a credential the runtime can't substitute.
+func (m *CredentialMethod) UnmarshalJSON(data []byte) error {
+	var peek struct {
+		Type        string `json:"type"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(data, &peek); err != nil {
+		return fmt.Errorf("credential method: %w", err)
+	}
+	m.Kind = CredentialMethodKind(peek.Type)
+	m.Description = peek.Description
+	switch m.Kind {
+	case "":
+		return errors.New("credential method: missing type")
+	case MethodBasic, MethodRaw:
+		// no extra fields
+	case MethodOAuth2:
+		var v OAuth2Method
+		if err := json.Unmarshal(data, &v); err != nil {
+			return fmt.Errorf("credential method (oauth2): %w", err)
+		}
+		m.OAuth2 = &v
+	case MethodAPIKey:
+		var v APIKeyMethod
+		if err := json.Unmarshal(data, &v); err != nil {
+			return fmt.Errorf("credential method (apikey): %w", err)
+		}
+		m.APIKey = &v
+	case MethodSigningKey:
+		var v SigningKeyMethod
+		if err := json.Unmarshal(data, &v); err != nil {
+			return fmt.Errorf("credential method (signing-key): %w", err)
+		}
+		m.SigningKey = &v
+	default:
+		return fmt.Errorf("credential method: unknown type %q", peek.Type)
+	}
+	return nil
 }
 
-// httpAllowedHosts returns the manifest's declared HTTP allow list,
-// or nil if the http capability is not declared. Empty list (declared
-// but empty) is distinguished from absence so the runtime treats
-// "declared without allowedHosts" as "explicit deny-all".
-func (m Manifest) httpAllowedHosts() (declared bool, hosts []string, err error) {
-	raw, ok := m.Capabilities["http"]
-	if !ok {
-		return false, nil, nil
+// MarshalJSON re-emits a CredentialMethod with its sub-struct
+// fields flattened into the top-level object, matching the
+// input shape. Round-trips for snapshot tests + any caller that
+// wants to re-serialize a Manifest.
+func (m CredentialMethod) MarshalJSON() ([]byte, error) {
+	out := map[string]any{"type": string(m.Kind)}
+	if m.Description != "" {
+		out["description"] = m.Description
 	}
-	var hc httpCapability
-	if err := json.Unmarshal(raw, &hc); err != nil {
-		return false, nil, fmt.Errorf("manifest: capabilities.http: %w", err)
+	var subFields []byte
+	var err error
+	switch {
+	case m.OAuth2 != nil:
+		subFields, err = json.Marshal(m.OAuth2)
+	case m.APIKey != nil:
+		subFields, err = json.Marshal(m.APIKey)
+	case m.SigningKey != nil:
+		subFields, err = json.Marshal(m.SigningKey)
 	}
-	return true, hc.AllowedHosts, nil
+	if err != nil {
+		return nil, err
+	}
+	if len(subFields) > 0 {
+		var extra map[string]json.RawMessage
+		if err := json.Unmarshal(subFields, &extra); err != nil {
+			return nil, err
+		}
+		for k, v := range extra {
+			out[k] = v
+		}
+	}
+	return json.Marshal(out)
 }
 
-// declaredCredentialNames returns every credential name declared
-// at the manifest's top-level `credentials` map, sorted for
-// deterministic iteration. nil when no credentials are declared.
-//
-// Spec-driven HTTP substitution iterates this list per outbound
-// request, looking each name up in the Store to find the active
-// method's apply-spec.
-func (m Manifest) declaredCredentialNames() []string {
-	names := make([]string, 0, len(m.Credentials))
-	for n := range m.Credentials {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
-}
+// -----------------------------------------------------------------------------
+// Internal helpers used by [Particle] construction.
+// -----------------------------------------------------------------------------
 
-// credentialHosts returns the `hosts` list declared for the named
-// credential, or nil when none is declared (or the credential
-// isn't HTTP-bound). The HTTP policy uses this to refuse
-// substituting credential X into a request for a host not in X's
-// hosts list.
-func (m Manifest) credentialHosts(name string) []string {
-	raw, ok := m.Credentials[name]
-	if !ok {
-		return nil
-	}
-	var shell struct {
-		Hosts []string `json:"hosts"`
-	}
-	if err := json.Unmarshal(raw, &shell); err != nil {
-		return nil
-	}
-	return shell.Hosts
-}
-
-// credentialHostBindings returns a fresh map from credential name
-// to the credential's `hosts` list, for every credential declared
-// in the manifest. Empty / nil host list → the credential isn't
-// host-bound (e.g., signing-key, raw) and the HTTP policy treats
-// it as "substitute anywhere a placeholder shows up".
+// credentialHostBindings returns a fresh map from credential
+// name to the credential's `Hosts` list, for every declared
+// credential. Empty / nil host list → the credential isn't
+// host-bound (signing-key, raw) and the HTTP policy treats it
+// as "substitute anywhere a placeholder shows up".
 func credentialHostBindings(m Manifest) map[string][]string {
 	if len(m.Credentials) == 0 {
 		return nil
 	}
 	out := make(map[string][]string, len(m.Credentials))
-	for name := range m.Credentials {
-		hosts := m.credentialHosts(name)
-		if len(hosts) > 0 {
-			out[name] = hosts
+	for name, cred := range m.Credentials {
+		if len(cred.Hosts) > 0 {
+			out[name] = cred.Hosts
 		}
 	}
 	return out
+}
+
+// declaredCredentialNames returns every credential name in
+// sorted order. The substitution loop iterates this so each
+// outbound request walks credentials in deterministic order
+// regardless of map iteration randomness.
+func (m Manifest) declaredCredentialNames() []string {
+	if len(m.Credentials) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(m.Credentials))
+	for n := range m.Credentials {
+		names = append(names, n)
+	}
+	sortStrings(names)
+	return names
+}
+
+// sortStrings is the indirection that lets the file avoid an
+// "sort" import — we already lean on the standard lib enough.
+// Implemented inline because the typical particle has a
+// handful of credentials and insertion sort is plenty.
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1] > s[j]; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
 }

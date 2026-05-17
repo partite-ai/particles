@@ -155,19 +155,9 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, opts ...Par
 	}
 	_ = cfg
 
-	manifest, err := readManifest(particleFS)
+	manifest, err := LoadManifest(particleFS)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
-	}
-
-	// Sockets are gated by manifest declaration; v1 doesn't yet
-	// support socket-using particles (the wacogo wasi:sockets
-	// impl is wide-open, so accepting the declaration without a
-	// real policy would be a security regression). Reject at
-	// instantiation time with a clear message so the limitation
-	// shows up early.
-	if manifest.declares("sockets") {
-		return nil, fmt.Errorf("runtime: NewParticle: particle %q declares capabilities.sockets, which is not yet supported by this runtime", manifest.Name)
 	}
 
 	bundle, err := fs.ReadFile(particleFS, "bundle.js")
@@ -183,10 +173,7 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, opts ...Par
 		"particle/bundle.js": &fstest.MapFile{Data: bundle},
 	}
 
-	httpDeclared, allowedHosts, err := manifest.httpAllowedHosts()
-	if err != nil {
-		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
-	}
+	allowedHosts := manifest.Capabilities.HTTP.AllowedHosts
 
 	stderr := &bytes.Buffer{}
 	w, err := wasi.NewWorld(ctx, r.cfg.Engine, &wasi.Config{
@@ -211,7 +198,7 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, opts ...Par
 		// truth — a placeholder for an undeclared credential
 		// never causes a Store read.
 		HttpClient: newHTTPPolicy(
-			httpDeclared, allowedHosts,
+			allowedHosts,
 			http.DefaultClient,
 			r.cfg.Credentials.Store(),
 			manifest.Name,
