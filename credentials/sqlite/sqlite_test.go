@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	_ "modernc.org/sqlite"
 	"github.com/zalando/go-keyring"
+	_ "modernc.org/sqlite"
 
-	"github.com/partite-ai/particle/credentials"
-	"github.com/partite-ai/particle/credentials/sqlite"
+	"github.com/partite-ai/particles/credentials"
+	"github.com/partite-ai/particles/credentials/sqlite"
 )
 
 // TestMain swaps zalando/go-keyring's backend for an in-process

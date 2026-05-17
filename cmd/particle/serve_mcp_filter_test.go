@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/partite-ai/particle/runtime"
+	"github.com/partite-ai/particles/runtime"
 )
 
 func toolsNamed(names ...string) []runtime.ToolDef {

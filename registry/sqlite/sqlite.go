@@ -30,8 +30,8 @@ import (
 	"io/fs"
 	"testing/fstest"
 
-	"github.com/partite-ai/particle/internal/semver"
-	"github.com/partite-ai/particle/registry"
+	"github.com/partite-ai/particles/internal/semver"
+	"github.com/partite-ai/particles/registry"
 )
 
 // Store is a SQLite-backed registry.Registry.

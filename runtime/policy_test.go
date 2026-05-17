@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/partite-ai/particle/runtime"
+	"github.com/partite-ai/particles/runtime"
 )
 
 // fetchParticleSource builds a particle source whose `fetch_url`
@@ -193,7 +193,6 @@ func TestRuntime_HTTP_NoCapability_AllDenied(t *testing.T) {
 		t.Fatal("expected error when http capability isn't declared")
 	}
 }
-
 
 // -----------------------------------------------------------------------------
 // Helpers

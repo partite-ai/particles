@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/partite-ai/particle/credentials"
+	"github.com/partite-ai/particles/credentials"
 )
 
 // marshalMeta encodes a typed Metadata value into the (kind, json)

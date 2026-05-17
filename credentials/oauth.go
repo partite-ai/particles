@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/partite-ai/particle/internal/hostmeter"
-	gen "github.com/partite-ai/particle/internal/host/gen/particle/host/oauth"
+	gen "github.com/partite-ai/particles/internal/host/gen/particle/host/oauth"
+	"github.com/partite-ai/particles/internal/hostmeter"
 )
 
 // OAuthRefresher performs the actual OAuth 2.0 token refresh

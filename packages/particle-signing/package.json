@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "description": "TypeScript types for `@partite-ai/particle-signing` — host-side cryptographic sign/verify for Particle particles.",
   "license": "MIT",
-  "homepage": "https://github.com/partite-ai/particle",
+  "homepage": "https://github.com/partite-ai/particles",
   "repository": {
     "type": "git",
-    "url": "https://github.com/partite-ai/particle.git",
+    "url": "https://github.com/partite-ai/particles.git",
     "directory": "packages/particle-signing"
   },
   "main": "index.js",

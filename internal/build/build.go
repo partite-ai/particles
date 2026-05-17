@@ -32,10 +32,10 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/partite-ai/particle/internal/build/wacogo"
-	"github.com/partite-ai/particle/internal/bundle"
-	"github.com/partite-ai/particle/internal/importscan"
-	"github.com/partite-ai/particle/internal/semver"
+	"github.com/partite-ai/particles/internal/build/wacogo"
+	"github.com/partite-ai/particles/internal/bundle"
+	"github.com/partite-ai/particles/internal/importscan"
+	"github.com/partite-ai/particles/internal/semver"
 )
 
 // Options configure a single build invocation.

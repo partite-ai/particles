@@ -38,7 +38,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/partite-ai/particle/credentials"
+	"github.com/partite-ai/particles/credentials"
 )
 
 // Store is a SQLite-backed credentials.Store.

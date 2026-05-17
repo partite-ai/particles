@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/partite-ai/particle/kv"
-	"github.com/partite-ai/particle/kv/memory"
+	"github.com/partite-ai/particles/kv"
+	"github.com/partite-ai/particles/kv/memory"
 )
 
 func TestSet_Get(t *testing.T) {

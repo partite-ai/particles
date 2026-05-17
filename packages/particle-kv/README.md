@@ -1,7 +1,7 @@
 # @partite-ai/particle-kv
 
 TypeScript types for the `@partite-ai/particle-kv` built-in
-consumed by [Particle](https://github.com/partite-ai/particle) particles.
+consumed by [Particle](https://github.com/partite-ai/particles) particles.
 
 Types only — the runtime implementation lives in the Particle wasm
 runtime. The store is per-particle: two particles using the same key
@@ -24,5 +24,5 @@ const keys = await kv.list("user:");   // string[]
 - `kv.delete(key)` — idempotent
 - `kv.list(prefix)` — keys with that prefix, unspecified order
 
-See the [Particle README](https://github.com/partite-ai/particle) for
+See the [Particle README](https://github.com/partite-ai/particles) for
 the manifest schema.

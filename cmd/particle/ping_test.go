@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/partite-ai/particle/registry"
-	"github.com/partite-ai/particle/runtime"
+	"github.com/partite-ai/particles/registry"
+	"github.com/partite-ai/particles/runtime"
 )
 
 func TestParsePingTarget(t *testing.T) {
@@ -48,7 +48,7 @@ func (r *stubRegistry) Get(context.Context, string, string) (registry.Entry, err
 	panic("unused")
 }
 func (r *stubRegistry) Put(context.Context, string, string, fs.FS) error { panic("unused") }
-func (r *stubRegistry) Delete(context.Context, string, string) error      { panic("unused") }
+func (r *stubRegistry) Delete(context.Context, string, string) error     { panic("unused") }
 
 func TestResolveLatestVersion_Unique(t *testing.T) {
 	reg := &stubRegistry{entries: []registry.ListEntry{

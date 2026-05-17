@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/partite-ai/particle/kv"
+	"github.com/partite-ai/particles/kv"
 )
 
 // Store is an in-process kv.Store with optional per-particle

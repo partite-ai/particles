@@ -18,6 +18,6 @@
 //
 // To regenerate after a WIT change, run `go generate ./kv/`.
 //
-//go:generate wacogo-witgen generate -w particle:host/kv-gen -o ../internal/host/gen -p github.com/partite-ai/particle/internal/host/gen ../internal/host/wit/
+//go:generate wacogo-witgen generate -w particle:host/kv-gen -o ../internal/host/gen -p github.com/partite-ai/particles/internal/host/gen ../internal/host/wit/
 
 package kv

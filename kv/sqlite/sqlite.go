@@ -27,7 +27,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/partite-ai/particle/kv"
+	"github.com/partite-ai/particles/kv"
 )
 
 // Store is a SQLite-backed kv.Store with optional per-particle quota.

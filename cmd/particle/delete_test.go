@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/partite-ai/particle/registry"
+	"github.com/partite-ai/particles/registry"
 )
 
 // listingRegistry is a tiny test stand-in: List returns a fixed
@@ -24,7 +24,7 @@ func (r *listingRegistry) Get(context.Context, string, string) (registry.Entry, 
 	panic("unused")
 }
 func (r *listingRegistry) Put(context.Context, string, string, fs.FS) error { panic("unused") }
-func (r *listingRegistry) Delete(context.Context, string, string) error      { panic("unused") }
+func (r *listingRegistry) Delete(context.Context, string, string) error     { panic("unused") }
 
 func TestVersionsToDelete_ExplicitVersion(t *testing.T) {
 	reg := &listingRegistry{entries: []registry.ListEntry{

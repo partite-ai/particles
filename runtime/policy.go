@@ -11,8 +11,8 @@ import (
 
 	httptypes "github.com/partite-ai/wacogo/wasi/http/types"
 
-	"github.com/partite-ai/particle/credentials"
-	"github.com/partite-ai/particle/internal/hostmeter"
+	"github.com/partite-ai/particles/credentials"
+	"github.com/partite-ai/particles/internal/hostmeter"
 )
 
 // HostNotAllowedError is the error a denying [httpPolicy] returns

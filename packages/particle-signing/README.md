@@ -1,7 +1,7 @@
 # @partite-ai/particle-signing
 
 TypeScript types for the `@partite-ai/particle-signing` host capability
-consumed by [Particle](https://github.com/partite-ai/particle) particles.
+consumed by [Particle](https://github.com/partite-ai/particles) particles.
 
 Types only — the runtime implementation lives in the Particle wasm
 runtime. Key material never enters the particle's address space; sign
@@ -21,5 +21,5 @@ const sig = await signing.sign("webhook-key", data);
   HMAC-SHA-256 and HMAC-SHA-512.
 - `signing.verify(name, data, signature)` — host-side verify.
 
-See the [Particle README](https://github.com/partite-ai/particle) for
+See the [Particle README](https://github.com/partite-ai/particles) for
 the manifest schema.

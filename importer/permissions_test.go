@@ -6,8 +6,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	credmem "github.com/partite-ai/particle/credentials/memory"
-	"github.com/partite-ai/particle/importer"
+	credmem "github.com/partite-ai/particles/credentials/memory"
+	"github.com/partite-ai/particles/importer"
 )
 
 // Permission confirmation lives in the importer; the tests

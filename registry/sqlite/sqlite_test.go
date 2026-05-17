@@ -12,8 +12,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/partite-ai/particle/registry"
-	"github.com/partite-ai/particle/registry/sqlite"
+	"github.com/partite-ai/particles/registry"
+	"github.com/partite-ai/particles/registry/sqlite"
 )
 
 // newStore opens an in-memory SQLite (one DB per test, fully
@@ -165,14 +165,14 @@ func TestPut_VersionMustBeValidSemver(t *testing.T) {
 		})
 	}
 	for _, v := range []string{
-		"",            // empty
-		"v1.2.3",      // leading 'v' isn't manifest convention
-		"1.2",         // missing patch
-		"1.2.3.4",     // too many segments
-		"01.0.0",      // leading-zero in numeric identifier
-		"latest",      // non-numeric
-		"1.2.3-",      // dangling prerelease
-		"1.2.3+",      // dangling build
+		"",        // empty
+		"v1.2.3",  // leading 'v' isn't manifest convention
+		"1.2",     // missing patch
+		"1.2.3.4", // too many segments
+		"01.0.0",  // leading-zero in numeric identifier
+		"latest",  // non-numeric
+		"1.2.3-",  // dangling prerelease
+		"1.2.3+",  // dangling build
 	} {
 		t.Run("bad/"+v, func(t *testing.T) {
 			if err := s.Put(ctx, "p-bad", v, sampleParticle()); err == nil {

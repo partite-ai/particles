@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	gen "github.com/partite-ai/particle/internal/host/gen/particle/host/signing"
+	gen "github.com/partite-ai/particles/internal/host/gen/particle/host/signing"
 )
 
 // -----------------------------------------------------------------------------

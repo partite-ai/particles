@@ -11,9 +11,9 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/semver"
 
-	"github.com/partite-ai/particle/registry"
-	regsqlite "github.com/partite-ai/particle/registry/sqlite"
-	"github.com/partite-ai/particle/runtime"
+	"github.com/partite-ai/particles/registry"
+	regsqlite "github.com/partite-ai/particles/registry/sqlite"
+	"github.com/partite-ai/particles/runtime"
 )
 
 func newPingCmd() *cobra.Command {

@@ -28,7 +28,7 @@ import (
 func buildCLI(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "particle")
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/partite-ai/particle/cmd/particle")
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/partite-ai/particles/cmd/particle")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go build cmd/particle: %v\n%s", err, out)

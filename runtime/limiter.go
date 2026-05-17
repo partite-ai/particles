@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/partite-ai/particle/internal/hostmeter"
+	"github.com/partite-ai/particles/internal/hostmeter"
 )
 
 // BudgetExceededError is returned from CallTool / ListTools /

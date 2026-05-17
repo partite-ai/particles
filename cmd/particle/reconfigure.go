@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	credsqlite "github.com/partite-ai/particle/credentials/sqlite"
-	"github.com/partite-ai/particle/importer"
-	regsqlite "github.com/partite-ai/particle/registry/sqlite"
+	credsqlite "github.com/partite-ai/particles/credentials/sqlite"
+	"github.com/partite-ai/particles/importer"
+	regsqlite "github.com/partite-ai/particles/registry/sqlite"
 )
 
 func newReconfigureCmd() *cobra.Command {

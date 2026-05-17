@@ -20,10 +20,10 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/spf13/cobra"
 
-	"github.com/partite-ai/particle/credentials"
-	credsqlite "github.com/partite-ai/particle/credentials/sqlite"
-	"github.com/partite-ai/particle/importer"
-	regsqlite "github.com/partite-ai/particle/registry/sqlite"
+	"github.com/partite-ai/particles/credentials"
+	credsqlite "github.com/partite-ai/particles/credentials/sqlite"
+	"github.com/partite-ai/particles/importer"
+	regsqlite "github.com/partite-ai/particles/registry/sqlite"
 )
 
 func newImportCmd() *cobra.Command {

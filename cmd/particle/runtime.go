@@ -8,12 +8,12 @@ import (
 
 	"github.com/partite-ai/wacogo"
 
-	"github.com/partite-ai/particle/credentials"
-	credsqlite "github.com/partite-ai/particle/credentials/sqlite"
-	"github.com/partite-ai/particle/kv"
-	kvsqlite "github.com/partite-ai/particle/kv/sqlite"
-	"github.com/partite-ai/particle/registry"
-	"github.com/partite-ai/particle/runtime"
+	"github.com/partite-ai/particles/credentials"
+	credsqlite "github.com/partite-ai/particles/credentials/sqlite"
+	"github.com/partite-ai/particles/kv"
+	kvsqlite "github.com/partite-ai/particles/kv/sqlite"
+	"github.com/partite-ai/particles/registry"
+	"github.com/partite-ai/particles/runtime"
 )
 
 // bootParticle brings up everything needed to talk to a registered

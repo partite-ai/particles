@@ -8,8 +8,8 @@ import (
 	"github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/host"
 
-	"github.com/partite-ai/particle/internal/hostmeter"
-	gen "github.com/partite-ai/particle/internal/host/gen/particle/host/kv"
+	gen "github.com/partite-ai/particles/internal/host/gen/particle/host/kv"
+	"github.com/partite-ai/particles/internal/hostmeter"
 )
 
 // Manager produces wacogo host instances satisfying

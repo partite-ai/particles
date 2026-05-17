@@ -1,7 +1,7 @@
 # @partite-ai/particle-oauth
 
 TypeScript types for the `@partite-ai/particle-oauth` host capability
-consumed by [Particle](https://github.com/partite-ai/particle) particles.
+consumed by [Particle](https://github.com/partite-ai/particles) particles.
 
 Types only — the runtime implementation lives in the Particle wasm
 runtime.
@@ -24,5 +24,5 @@ if (res.status === 401) {
   cached expiry. The next `credentials.fetcher` call uses the rotated
   token.
 
-See the [Particle README](https://github.com/partite-ai/particle) for
+See the [Particle README](https://github.com/partite-ai/particles) for
 the manifest schema.

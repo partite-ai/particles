@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"hash"
 
-	"github.com/partite-ai/particle/internal/hostmeter"
-	gen "github.com/partite-ai/particle/internal/host/gen/particle/host/signing"
+	gen "github.com/partite-ai/particles/internal/host/gen/particle/host/signing"
+	"github.com/partite-ai/particles/internal/hostmeter"
 )
 
 // Algorithms supported by the signing adapter. The set matches the

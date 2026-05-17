@@ -8,7 +8,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/partite-ai/particle/registry"
+	"github.com/partite-ai/particles/registry"
 )
 
 // fullStubRegistry adds Get/Put/Delete on top of the listing-only
@@ -117,4 +117,4 @@ func (r *errReg) Get(context.Context, string, string) (registry.Entry, error) {
 	return registry.Entry{}, r.err
 }
 func (r *errReg) Put(context.Context, string, string, fs.FS) error { panic("unused") }
-func (r *errReg) Delete(context.Context, string, string) error      { panic("unused") }
+func (r *errReg) Delete(context.Context, string, string) error     { panic("unused") }

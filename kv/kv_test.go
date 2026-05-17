@@ -8,7 +8,7 @@ import (
 
 	"github.com/partite-ai/wacogo"
 
-	gen "github.com/partite-ai/particle/internal/host/gen/particle/host/kv"
+	gen "github.com/partite-ai/particles/internal/host/gen/particle/host/kv"
 )
 
 // fakeStore is the in-test kv.Store. Behavior is pluggable via

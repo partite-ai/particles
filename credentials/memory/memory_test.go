@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/partite-ai/particle/credentials"
-	"github.com/partite-ai/particle/credentials/memory"
+	"github.com/partite-ai/particles/credentials"
+	"github.com/partite-ai/particles/credentials/memory"
 )
 
 // IDs must be ASCII with no whitespace or punctuation. The memory

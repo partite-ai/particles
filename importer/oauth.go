@@ -6,7 +6,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/partite-ai/particle/credentials"
+	"github.com/partite-ai/particles/credentials"
 )
 
 // flow constants — also surfaced in types/particle.d.ts as the

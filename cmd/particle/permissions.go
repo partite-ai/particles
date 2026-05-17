@@ -1,6 +1,6 @@
 package main
 
-import "github.com/partite-ai/particle/importer"
+import "github.com/partite-ai/particles/importer"
 
 // permissionModeFromFlags converts the two mutually-exclusive CLI
 // flags ("--yes" / "--confirm-permissions") into the importer's

@@ -18,7 +18,7 @@ import (
 	"github.com/partite-ai/wacogo/wasi"
 	"github.com/partite-ai/wacogo/wasi/filesystem/preopens"
 
-	"github.com/partite-ai/particle/credentials"
+	"github.com/partite-ai/particles/credentials"
 )
 
 // Canonical WIT export names the runtime publishes — see

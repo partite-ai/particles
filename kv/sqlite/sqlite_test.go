@@ -10,8 +10,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/partite-ai/particle/kv"
-	"github.com/partite-ai/particle/kv/sqlite"
+	"github.com/partite-ai/particles/kv"
+	"github.com/partite-ai/particles/kv/sqlite"
 )
 
 // newStore opens an in-memory SQLite (one DB per test, fully

@@ -13,20 +13,20 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/spf13/cobra"
 
-	"github.com/partite-ai/particle/credentials"
-	credsqlite "github.com/partite-ai/particle/credentials/sqlite"
-	"github.com/partite-ai/particle/importer"
-	"github.com/partite-ai/particle/internal/build"
-	regsqlite "github.com/partite-ai/particle/registry/sqlite"
+	"github.com/partite-ai/particles/credentials"
+	credsqlite "github.com/partite-ai/particles/credentials/sqlite"
+	"github.com/partite-ai/particles/importer"
+	"github.com/partite-ai/particles/internal/build"
+	regsqlite "github.com/partite-ai/particles/registry/sqlite"
 )
 
 func newBuildCmd() *cobra.Command {
 	var (
-		pack             bool
-		dbPath           string
-		profile          string
-		acceptPerms      bool
-		confirmPerms     bool
+		pack         bool
+		dbPath       string
+		profile      string
+		acceptPerms  bool
+		confirmPerms bool
 	)
 	cmd := &cobra.Command{
 		Use:   "build",

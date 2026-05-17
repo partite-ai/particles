@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/partite-ai/particle/credentials"
-	credsqlite "github.com/partite-ai/particle/credentials/sqlite"
-	regsqlite "github.com/partite-ai/particle/registry/sqlite"
+	"github.com/partite-ai/particles/credentials"
+	credsqlite "github.com/partite-ai/particles/credentials/sqlite"
+	regsqlite "github.com/partite-ai/particles/registry/sqlite"
 )
 
 func newListCmd() *cobra.Command {

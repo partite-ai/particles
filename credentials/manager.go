@@ -8,9 +8,9 @@ import (
 	"github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/host"
 
-	gen_creds "github.com/partite-ai/particle/internal/host/gen/particle/host/credentials"
-	gen_oauth "github.com/partite-ai/particle/internal/host/gen/particle/host/oauth"
-	gen_sign "github.com/partite-ai/particle/internal/host/gen/particle/host/signing"
+	gen_creds "github.com/partite-ai/particles/internal/host/gen/particle/host/credentials"
+	gen_oauth "github.com/partite-ai/particles/internal/host/gen/particle/host/oauth"
+	gen_sign "github.com/partite-ai/particles/internal/host/gen/particle/host/signing"
 )
 
 // Manager produces wacogo host instances for every host capability

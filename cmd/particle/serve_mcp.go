@@ -13,8 +13,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 
-	regsqlite "github.com/partite-ai/particle/registry/sqlite"
-	"github.com/partite-ai/particle/runtime"
+	regsqlite "github.com/partite-ai/particles/registry/sqlite"
+	"github.com/partite-ai/particles/runtime"
 )
 
 func newServeMCPCmd() *cobra.Command {

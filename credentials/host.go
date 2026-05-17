@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/partite-ai/particle/internal/hostmeter"
-	gen "github.com/partite-ai/particle/internal/host/gen/particle/host/credentials"
+	gen "github.com/partite-ai/particles/internal/host/gen/particle/host/credentials"
+	"github.com/partite-ai/particles/internal/hostmeter"
 )
 
 // PlaceholderPrefix is the fixed prefix the runtime/host stamps onto

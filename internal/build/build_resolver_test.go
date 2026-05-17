@@ -8,7 +8,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/partite-ai/particle/internal/build"
+	"github.com/partite-ai/particles/internal/build"
 )
 
 // The resolver phase makes real npm registry calls. Skip in -short

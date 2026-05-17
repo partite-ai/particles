@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	gen "github.com/partite-ai/particle/internal/host/gen/particle/host/oauth"
+	gen "github.com/partite-ai/particles/internal/host/gen/particle/host/oauth"
 )
 
 // fakeRefresher is the in-test OAuthRefresher. The closure shape

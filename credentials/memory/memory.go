@@ -16,7 +16,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/partite-ai/particle/credentials"
+	"github.com/partite-ai/particles/credentials"
 )
 
 // Store is an in-process credentials.Store.

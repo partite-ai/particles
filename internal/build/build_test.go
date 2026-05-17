@@ -8,7 +8,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/partite-ai/particle/internal/build"
+	"github.com/partite-ai/particles/internal/build"
 )
 
 // All build tests run against the real wacogo backend (the wasm

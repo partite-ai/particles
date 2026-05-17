@@ -11,11 +11,11 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/partite-ai/particle/credentials"
-	credmem "github.com/partite-ai/particle/credentials/memory"
-	"github.com/partite-ai/particle/importer"
-	"github.com/partite-ai/particle/registry"
-	regsqlite "github.com/partite-ai/particle/registry/sqlite"
+	"github.com/partite-ai/particles/credentials"
+	credmem "github.com/partite-ai/particles/credentials/memory"
+	"github.com/partite-ai/particles/importer"
+	"github.com/partite-ai/particles/registry"
+	regsqlite "github.com/partite-ai/particles/registry/sqlite"
 )
 
 // scriptedPrompter answers prompts from pre-seeded queues. The
@@ -457,7 +457,7 @@ func TestImport_MultipleMethods_PicksOne(t *testing.T) {
 	store := credmem.New()
 	prompter := &scriptedPrompter{
 		t:       t,
-		choices: []string{"pat"},   // user picks the apikey alternative
+		choices: []string{"pat"}, // user picks the apikey alternative
 		strings: []string{"X-API-Key"},
 		secrets: []string{"hunter2"},
 	}
@@ -637,15 +637,15 @@ func TestReconfigure_DifferentMethod_DropsPrevious(t *testing.T) {
 		"b":{"type":"apikey","location":{"kind":"header","name":"X-K"}}
 	}}}`
 	reg, store, _ := reconfigureSetup(t, caps,
-		[]string{"a"},                   // pick "a"
-		[]string{"alice"},               // username
-		[]string{"hunter2"},             // password
+		[]string{"a"},       // pick "a"
+		[]string{"alice"},   // username
+		[]string{"hunter2"}, // password
 	)
 
 	// Reconfigure: pick "b" instead.
 	prompter := &scriptedPrompter{
 		t:       t,
-		choices: []string{"b"},        // method choice
+		choices: []string{"b"},         // method choice
 		secrets: []string{"key-value"}, // apikey secret
 	}
 	_, method, err := importer.Reconfigure(context.Background(), "p", "", importer.Options{

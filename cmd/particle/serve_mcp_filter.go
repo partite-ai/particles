@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/partite-ai/particle/runtime"
+	"github.com/partite-ai/particles/runtime"
 )
 
 // filterTools applies the serve-mcp `--only-tools` allowlist or

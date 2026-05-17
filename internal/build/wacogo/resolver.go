@@ -16,7 +16,7 @@ import (
 	wc "github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/wasi"
 
-	"github.com/partite-ai/particle/internal/importscan"
+	"github.com/partite-ai/particles/internal/importscan"
 )
 
 // installerInterface is the canonical id of the exported instance the

@@ -6,11 +6,11 @@ import (
 	"database/sql"
 	"testing"
 
-	_ "modernc.org/sqlite"
 	"github.com/zalando/go-keyring"
+	_ "modernc.org/sqlite"
 
-	"github.com/partite-ai/particle/credentials"
-	"github.com/partite-ai/particle/credentials/sqlite"
+	"github.com/partite-ai/particles/credentials"
+	"github.com/partite-ai/particles/credentials/sqlite"
 )
 
 // First call generates and stores a key; second call for the same

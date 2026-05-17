@@ -1,4 +1,4 @@
-module github.com/partite-ai/particle
+module github.com/partite-ai/particles
 
 go 1.26.2
 

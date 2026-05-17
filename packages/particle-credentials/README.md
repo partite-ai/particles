@@ -1,7 +1,7 @@
 # @partite-ai/particle-credentials
 
 TypeScript types for the `@partite-ai/particle-credentials` host
-capability consumed by [Particle](https://github.com/partite-ai/particle)
+capability consumed by [Particle](https://github.com/partite-ai/particles)
 particles.
 
 This package ships **types only**. The runtime implementation is
@@ -28,5 +28,5 @@ const res = await fetcher("https://api.example.com/me");
 - `credentials.getConfiguredMethod()` — name of the method the user
   picked at setup, or `null` when no method is configured.
 
-See the [Particle README](https://github.com/partite-ai/particle) for
+See the [Particle README](https://github.com/partite-ai/particles) for
 the manifest schema and the broader credential model.

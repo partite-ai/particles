@@ -10,8 +10,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	regsqlite "github.com/partite-ai/particle/registry/sqlite"
-	"github.com/partite-ai/particle/runtime"
+	regsqlite "github.com/partite-ai/particles/registry/sqlite"
+	"github.com/partite-ai/particles/runtime"
 )
 
 func newRunCmd() *cobra.Command {

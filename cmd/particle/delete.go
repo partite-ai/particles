@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/partite-ai/particle/registry"
-	regsqlite "github.com/partite-ai/particle/registry/sqlite"
+	"github.com/partite-ai/particles/registry"
+	regsqlite "github.com/partite-ai/particles/registry/sqlite"
 )
 
 func newDeleteCmd() *cobra.Command {

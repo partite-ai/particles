@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/partite-ai/particle/registry"
+	"github.com/partite-ai/particles/registry"
 )
 
 // PermissionMode controls when Import prompts the user to

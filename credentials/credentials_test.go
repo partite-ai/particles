@@ -8,7 +8,7 @@ import (
 
 	"github.com/partite-ai/wacogo"
 
-	gen "github.com/partite-ai/particle/internal/host/gen/particle/host/credentials"
+	gen "github.com/partite-ai/particles/internal/host/gen/particle/host/credentials"
 )
 
 // fakeStore is a minimal in-test Store used to drive the adapter.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/partite-ai/particle/credentials"
+	"github.com/partite-ai/particles/credentials"
 )
 
 // setupBasic captures username + password for an HTTP Basic

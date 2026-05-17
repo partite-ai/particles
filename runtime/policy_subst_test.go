@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/partite-ai/particle/credentials"
-	"github.com/partite-ai/particle/credentials/memory"
+	"github.com/partite-ai/particles/credentials"
+	"github.com/partite-ai/particles/credentials/memory"
 )
 
 // recordingDoer captures the request that finally goes "outbound"

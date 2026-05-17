@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/partite-ai/particle/internal/hostmeter"
+	"github.com/partite-ai/particles/internal/hostmeter"
 )
 
 // Zero budget → every operation is a no-op fast path. No
@@ -55,8 +55,8 @@ func TestLimiter_PauseExcludesHostTime(t *testing.T) {
 	time.Sleep(runSegment)
 
 	used := l.Used()
-	lower := time.Duration(float64(2*runSegment) * 0.7)         // -30% slop
-	upper := 2*runSegment + hostSegment/4                       // generous high bound
+	lower := time.Duration(float64(2*runSegment) * 0.7) // -30% slop
+	upper := 2*runSegment + hostSegment/4               // generous high bound
 	if used < lower || used > upper {
 		t.Errorf("Used = %v, want roughly %v (run-segments only, host-segment excluded)", used, 2*runSegment)
 	}

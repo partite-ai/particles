@@ -33,8 +33,8 @@
 // All directives below run in order; the gen output dir is shared
 // so per-capability subtrees coexist.
 //
-//go:generate wacogo-witgen generate -w particle:host/credentials-gen -o ../internal/host/gen -p github.com/partite-ai/particle/internal/host/gen ../internal/host/wit/
-//go:generate wacogo-witgen generate -w particle:host/oauth-gen       -o ../internal/host/gen -p github.com/partite-ai/particle/internal/host/gen ../internal/host/wit/
-//go:generate wacogo-witgen generate -w particle:host/signing-gen     -o ../internal/host/gen -p github.com/partite-ai/particle/internal/host/gen ../internal/host/wit/
+//go:generate wacogo-witgen generate -w particle:host/credentials-gen -o ../internal/host/gen -p github.com/partite-ai/particles/internal/host/gen ../internal/host/wit/
+//go:generate wacogo-witgen generate -w particle:host/oauth-gen       -o ../internal/host/gen -p github.com/partite-ai/particles/internal/host/gen ../internal/host/wit/
+//go:generate wacogo-witgen generate -w particle:host/signing-gen     -o ../internal/host/gen -p github.com/partite-ai/particles/internal/host/gen ../internal/host/wit/
 
 package credentials

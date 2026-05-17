@@ -40,8 +40,8 @@ import (
 
 	"github.com/partite-ai/wacogo"
 
-	"github.com/partite-ai/particle/credentials"
-	"github.com/partite-ai/particle/kv"
+	"github.com/partite-ai/particles/credentials"
+	"github.com/partite-ai/particles/kv"
 )
 
 //go:embed all:embed

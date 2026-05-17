@@ -21,8 +21,8 @@ import (
 
 	"golang.org/x/mod/semver"
 
-	"github.com/partite-ai/particle/credentials"
-	"github.com/partite-ai/particle/registry"
+	"github.com/partite-ai/particles/credentials"
+	"github.com/partite-ai/particles/registry"
 )
 
 // Options configures one [Import] call.

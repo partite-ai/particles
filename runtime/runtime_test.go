@@ -9,12 +9,12 @@ import (
 
 	"github.com/partite-ai/wacogo"
 
-	"github.com/partite-ai/particle/credentials"
-	credmem "github.com/partite-ai/particle/credentials/memory"
-	"github.com/partite-ai/particle/internal/build"
-	"github.com/partite-ai/particle/kv"
-	kvmem "github.com/partite-ai/particle/kv/memory"
-	"github.com/partite-ai/particle/runtime"
+	"github.com/partite-ai/particles/credentials"
+	credmem "github.com/partite-ai/particles/credentials/memory"
+	"github.com/partite-ai/particles/internal/build"
+	"github.com/partite-ai/particles/kv"
+	kvmem "github.com/partite-ai/particles/kv/memory"
+	"github.com/partite-ai/particles/runtime"
 )
 
 // buildParticle compiles a tiny TypeScript source into a particle
