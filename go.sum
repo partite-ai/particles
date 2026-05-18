@@ -31,6 +31,8 @@ github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOF
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
 github.com/partite-ai/wacogo v0.0.0-20260518094706-ddf8b168a5a6 h1:4YEK0kt40Z9v9f/NaH1zjFqvQWnVloWdCYSY8euO8hY=
 github.com/partite-ai/wacogo v0.0.0-20260518094706-ddf8b168a5a6/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
+github.com/partite-ai/wacogo v0.0.0-20260518102611-1bbfd2696bf6 h1:S7f+ikF9/Kw1NYnta0Vx/TlDbnpLALrIotbS5dhyDyM=
+github.com/partite-ai/wacogo v0.0.0-20260518102611-1bbfd2696bf6/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=

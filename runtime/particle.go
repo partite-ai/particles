@@ -18,6 +18,7 @@ import (
 	"github.com/partite-ai/wacogo/wasi/filesystem/preopens"
 
 	"github.com/partite-ai/particles/credentials"
+	"github.com/partite-ai/particles/internal/hostmeter"
 	"github.com/partite-ai/particles/kv"
 )
 
@@ -189,13 +190,16 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, credStore c
 
 	allowedHosts := manifest.Capabilities.HTTP.AllowedHosts
 
+	listener := hostmeter.Listener{}
+
 	stderr := &bytes.Buffer{}
 	w, err := wasi.NewWorld(ctx, r.cfg.Engine, &wasi.Config{
-		Args:     []string{"particle-runtime"},
-		Preopens: preopens.NewFSPreopens(preopens.ImmutableFS{FS: bundleFS}),
-		Stdin:    strings.NewReader(""),
-		Stdout:   io.Discard,
-		Stderr:   stderr,
+		Args:         []string{"particle-runtime"},
+		Preopens:     preopens.NewFSPreopens(preopens.ImmutableFS{FS: bundleFS}),
+		Stdin:        strings.NewReader(""),
+		Stdout:       io.Discard,
+		Stderr:       stderr,
+		CallListener: listener,
 		// HTTP policy is per-particle: our httpPolicy
 		// implements wacogo's wasi.HTTPDoer single-method
 		// interface directly. It does two jobs on every
@@ -238,7 +242,7 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, credStore c
 		_ = w.Close(ctx)
 	}
 
-	loggingInst, err := newLoggingHost(ctx, r.cfg.Engine, cfg.log)
+	loggingInst, err := newLoggingHost(ctx, r.cfg.Engine, cfg.log, host.WithCallListener(listener))
 	if err != nil {
 		closeAll()
 		return nil, fmt.Errorf("runtime: build wasi:logging host: %w", err)
@@ -249,28 +253,28 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, credStore c
 	// must be satisfied at instantiation (the runtime.wasm
 	// imports them unconditionally); when the caller opted out
 	// of a Store, we build the host against a do-nothing scope.
-	credInst, err := r.cfg.Credentials.NewCredentialsInstance(ctx, credStore)
+	credInst, err := r.cfg.Credentials.NewCredentialsInstance(ctx, credStore, host.WithCallListener(listener))
 	if err != nil {
 		closeAll()
 		return nil, fmt.Errorf("runtime: build credentials host instance: %w", err)
 	}
 	hostInsts = append(hostInsts, credInst)
 
-	oauthInst, err := r.cfg.Credentials.NewOAuthInstance(ctx, credStore)
+	oauthInst, err := r.cfg.Credentials.NewOAuthInstance(ctx, credStore, host.WithCallListener(listener))
 	if err != nil {
 		closeAll()
 		return nil, fmt.Errorf("runtime: build oauth host instance: %w", err)
 	}
 	hostInsts = append(hostInsts, oauthInst)
 
-	signingInst, err := r.cfg.Credentials.NewSigningInstance(ctx, credStore)
+	signingInst, err := r.cfg.Credentials.NewSigningInstance(ctx, credStore, host.WithCallListener(listener))
 	if err != nil {
 		closeAll()
 		return nil, fmt.Errorf("runtime: build signing host instance: %w", err)
 	}
 	hostInsts = append(hostInsts, signingInst)
 
-	kvInst, err := r.cfg.KV.NewInstance(ctx, kvStore)
+	kvInst, err := r.cfg.KV.NewInstance(ctx, kvStore, host.WithCallListener(listener))
 	if err != nil {
 		closeAll()
 		return nil, fmt.Errorf("runtime: build kv host instance: %w", err)

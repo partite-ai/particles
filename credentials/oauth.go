@@ -13,7 +13,6 @@ import (
 	"time"
 
 	gen "github.com/partite-ai/particles/internal/host/gen/particle/host/oauth"
-	"github.com/partite-ai/particles/internal/hostmeter"
 )
 
 // OAuthRefresher performs the actual OAuth 2.0 token refresh
@@ -231,8 +230,6 @@ func newOAuthAdapter(store Store, refresher OAuthRefresher) *oauthAdapter {
 //	upstream refresh fails or store
 //	  rejects the write             → refresh-failed(message)
 func (a *oauthAdapter) Refresh(ctx context.Context, name string) (gen.Result_OauthError, error) {
-	defer hostmeter.EnterHost(ctx)()
-
 	desc, err := a.store.GetByName(ctx, name)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	gen "github.com/partite-ai/particles/internal/host/gen/particle/host/credentials"
-	"github.com/partite-ai/particles/internal/hostmeter"
 )
 
 // PlaceholderPrefix is the fixed prefix the runtime/host stamps onto
@@ -55,8 +54,6 @@ func placeholderFor(id string) string { return PlaceholderPrefix + id }
 // adapter at this stage. The wasi:http policy fetches secret slots
 // at substitution time, so the placeholder path stays cheap.
 func (a *adapter) GetPlaceholder(ctx context.Context, name string) (gen.ResultPlaceholderInfoCredentialError, error) {
-	defer hostmeter.EnterHost(ctx)()
-
 	desc, err := a.store.GetByName(ctx, name)
 	if err != nil {
 		return gen.ResultPlaceholderInfoCredentialErrorErr{Value: errToCredentialError(err)}, nil
@@ -83,8 +80,6 @@ func (a *adapter) GetPlaceholder(ctx context.Context, name string) (gen.ResultPl
 // alternative methods (e.g. oauth2 + apikey) call this to find
 // out which method backs the named credential.
 func (a *adapter) GetConfiguredMethod(ctx context.Context, name string) (gen.ResultOptionStringCredentialError, error) {
-	defer hostmeter.EnterHost(ctx)()
-
 	method, err := a.store.ConfiguredMethod(ctx, name)
 	if err != nil {
 		return gen.ResultOptionStringCredentialErrorErr{Value: errToCredentialError(err)}, nil
@@ -99,8 +94,6 @@ func (a *adapter) GetConfiguredMethod(ctx context.Context, name string) (gen.Res
 // `value` of a RawMeta entry is what the particle wants. Two-step:
 // resolve the entry by name, then read SecretRoleValue.
 func (a *adapter) GetRaw(ctx context.Context, name string) (gen.ResultStringCredentialError, error) {
-	defer hostmeter.EnterHost(ctx)()
-
 	desc, err := a.store.GetByName(ctx, name)
 	if err != nil {
 		return gen.ResultStringCredentialErrorErr{Value: errToCredentialError(err)}, nil

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/partite-ai/wacogo/host"
+
 	"github.com/partite-ai/particles/internal/hostmeter"
 )
 
@@ -124,19 +126,22 @@ func TestLimiter_Stop_AfterTrip_Idempotent(t *testing.T) {
 	_ = l.Stop() // must not panic
 }
 
-// hostmeter.EnterHost looks up the limiter via context and runs
+// hostmeter.Listener looks up the limiter via context and runs
 // Pause/Resume around the host-call body. This test wires a
 // real limiter into a ctx and asserts the meter contract: time
 // spent inside a faked "host call" doesn't count.
-func TestHostmeter_EnterHost_PausesAndResumes(t *testing.T) {
+func TestHostmeterListener_PausesAndResumes(t *testing.T) {
 	l := newLimiter(time.Hour)
 	ctx := l.Start(context.Background())
 	ctx = hostmeter.WithMeter(ctx, l)
 	defer l.Stop()
 
+	listener := hostmeter.Listener{}
+
 	time.Sleep(10 * time.Millisecond)
 	func() {
-		defer hostmeter.EnterHost(ctx)()
+		listener.BeforeCall(ctx, nil, host.CallKindFunction, "fake", nil)
+		defer listener.AfterCall(ctx, nil, host.CallKindFunction, "fake", nil, nil)
 		time.Sleep(50 * time.Millisecond)
 	}()
 	time.Sleep(10 * time.Millisecond)
@@ -147,13 +152,13 @@ func TestHostmeter_EnterHost_PausesAndResumes(t *testing.T) {
 	}
 }
 
-// hostmeter.EnterHost without a meter attached is a cheap no-op:
-// returns a func that does nothing, no allocations on the hot
-// path. We verify it doesn't crash; the no-overhead claim is
-// covered by inspection.
-func TestHostmeter_EnterHost_NoMeter_NoOp(t *testing.T) {
-	resume := hostmeter.EnterHost(context.Background())
-	resume()
+// hostmeter.Listener with no meter attached is a cheap no-op:
+// a single ctx.Value lookup that returns nil. We verify it
+// doesn't crash; the no-overhead claim is covered by inspection.
+func TestHostmeterListener_NoMeter_NoOp(t *testing.T) {
+	listener := hostmeter.Listener{}
+	listener.BeforeCall(context.Background(), nil, host.CallKindFunction, "fake", nil)
+	listener.AfterCall(context.Background(), nil, host.CallKindFunction, "fake", nil, nil)
 }
 
 // Pause/Resume from multiple goroutines must not race. Builds a

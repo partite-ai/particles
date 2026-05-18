@@ -5,25 +5,29 @@
 // [Meter] via context.Value and don't depend on the concrete
 // limiter type.
 //
-// Usage in a host adapter:
+// Wiring: the runtime attaches a [Meter] to the per-call context
+// in armLimit, and a single stateless [Listener] is installed on
+// every host-component instance at Instantiate time (and on the
+// wasi world). wacogo's host.CallListener fires around every host
+// function and resource destructor invocation; the listener
+// consults the per-call ctx for a Meter and Pause/Resume's it.
 //
-//	func (a *adapter) DoThing(ctx context.Context, ...) (..., error) {
-//	    defer hostmeter.EnterHost(ctx)()
-//	    ...
-//	}
-//
-// The deferred close runs Resume() right before the function
-// returns to wasm. When no Meter is attached to ctx — the common
-// case while a budget isn't set — EnterHost returns a no-op so
-// the cost is one ctx.Value lookup.
+// The upshot: host adapter methods don't have to call anything to
+// participate in metering. There's no `defer hostmeter.EnterHost(ctx)()`
+// to forget on a new method; destructors are covered automatically
+// (the old EnterHost pattern couldn't reach them).
 package hostmeter
 
-import "context"
+import (
+	"context"
+
+	"github.com/partite-ai/wacogo/host"
+)
 
 // Meter is the slice of the runtime's CPU limiter that host
 // adapters need to call. Concrete implementations are
 // `runtime.limiter` (the real one) and a test fake. The
-// interface is intentionally narrow; host adapters MUST NOT
+// interface is intentionally narrow; the listener MUST NOT
 // reach for anything else on the value.
 type Meter interface {
 	// Pause records that wasm has yielded into a host call —
@@ -49,29 +53,34 @@ func WithMeter(ctx context.Context, m Meter) context.Context {
 }
 
 // MeterFromContext returns the attached Meter, or nil when none
-// is present. Exported for tests; production adapters should
-// prefer [EnterHost], which already nil-handles.
+// is present.
 func MeterFromContext(ctx context.Context) Meter {
 	m, _ := ctx.Value(ctxKey{}).(Meter)
 	return m
 }
 
-// EnterHost signals that wasm has yielded into a host call,
-// pausing the meter (if any), and returns a function that
-// Resume()s the meter. The pattern is:
-//
-//	defer hostmeter.EnterHost(ctx)()
-//
-// No-op when ctx carries no meter. The returned func is always
-// safe to invoke; the nil-meter case is a closure that does
-// nothing.
-func EnterHost(ctx context.Context) func() {
-	m := MeterFromContext(ctx)
-	if m == nil {
-		return noopResume
+// Listener is the [host.CallListener] adapter. Stateless: install
+// one instance (the zero value is ready to use) on every host
+// component and on the wasi world, and it'll Pause/Resume any
+// Meter attached to the per-call ctx around each host invocation.
+// With no Meter on ctx, each event costs one ctx.Value lookup.
+type Listener struct{}
+
+var _ host.CallListener = Listener{}
+
+// BeforeCall pauses the per-call meter (if any) as control
+// crosses from wasm into a host function or resource destructor.
+func (Listener) BeforeCall(ctx context.Context, _ *host.ComponentInstance, _ host.CallKind, _ string, _ []uint64) {
+	if m := MeterFromContext(ctx); m != nil {
+		m.Pause()
 	}
-	m.Pause()
-	return m.Resume
 }
 
-func noopResume() {}
+// AfterCall resumes the per-call meter (if any) as control
+// returns to wasm. wacogo guarantees AfterCall fires for every
+// BeforeCall, including on panic — so Pause/Resume always pair up.
+func (Listener) AfterCall(ctx context.Context, _ *host.ComponentInstance, _ host.CallKind, _ string, _ []uint64, _ error) {
+	if m := MeterFromContext(ctx); m != nil {
+		m.Resume()
+	}
+}

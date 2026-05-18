@@ -9,7 +9,6 @@ import (
 	"github.com/partite-ai/wacogo/host"
 
 	gen "github.com/partite-ai/particles/internal/host/gen/particle/host/kv"
-	"github.com/partite-ai/particles/internal/hostmeter"
 )
 
 // Manager produces wacogo host instances satisfying
@@ -51,12 +50,14 @@ func (m *Manager) Close(ctx context.Context) error { return m.fac.Close(ctx) }
 
 // NewInstance produces a host instance backed by the supplied
 // (particle-scoped) Store. Pass `inst.Core()` to
-// `wacogo.WithInstanceImport(...)`.
-func (m *Manager) NewInstance(ctx context.Context, store Store) (*host.ComponentInstance, error) {
+// `wacogo.WithInstanceImport(...)`. Additional `opts` are
+// forwarded to wacogo's Instantiate — the runtime uses this to
+// attach a host.CallListener for CPU metering.
+func (m *Manager) NewInstance(ctx context.Context, store Store, opts ...host.InstantiateOption) (*host.ComponentInstance, error) {
 	if store == nil {
 		return nil, errors.New("kv: NewInstance: store is required")
 	}
-	inst, err := m.fac.NewInstance(ctx, newAdapter(store), nil)
+	inst, err := m.fac.NewInstance(ctx, newAdapter(store), nil, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kv: instantiate: %w", err)
 	}
@@ -78,8 +79,6 @@ func newAdapter(store Store) *adapter {
 }
 
 func (a *adapter) Get(ctx context.Context, key string) (gen.ResultOptionStringKvError, error) {
-	defer hostmeter.EnterHost(ctx)()
-
 	value, found, err := a.store.Get(ctx, key)
 	if err != nil {
 		return gen.ResultOptionStringKvErrorErr{Value: liftError(err)}, nil
@@ -91,8 +90,6 @@ func (a *adapter) Get(ctx context.Context, key string) (gen.ResultOptionStringKv
 }
 
 func (a *adapter) Set(ctx context.Context, key, value string) (gen.Result_KvError, error) {
-	defer hostmeter.EnterHost(ctx)()
-
 	if err := a.store.Set(ctx, key, value); err != nil {
 		return gen.Result_KvErrorErr{Value: liftError(err)}, nil
 	}
@@ -100,8 +97,6 @@ func (a *adapter) Set(ctx context.Context, key, value string) (gen.Result_KvErro
 }
 
 func (a *adapter) Delete(ctx context.Context, key string) (gen.Result_KvError, error) {
-	defer hostmeter.EnterHost(ctx)()
-
 	if err := a.store.Delete(ctx, key); err != nil {
 		return gen.Result_KvErrorErr{Value: liftError(err)}, nil
 	}
@@ -109,8 +104,6 @@ func (a *adapter) Delete(ctx context.Context, key string) (gen.Result_KvError, e
 }
 
 func (a *adapter) List(ctx context.Context, prefix string) (gen.ResultListStringKvError, error) {
-	defer hostmeter.EnterHost(ctx)()
-
 	keys, err := a.store.List(ctx, prefix)
 	if err != nil {
 		return gen.ResultListStringKvErrorErr{Value: liftError(err)}, nil

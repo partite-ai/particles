@@ -6,7 +6,7 @@ require (
 	github.com/evanw/esbuild v0.28.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.6.0
-	github.com/partite-ai/wacogo v0.0.0-20260518094706-ddf8b168a5a6
+	github.com/partite-ai/wacogo v0.0.0-20260518102611-1bbfd2696bf6
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	github.com/tetratelabs/wazero v1.11.1-0.20260511190115-a3374cf27a3a

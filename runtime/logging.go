@@ -67,12 +67,12 @@ func DefaultLogCallback(_ context.Context, level LogLevel, scope, message string
 // Goes through the generated [gen.Factory] / [loggingImpl]
 // pattern so the wiring matches every other host capability;
 // no hand-rolled stack decoding or memory reads on this path.
-func newLoggingHost(ctx context.Context, e *wacogo.Engine, cb LogCallback) (*host.ComponentInstance, error) {
+func newLoggingHost(ctx context.Context, e *wacogo.Engine, cb LogCallback, opts ...host.InstantiateOption) (*host.ComponentInstance, error) {
 	fac, err := gen.NewFactory(ctx, e)
 	if err != nil {
 		return nil, err
 	}
-	return fac.NewInstance(ctx, &loggingImpl{cb: cb}, nil)
+	return fac.NewInstance(ctx, &loggingImpl{cb: cb}, nil, opts...)
 }
 
 // loggingImpl implements the generated gen.Logging interface.

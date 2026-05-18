@@ -128,12 +128,14 @@ func (m *Manager) Close(ctx context.Context) error {
 // NewCredentialsInstance produces a host instance satisfying
 // `import particle:host/credentials@0.1.0`. The instance reads
 // and writes through the supplied (particle-scoped) Store. Pass
-// `inst.Core()` to `wacogo.WithInstanceImport(...)`.
-func (m *Manager) NewCredentialsInstance(ctx context.Context, store Store) (*host.ComponentInstance, error) {
+// `inst.Core()` to `wacogo.WithInstanceImport(...)`. Additional
+// `opts` are forwarded to wacogo's Instantiate — the runtime
+// uses this to attach a host.CallListener for CPU metering.
+func (m *Manager) NewCredentialsInstance(ctx context.Context, store Store, opts ...host.InstantiateOption) (*host.ComponentInstance, error) {
 	if store == nil {
 		return nil, errors.New("credentials: NewCredentialsInstance: store is required")
 	}
-	inst, err := m.credFac.NewInstance(ctx, newAdapter(store), nil)
+	inst, err := m.credFac.NewInstance(ctx, newAdapter(store), nil, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("credentials: instantiate credentials: %w", err)
 	}
@@ -143,12 +145,13 @@ func (m *Manager) NewCredentialsInstance(ctx context.Context, store Store) (*hos
 // NewOAuthInstance produces a host instance satisfying
 // `import particle:host/oauth@0.1.0`. The instance reads and
 // writes through the supplied (particle-scoped) Store. Pass
-// `inst.Core()` to `wacogo.WithInstanceImport(...)`.
-func (m *Manager) NewOAuthInstance(ctx context.Context, store Store) (*host.ComponentInstance, error) {
+// `inst.Core()` to `wacogo.WithInstanceImport(...)`. Additional
+// `opts` are forwarded to wacogo's Instantiate.
+func (m *Manager) NewOAuthInstance(ctx context.Context, store Store, opts ...host.InstantiateOption) (*host.ComponentInstance, error) {
 	if store == nil {
 		return nil, errors.New("credentials: NewOAuthInstance: store is required")
 	}
-	inst, err := m.oauthFac.NewInstance(ctx, newOAuthAdapter(store, m.refresher), nil)
+	inst, err := m.oauthFac.NewInstance(ctx, newOAuthAdapter(store, m.refresher), nil, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("credentials: instantiate oauth: %w", err)
 	}
@@ -161,12 +164,13 @@ func (m *Manager) NewOAuthInstance(ctx context.Context, store Store) (*host.Comp
 // Sign / verify operate on SigningKeyMeta entries — the adapter
 // looks up the entry by name, fetches the key bytes from
 // SecretRoleKey, and dispatches to crypto/hmac per the entry's
-// Algorithm.
-func (m *Manager) NewSigningInstance(ctx context.Context, store Store) (*host.ComponentInstance, error) {
+// Algorithm. Additional `opts` are forwarded to wacogo's
+// Instantiate.
+func (m *Manager) NewSigningInstance(ctx context.Context, store Store, opts ...host.InstantiateOption) (*host.ComponentInstance, error) {
 	if store == nil {
 		return nil, errors.New("credentials: NewSigningInstance: store is required")
 	}
-	inst, err := m.signingFac.NewInstance(ctx, newSigningAdapter(store), nil)
+	inst, err := m.signingFac.NewInstance(ctx, newSigningAdapter(store), nil, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("credentials: instantiate signing: %w", err)
 	}
