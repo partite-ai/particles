@@ -1,7 +1,7 @@
 package main
 
 import (
-	"archive/tar"
+	"archive/zip"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -10,7 +10,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/spf13/cobra"
 
 	"github.com/partite-ai/particles/credentials"
@@ -34,7 +33,7 @@ func newBuildCmd() *cobra.Command {
 		Long: `Build the particle in the current directory.
 
 By default the result is registered in the local state DB. Pass
---pack to write a <name>-<version>.particle tarball to CWD instead.
+--pack to write a <name>-<version>.particle archive to CWD instead.
 
 Registration prompts to confirm the particle's declared capabilities
 when they differ from the previously-registered version (or on a
@@ -93,7 +92,7 @@ func runPack(cmd *cobra.Command, res *build.Result) error {
 		return err
 	}
 	outPath := fmt.Sprintf("%s-%s.particle", name, version)
-	if err := writeParticleTar(res.Particle, outPath); err != nil {
+	if err := writeParticleZip(res.Particle, outPath); err != nil {
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), outPath)
@@ -217,31 +216,29 @@ func manifestNameVersion(fsys fs.FS) (string, string, error) {
 	return m.Name, m.Version, nil
 }
 
-// writeParticleTar packs every file in fsys into a deterministic
-// zstd-compressed tar archive at outPath. "Deterministic" matters
-// for content-addressing: two builds of the same source should
-// produce byte-identical output. We rely on fs.WalkDir's lexical
-// traversal order, a zero ModTime, the fixed POSIX.1-1988 tar
-// header dialect (Format: tar.FormatUSTAR below — picked over PAX
-// because PAX writes extended headers carrying metadata that's
-// harder to keep byte-stable), a fixed zstd level, and
-// concurrency=1 (klauspost's zstd encoder can produce different
-// frame splits under multi-threading).
-func writeParticleTar(fsys fs.FS, outPath string) error {
+// writeParticleZip packs every file in fsys into a deterministic
+// zip archive at outPath. "Deterministic" matters for content-
+// addressing: two builds of the same source should produce
+// byte-identical output. We rely on fs.WalkDir's lexical traversal
+// order, a fixed ModTime (the Unix epoch — the zip format can't
+// represent a zero time), the default Deflate compression method
+// (Go's archive/zip uses compress/flate at a fixed level), and
+// store-only Method=Store for tiny entries where compression would
+// inflate them.
+func writeParticleZip(fsys fs.FS, outPath string) error {
 	f, err := os.Create(outPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	zw, err := zstd.NewWriter(f,
-		zstd.WithEncoderLevel(zstd.SpeedBetterCompression),
-		zstd.WithEncoderConcurrency(1),
-	)
-	if err != nil {
-		return fmt.Errorf("zstd writer: %w", err)
-	}
-	tw := tar.NewWriter(zw)
+	zw := zip.NewWriter(f)
+
+	// zip's local-file-header time field is a DOS timestamp,
+	// which only resolves to 1980-01-01 and later. Using the
+	// earliest representable time keeps output bit-for-bit stable
+	// across runs without leaking real wall-clock data.
+	epoch := time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	walkErr := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -254,35 +251,27 @@ func writeParticleTar(fsys fs.FS, outPath string) error {
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
-		hdr := &tar.Header{
-			Name:    path,
-			Mode:    0o644,
-			Size:    int64(len(data)),
-			ModTime: time.Time{},
-			Format:  tar.FormatUSTAR,
+		hdr := &zip.FileHeader{
+			Name:     path,
+			Method:   zip.Deflate,
+			Modified: epoch,
 		}
-		if err := tw.WriteHeader(hdr); err != nil {
+		hdr.SetMode(0o644)
+		w, err := zw.CreateHeader(hdr)
+		if err != nil {
 			return fmt.Errorf("write header for %s: %w", path, err)
 		}
-		if _, err := tw.Write(data); err != nil {
+		if _, err := w.Write(data); err != nil {
 			return fmt.Errorf("write body for %s: %w", path, err)
 		}
 		return nil
 	})
 	if walkErr != nil {
-		_ = tw.Close()
 		_ = zw.Close()
 		return walkErr
 	}
-	// Close in LIFO: tar (trailer into zw) → zstd (final frame into
-	// f). Failures here turn a corrupt .particle into a clear error
-	// rather than a confusing import failure downstream.
-	if err := tw.Close(); err != nil {
-		_ = zw.Close()
-		return fmt.Errorf("close tar: %w", err)
-	}
 	if err := zw.Close(); err != nil {
-		return fmt.Errorf("close zstd: %w", err)
+		return fmt.Errorf("close zip: %w", err)
 	}
 	return nil
 }

@@ -8,7 +8,7 @@
 //
 // The build CLI (`particle build`) is the first call site, but the
 // abstraction is intentionally separable so future commands —
-// `particle import <tarball>`, `particle import <oci-ref>`, etc. —
+// `particle import <archive>`, `particle import <oci-ref>`, etc. —
 // can reuse it.
 package importer
 

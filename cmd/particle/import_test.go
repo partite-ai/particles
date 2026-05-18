@@ -1,7 +1,7 @@
 package main
 
 import (
-	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"context"
 	"io/fs"
@@ -11,37 +11,17 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"github.com/klauspost/compress/zstd"
 )
 
-// readTar should round-trip whatever writeParticleTar produces:
-// every regular file in, same paths and bytes out. We synthesize
-// an in-memory archive mirroring the build CLI's deterministic
-// zstd-of-tar shape.
-func TestReadTar_RoundTripsRegularFiles(t *testing.T) {
+// readZip should round-trip whatever writeParticleZip produces:
+// every regular file in, same paths and bytes out.
+func TestReadZip_RoundTripsRegularFiles(t *testing.T) {
 	files := map[string][]byte{
 		"manifest.json": []byte(`{"name":"p","version":"0.1.0"}`),
 		"bundle.js":     []byte(`export default {};`),
 	}
 
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for name, body := range files {
-		if err := tw.WriteHeader(&tar.Header{
-			Name: name, Mode: 0o644, Size: int64(len(body)), Format: tar.FormatUSTAR,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tw.Write(body); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := readTar(bytes.NewReader(zstdCompress(t, buf.Bytes())))
+	got, err := readZipBytes(t, zipBytes(t, files))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,15 +47,15 @@ func TestReadTar_RoundTripsRegularFiles(t *testing.T) {
 	}
 }
 
-// readTar rejects entries with absolute paths, traversal segments,
+// readZip rejects entries with absolute paths, traversal segments,
 // or names that don't survive path.Clean unchanged. These are
 // either packing bugs or hostile probes; the parser is the
 // chokepoint so any future "extract to disk" feature inherits the
 // guard for free.
-func TestReadTar_RejectsHostileNames(t *testing.T) {
+func TestReadZip_RejectsHostileNames(t *testing.T) {
 	cases := []struct {
-		name    string
-		want    string // substring expected in the error
+		name string
+		want string // substring expected in the error
 	}{
 		{"/etc/passwd", "absolute path"},
 		{"../escape", "traversal"},
@@ -85,21 +65,21 @@ func TestReadTar_RejectsHostileNames(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			tw := tar.NewWriter(&buf)
-			body := []byte("payload")
-			if err := tw.WriteHeader(&tar.Header{
-				Name: c.name, Mode: 0o644, Size: int64(len(body)), Format: tar.FormatPAX,
-			}); err != nil {
+			zw := zip.NewWriter(&buf)
+			w, err := zw.Create(c.name)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := tw.Write(body); err != nil {
+			if _, err := w.Write([]byte("payload")); err != nil {
 				t.Fatal(err)
 			}
-			tw.Close()
+			if err := zw.Close(); err != nil {
+				t.Fatal(err)
+			}
 
-			_, err := readTar(bytes.NewReader(zstdCompress(t, buf.Bytes())))
+			_, err = readZipBytes(t, buf.Bytes())
 			if err == nil {
-				t.Fatalf("readTar accepted hostile name %q", c.name)
+				t.Fatalf("readZip accepted hostile name %q", c.name)
 			}
 			if !strings.Contains(err.Error(), c.want) {
 				t.Errorf("err = %v, want substring %q", err, c.want)
@@ -108,31 +88,30 @@ func TestReadTar_RejectsHostileNames(t *testing.T) {
 	}
 }
 
-// Symlinks / directories / hardlinks in the archive are skipped —
-// particle tarballs only carry regular files, anything else is
-// either a packing bug or a security probe.
-func TestReadTar_SkipsNonRegularEntries(t *testing.T) {
+// Directory entries (paths ending in "/") are skipped — particle
+// archives carry only regular files, and the readZip walk only
+// surfaces leaf entries to the FS.
+func TestReadZip_SkipsDirectoryEntries(t *testing.T) {
 	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	// A symlink — must NOT show up in the FS.
-	if err := tw.WriteHeader(&tar.Header{
-		Name: "evil-link", Linkname: "/etc/passwd", Typeflag: tar.TypeSymlink, Mode: 0o644, Format: tar.FormatUSTAR,
-	}); err != nil {
+	zw := zip.NewWriter(&buf)
+
+	// A directory entry — must NOT show up in the FS.
+	if _, err := zw.Create("subdir/"); err != nil {
 		t.Fatal(err)
 	}
 	// A regular file.
-	body := []byte("ok")
-	if err := tw.WriteHeader(&tar.Header{
-		Name: "good.txt", Mode: 0o644, Size: int64(len(body)), Format: tar.FormatUSTAR,
-	}); err != nil {
+	w, err := zw.Create("good.txt")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tw.Write(body); err != nil {
+	if _, err := w.Write([]byte("ok")); err != nil {
 		t.Fatal(err)
 	}
-	tw.Close()
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
 
-	got, err := readTar(bytes.NewReader(zstdCompress(t, buf.Bytes())))
+	got, err := readZipBytes(t, buf.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +122,8 @@ func TestReadTar_SkipsNonRegularEntries(t *testing.T) {
 	if string(data) != "ok" {
 		t.Errorf("good.txt = %q", data)
 	}
-	if _, err := fs.ReadFile(got, "evil-link"); err == nil {
-		t.Error("symlink entry should NOT have been imported")
+	if _, err := fs.ReadFile(got, "subdir"); err == nil {
+		t.Error("directory entry should NOT have been imported")
 	}
 }
 
@@ -157,44 +136,19 @@ func keysOf(m map[string][]byte) []string {
 	return out
 }
 
-// tarBytes packs a synthetic tar archive of name→body pairs and
-// returns the zstd-compressed result. Mirrors `writeParticleTar`'s
-// layout closely enough for readTar to round-trip through it.
-func tarBytes(t *testing.T, files map[string][]byte) []byte {
+// zipBytes packs a synthetic zip archive of name→body pairs.
+func zipBytes(t *testing.T, files map[string][]byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
+	zw := zip.NewWriter(&buf)
 	for name, body := range files {
-		if err := tw.WriteHeader(&tar.Header{
-			Name: name, Mode: 0o644, Size: int64(len(body)), Format: tar.FormatUSTAR,
-		}); err != nil {
+		w, err := zw.Create(name)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tw.Write(body); err != nil {
+		if _, err := w.Write(body); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return zstdCompress(t, buf.Bytes())
-}
-
-// zstdCompress wraps raw bytes in a zstd stream with the same level
-// + concurrency settings writeParticleTar uses, so test fixtures
-// match the on-disk format readTar expects.
-func zstdCompress(t *testing.T, raw []byte) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	zw, err := zstd.NewWriter(&buf,
-		zstd.WithEncoderLevel(zstd.SpeedBetterCompression),
-		zstd.WithEncoderConcurrency(1),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := zw.Write(raw); err != nil {
-		t.Fatal(err)
 	}
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
@@ -202,14 +156,26 @@ func zstdCompress(t *testing.T, raw []byte) []byte {
 	return buf.Bytes()
 }
 
-// loadParticleFromHTTP fetches a served tarball and returns an FS
+// readZipBytes is a tiny adapter that runs readZip against an
+// in-memory archive — saves every test from re-doing the
+// bytes.NewReader + zip.NewReader dance.
+func readZipBytes(t *testing.T, raw []byte) (fs.FS, error) {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		return nil, err
+	}
+	return readZip(zr)
+}
+
+// loadParticleFromHTTP fetches a served archive and returns an FS
 // whose contents match the bytes the server sent.
 func TestLoadParticleFromHTTP_Success(t *testing.T) {
 	files := map[string][]byte{
 		"manifest.json": []byte(`{"name":"p","version":"0.1.0"}`),
 		"bundle.js":     []byte(`export default {};`),
 	}
-	body := tarBytes(t, files)
+	body := zipBytes(t, files)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write(body)
@@ -259,10 +225,10 @@ func TestLoadParticleFromHTTP_OversizedDownload(t *testing.T) {
 	maxParticleDownloadBytes = 32
 	defer func() { maxParticleDownloadBytes = prev }()
 
-	// Build a real (but slightly oversized) tarball so the
-	// failure is the size limit, not a tar parse error before we
-	// hit it. The header + body is well past 32 bytes.
-	body := tarBytes(t, map[string][]byte{
+	// Build a real (but slightly oversized) archive so the
+	// failure is the size limit, not a parse error before we hit
+	// it. The zip header + body is well past 32 bytes.
+	body := zipBytes(t, map[string][]byte{
 		"manifest.json": []byte(`{"name":"p","version":"0.1.0"}`),
 	})
 	if int64(len(body)) <= maxParticleDownloadBytes {
@@ -284,8 +250,7 @@ func TestLoadParticleFromHTTP_OversizedDownload(t *testing.T) {
 }
 
 // An HTML response (captive portal, error page, auth wall) must
-// surface a clear diagnostic — never the raw "tar header:
-// unexpected EOF" we'd otherwise get from readTar.
+// surface a clear diagnostic — never a raw zip-decode error.
 func TestLoadParticleFromHTTP_HTMLResponse_ClearError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -297,8 +262,8 @@ func TestLoadParticleFromHTTP_HTMLResponse_ClearError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "not a particle tarball") {
-		t.Errorf("err = %v, want clear non-tar message", err)
+	if !strings.Contains(err.Error(), "not a particle archive") {
+		t.Errorf("err = %v, want clear non-archive message", err)
 	}
 }
 

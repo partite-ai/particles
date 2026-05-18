@@ -11,7 +11,7 @@ Six things make it different from "just a script":
 - **Secure credential storage.** Secrets are encrypted at rest with a key held in the OS keychain, and never made available to code running inside the particle. For OAuth, API keys, and Basic auth, the host fills in the real value as the request leaves the sandbox — your handler only ever sees an opaque placeholder. Signing keys work the same way: `signing.sign(name, data)` returns a signature without the key ever reaching JS. A malicious npm dep scanning memory or `process.env` gets nothing. Setup is a one-time CLI prompt.
 - **No local toolchain.** The CLI bundles npm resolution, TypeScript typechecking, and esbuild. No Node install, no `node_modules`, no build config — `particle build` reads `Particlefile.ts`, resolves every `npm:` import declared in source, and produces a single self-contained artifact.
 - **Easy for an LLM to write.** A `particle` is one file with one default export and a small set of fields (`name`, `capabilities`, `tools`). An agent that hits "I need a tool to do X" mid-task can write a `Particlefile.ts`, run `particle build`, and have that tool available through its own MCP or CLI surface for the rest of the session — and every session after. The sandbox means a hastily-written particle can't reach beyond what its manifest declared, even if the model misjudged what it was writing.
-- **Easy to share.** `particle build --pack` produces a self-contained `.particle` tarball; the receiver installs it with `particle import <file-or-url>`. Before anything runs, they see exactly which capabilities the particle requests — hosts, credentials — and either accept or decline. The sandbox enforces those capabilities at runtime, so installing someone else's particle doesn't require trusting their code — just trusting that the manifest accurately describes the worst case.
+- **Easy to share.** `particle build --pack` produces a self-contained `.particle` archive; the receiver installs it with `particle import <file-or-url>`. Before anything runs, they see exactly which capabilities the particle requests — hosts, credentials — and either accept or decline. The sandbox enforces those capabilities at runtime, so installing someone else's particle doesn't require trusting their code — just trusting that the manifest accurately describes the worst case.
 
 ## A particle, top to bottom
 
@@ -103,8 +103,8 @@ A typical MCP-client config (Claude Desktop, Cursor, etc.) wires the particle in
 
 | Command | What it does |
 |---|---|
-| `particle build [--pack]` | Build the particle in CWD. Default: register it. `--pack` writes a `<name>-<version>.particle` tarball instead. |
-| `particle import <file-or-url>` | Read a tarball produced by `--pack`, run it through the same setup flow, and register it. |
+| `particle build [--pack]` | Build the particle in CWD. Default: register it. `--pack` writes a `<name>-<version>.particle` archive instead. |
+| `particle import <file-or-url>` | Read an archive produced by `--pack`, run it through the same setup flow, and register it. |
 | `particle list` / `ls` | List every registered particle and its configured auth method. |
 | `particle delete <name>[@version]` / `rm` | Remove a registered particle. Without `@version`: every version. |
 | `particle reconfigure <name>` | Re-prompt for credentials. Lets you switch auth methods. |

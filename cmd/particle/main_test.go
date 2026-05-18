@@ -1,7 +1,7 @@
 package main_test
 
 import (
-	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"errors"
 	"io"
@@ -15,8 +15,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/klauspost/compress/zstd"
 )
 
 // buildCLI compiles cmd/particle into the test's temp dir and returns
@@ -94,7 +92,7 @@ func TestParticleBuild_RegistersByDefault(t *testing.T) {
 	if got, want := stdout, "registered yaml-tools@0.1.0\n"; got != want {
 		t.Errorf("stdout = %q, want %q", got, want)
 	}
-	// No tarball produced on register.
+	// No archive produced on register.
 	if matches, _ := filepath.Glob(filepath.Join(dir, "*.particle")); len(matches) != 0 {
 		t.Errorf("register path should not produce .particle file: %v", matches)
 	}
@@ -104,9 +102,9 @@ func TestParticleBuild_RegistersByDefault(t *testing.T) {
 	}
 }
 
-// `--pack` recovers the pre-registry behavior: write a deterministic
-// tarball to CWD, no DB touched.
-func TestParticleBuild_Pack_WritesTarball(t *testing.T) {
+// `--pack` writes a deterministic zip archive to CWD, no DB
+// touched.
+func TestParticleBuild_Pack_WritesArchive(t *testing.T) {
 	bin := buildCLI(t)
 	dir := t.TempDir()
 	writeSource(t, dir, sourceNoCredentials)
@@ -126,10 +124,10 @@ func TestParticleBuild_Pack_WritesTarball(t *testing.T) {
 		t.Fatalf("read output: %v", err)
 	}
 
-	got := tarEntries(t, data)
+	got := zipEntries(t, data)
 	want4 := []string{"build-info.json", "bundle.js", "bundle.js.map", "manifest.json"}
 	if !equal(got, want4) {
-		t.Errorf("tarball entries = %v, want %v", got, want4)
+		t.Errorf("archive entries = %v, want %v", got, want4)
 	}
 }
 
@@ -154,7 +152,7 @@ export default { name: "x", description: "x", version: "0.1.0", capabilities: {}
 	if !strings.Contains(stderr, "lodash") {
 		t.Errorf("stderr should mention the offending specifier: %s", stderr)
 	}
-	// No tarball produced on failure.
+	// No archive produced on failure.
 	if matches, _ := filepath.Glob(filepath.Join(dir, "*.particle")); len(matches) != 0 {
 		t.Errorf("unexpected .particle file produced on failure: %v", matches)
 	}
@@ -313,27 +311,23 @@ func TestParticleBuild_StateDB_TightensExistingLoosePerms(t *testing.T) {
 
 // -----------------------------------------------------------------------------
 
-func tarEntries(t *testing.T, data []byte) []string {
+func zipEntries(t *testing.T, data []byte) []string {
 	t.Helper()
-	zr, err := zstd.NewReader(bytes.NewReader(data))
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		t.Fatalf("zstd open: %v", err)
+		t.Fatalf("zip open: %v", err)
 	}
-	defer zr.Close()
-	tr := tar.NewReader(zr)
 	var names []string
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
+	for _, entry := range zr.File {
+		names = append(names, entry.Name)
+		rc, err := entry.Open()
 		if err != nil {
-			t.Fatalf("tar read: %v", err)
+			t.Fatalf("open %s: %v", entry.Name, err)
 		}
-		names = append(names, hdr.Name)
-		if _, err := io.Copy(io.Discard, tr); err != nil {
-			t.Fatalf("tar copy: %v", err)
+		if _, err := io.Copy(io.Discard, rc); err != nil {
+			t.Fatalf("read %s: %v", entry.Name, err)
 		}
+		rc.Close()
 	}
 	return names
 }

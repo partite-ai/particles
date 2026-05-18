@@ -5,7 +5,6 @@ go 1.26.2
 require (
 	github.com/evanw/esbuild v0.28.0
 	github.com/google/jsonschema-go v0.4.3
-	github.com/klauspost/compress v1.18.6
 	github.com/modelcontextprotocol/go-sdk v1.6.0
 	github.com/partite-ai/wacogo v0.0.0-20260515171256-ebfac486afcb
 	github.com/spf13/cobra v1.10.2

@@ -4,7 +4,7 @@
 //	particle build [--pack]
 //	    Build a particle from the current directory and either
 //	    register it in the local state DB (default) or write a
-//	    .particle tarball to CWD (--pack).
+//	    .particle archive to CWD (--pack).
 //
 //	particle ping <name>[@version]
 //	    Call a registered particle's ping handler. Exits 0 with

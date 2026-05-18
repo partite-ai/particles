@@ -106,7 +106,7 @@ func (e *HealthError) Error() string {
 }
 
 // Particle is one running instance of a particle, scoped to a
-// single tarball / build output. Hosts construct it via
+// single archive / build output. Hosts construct it via
 // [Runtime.NewParticle], call ListTools / CallTool / Ping against
 // it, and Close when done.
 //
@@ -139,7 +139,7 @@ type Particle struct {
 }
 
 // NewParticle loads a particle's artifact (the fs.FS produced by
-// [build.Build] — typically a tarball unpacked into memory or
+// [build.Build] — typically an archive unpacked into memory or
 // os.DirFS over a directory) and brings up an instance.
 //
 // credStore and kvStore are the per-particle Store views the

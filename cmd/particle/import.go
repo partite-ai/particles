@@ -1,7 +1,7 @@
 package main
 
 import (
-	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"context"
 	"database/sql"
@@ -14,10 +14,8 @@ import (
 	"os"
 	"path"
 	"strings"
-	"testing/fstest"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/spf13/cobra"
 
 	"github.com/partite-ai/particles/credentials"
@@ -34,8 +32,8 @@ func newImportCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "import <file-or-url>",
-		Short: "Import a .particle tarball into the local registry",
-		Long: `Reads a .particle tarball (the output of ` + "`particle build --pack`" + `),
+		Short: "Import a .particle archive into the local registry",
+		Long: `Reads a .particle archive (the output of ` + "`particle build --pack`" + `),
 expands it in memory, then runs the same import flow as ` + "`particle build`" + ` —
 confirming declared permissions, prompting for credentials when the
 manifest declares them, and writing to the registry on success.
@@ -121,15 +119,12 @@ func runImport(cmd *cobra.Command, src, dbPath string, permMode importer.Permiss
 }
 
 // loadParticle resolves src to an in-memory FS. It accepts either
-// a local file path or an http(s):// URL — URLs are streamed
-// through readTar, so the on-the-wire bytes are the same shape as
-// what `particle build --pack` writes locally (zstd-compressed
-// tar archive).
+// a local file path or an http(s):// URL.
 func loadParticle(ctx context.Context, src string) (fs.FS, error) {
 	if u, ok := parseHTTPURL(src); ok {
 		return loadParticleFromHTTP(ctx, u.String())
 	}
-	return readParticleTar(src)
+	return readParticleZipFile(src)
 }
 
 // parseHTTPURL returns the parsed URL if s looks like an http or
@@ -150,32 +145,35 @@ func parseHTTPURL(s string) (*url.URL, bool) {
 	return u, true
 }
 
-// readParticleTar opens the file at path, decompresses the zstd
-// stream, walks the tar archive inside, and returns an in-memory
-// FS keyed by file path. Mirrors the deterministic zstd-of-tar
-// layout `writeParticleTar` produces — but is tolerant of any
-// zstd-wrapped tarball with regular files.
-func readParticleTar(path string) (fs.FS, error) {
-	f, err := os.Open(path)
+// readParticleZipFile reads the zip archive at path into memory
+// and returns it as an fs.FS. Buffering the bytes (rather than
+// keeping a file handle open) means the caller doesn't have to
+// reason about archive lifetime.
+func readParticleZipFile(path string) (fs.FS, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	return readTar(f)
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, fmt.Errorf("zip reader: %w", err)
+	}
+	return readZip(zr)
 }
 
-// maxParticleDownloadBytes caps the size of a tarball fetched over
-// HTTP — a hostile or wrong URL shouldn't be able to fill memory.
-// 100 MiB is well above anything a sensible particle should reach.
-// Declared as a var so tests can shrink it.
+// maxParticleDownloadBytes caps the size of an archive fetched
+// over HTTP — a hostile or wrong URL shouldn't be able to fill
+// memory. 100 MiB is well above anything a sensible particle
+// should reach. Declared as a var so tests can shrink it.
 var maxParticleDownloadBytes int64 = 100 * 1024 * 1024
 
-// loadParticleFromHTTP fetches a tarball over HTTP(S) and parses
-// it through the same readTar that handles local files. The
+// loadParticleFromHTTP fetches an archive over HTTP(S) and parses
+// it through the same zip reader that handles local files. The
 // client has a hard timeout so a stalled remote can't hang the
 // CLI indefinitely; the body is wrapped in MaxBytesReader so an
 // oversized download fails with a typed error rather than
-// silently truncating.
+// silently truncating. The zip central directory lives at the end
+// of the file, so the entire body is buffered before parsing.
 func loadParticleFromHTTP(ctx context.Context, rawURL string) (fs.FS, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -191,15 +189,14 @@ func loadParticleFromHTTP(ctx context.Context, rawURL string) (fs.FS, error) {
 		return nil, fmt.Errorf("GET %s: HTTP %s", rawURL, resp.Status)
 	}
 	// HTML responses are almost certainly an error page, a
-	// captive-portal interstitial, or a misconfigured server —
-	// they are NEVER a particle tarball. Catch this up front so
-	// the user sees a useful diagnostic instead of a confusing
-	// "tar header: unexpected EOF" from readTar.
+	// captive-portal interstitial, or a misconfigured server.
+	// Catch this up front so the user sees a useful diagnostic
+	// instead of a confusing zip-decode failure.
 	if ct := resp.Header.Get("Content-Type"); isHTMLContentType(ct) {
-		return nil, fmt.Errorf("GET %s: server returned %s — not a particle tarball (wrong URL, captive portal, or auth wall?)", rawURL, ct)
+		return nil, fmt.Errorf("GET %s: server returned %s — not a particle archive (wrong URL, captive portal, or auth wall?)", rawURL, ct)
 	}
 	body := http.MaxBytesReader(nil, resp.Body, maxParticleDownloadBytes)
-	fsys, err := readTar(body)
+	buf, err := io.ReadAll(body)
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
@@ -207,7 +204,11 @@ func loadParticleFromHTTP(ctx context.Context, rawURL string) (fs.FS, error) {
 		}
 		return nil, err
 	}
-	return fsys, nil
+	zr, err := zip.NewReader(bytes.NewReader(buf), int64(len(buf)))
+	if err != nil {
+		return nil, fmt.Errorf("zip reader: %w", err)
+	}
+	return readZip(zr)
 }
 
 // isHTMLContentType reports whether ct names an HTML payload.
@@ -221,49 +222,32 @@ func isHTMLContentType(ct string) bool {
 	return ct == "text/html" || ct == "application/xhtml+xml"
 }
 
-func readTar(r io.Reader) (fs.FS, error) {
-	zr, err := zstd.NewReader(r)
-	if err != nil {
-		return nil, fmt.Errorf("zstd reader: %w", err)
-	}
-	defer zr.Close()
-	tr := tar.NewReader(zr)
-	out := fstest.MapFS{}
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("tar header: %w", err)
-		}
-		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
-			// Skip directories, symlinks, etc. — particle
-			// tarballs only carry regular files; anything
-			// else is suspect.
+// readZip validates every entry name in the archive and returns
+// it as an fs.FS. *zip.Reader already satisfies fs.FS and
+// fs.ReadDirFS so no copy into a secondary FS is needed; the
+// up-front name check ensures any hostile path fails before a
+// downstream reader can act on it.
+func readZip(zr *zip.Reader) (fs.FS, error) {
+	for _, entry := range zr.File {
+		if entry.FileInfo().IsDir() {
 			continue
 		}
-		if err := validateTarName(hdr.Name); err != nil {
-			return nil, fmt.Errorf("tar entry %q: %w", hdr.Name, err)
+		if err := validateEntryName(entry.Name); err != nil {
+			return nil, fmt.Errorf("zip entry %q: %w", entry.Name, err)
 		}
-		var buf bytes.Buffer
-		if _, err := io.Copy(&buf, tr); err != nil {
-			return nil, fmt.Errorf("tar body for %s: %w", hdr.Name, err)
-		}
-		out[hdr.Name] = &fstest.MapFile{Data: buf.Bytes()}
 	}
-	return out, nil
+	return zr, nil
 }
 
-// validateTarName rejects entry names that don't normalize to a
-// clean, relative, in-tree path. Particle tarballs only carry
-// regular files at well-known paths; an absolute name (`/etc/...`)
-// or a traversal segment (`../`) is either a packing bug or a
+// validateEntryName rejects entry names that don't normalize to a
+// clean, relative, in-tree path. Particle archives only carry
+// regular files at well-known paths; an absolute name (/etc/...)
+// or a traversal segment (../) is either a packing bug or a
 // hostile probe. Today's downstream consumers read by exact path
 // so a malicious name wouldn't escape, but rejecting at the
 // parser keeps any future "extract to disk" code path safe by
 // default.
-func validateTarName(name string) error {
+func validateEntryName(name string) error {
 	if name == "" {
 		return errors.New("empty name")
 	}
