@@ -88,16 +88,23 @@ func runImport(cmd *cobra.Command, src, dbPath string, permMode importer.Permiss
 	// non-TTY, the StdioPrompter's Read surfaces an EOF error.
 	var prompter importer.Prompter = importer.NewStdioPrompter()
 
+	// Scope the credential backend to this particle's name —
+	// pulled off the manifest the loader produced.
+	name, _, err := manifestNameVersion(particleFS)
+	if err != nil {
+		return err
+	}
 	var credStore credentials.Store
 	if len(declared) > 0 {
-		sealer, err := credsqlite.NewKeyringSealer(keyringService, keyringName)
-		if err != nil {
-			return fmt.Errorf("keyring: %w", err)
+		sealer, sErr := credsqlite.NewKeyringSealer(keyringService, keyringName)
+		if sErr != nil {
+			return fmt.Errorf("keyring: %w", sErr)
 		}
-		credStore, err = credsqlite.New(ctx, db, sealer)
-		if err != nil {
-			return fmt.Errorf("credentials store: %w", err)
+		backend, bErr := credsqlite.New(ctx, db, sealer)
+		if bErr != nil {
+			return fmt.Errorf("credentials store: %w", bErr)
 		}
+		credStore = backend.Scoped(name)
 	}
 
 	entry, err := importer.Import(ctx, particleFS, importer.Options{

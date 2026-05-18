@@ -18,6 +18,7 @@ import (
 	"github.com/partite-ai/wacogo/wasi/filesystem/preopens"
 
 	"github.com/partite-ai/particles/credentials"
+	"github.com/partite-ai/particles/kv"
 )
 
 // Canonical WIT export names the runtime publishes — see
@@ -118,6 +119,12 @@ type Particle struct {
 	inst     *wc.ComponentInstance
 	wasi     *wasi.World
 
+	// hostInsts owns every per-particle WIT-host instance the
+	// runtime stood up — logging, credentials, oauth, signing,
+	// kv. Close walks them in build order's reverse so each
+	// layer's resources release cleanly.
+	hostInsts []*host.ComponentInstance
+
 	// Captured wasi:cli/stderr — surfaced when a wasm trap
 	// hides the actual diagnostic. Reset by readStderr.
 	stderr *bytes.Buffer
@@ -133,7 +140,13 @@ type Particle struct {
 
 // NewParticle loads a particle's artifact (the fs.FS produced by
 // [build.Build] — typically a tarball unpacked into memory or
-// `os.DirFS` over a directory) and brings up an instance.
+// os.DirFS over a directory) and brings up an instance.
+//
+// credStore and kvStore are the per-particle Store views the
+// host capabilities read and write through; obtain them from a
+// backend's Scoped helper (e.g. credsqlite.Backend.Scoped). Both
+// are required — every particle imports the credentials and kv
+// host shims unconditionally.
 //
 // Failure modes:
 //
@@ -143,16 +156,18 @@ type Particle struct {
 //     configured with (the runtime requires every declared
 //     capability to be backed by a real Manager, never a stub)
 //   - wasm instantiation failure
-func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, opts ...ParticleOption) (*Particle, error) {
+func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, credStore credentials.Store, kvStore kv.Store, opts ...ParticleOption) (*Particle, error) {
 	if particleFS == nil {
 		return nil, errors.New("runtime: NewParticle: particleFS is required")
 	}
-
-	cfg := particleConfig{}
-	for _, opt := range opts {
-		opt(&cfg)
+	if credStore == nil {
+		return nil, errors.New("runtime: NewParticle: credStore is required")
 	}
-	_ = cfg
+	if kvStore == nil {
+		return nil, errors.New("runtime: NewParticle: kvStore is required")
+	}
+
+	cfg := applyParticleOptions(opts)
 
 	manifest, err := LoadManifest(particleFS)
 	if err != nil {
@@ -192,19 +207,18 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, opts ...Par
 		//
 		// Substitution is spec-driven: we walk the manifest's
 		// declared credential names, look each up in the
-		// Store, and check the apply-spec's expected location
-		// in the request. The manifest is the source of
-		// truth — a placeholder for an undeclared credential
-		// never causes a Store read.
+		// per-particle Store, and check the apply-spec's
+		// expected location in the request. The manifest is
+		// the source of truth — a placeholder for an
+		// undeclared credential never causes a Store read.
 		HttpClient: newHTTPPolicy(
 			allowedHosts,
-			r.cfg.HTTPClient,
-			r.cfg.Credentials.Store(),
-			manifest.Name,
+			cfg.httpClient,
+			credStore,
 			manifest.declaredCredentialNames(),
 			credentialHostBindings(manifest),
 			func(ctx context.Context, id string) (credentials.AccessToken, error) {
-				return r.cfg.Credentials.RotateAccessToken(ctx, manifest.Name, id)
+				return r.cfg.Credentials.RotateAccessToken(ctx, credStore, id)
 			},
 		),
 	})
@@ -212,44 +226,60 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, opts ...Par
 		return nil, fmt.Errorf("runtime: build wasi world: %w", err)
 	}
 
-	cleanup := func() { _ = w.Close(ctx) }
+	// Track every per-particle host instance so Close can
+	// release them. The slice doubles as the cleanup-on-error
+	// path: failures partway through wire-up close everything
+	// that was built so far.
+	var hostInsts []*host.ComponentInstance
+	closeAll := func() {
+		for i := len(hostInsts) - 1; i >= 0; i-- {
+			_ = hostInsts[i].Close(ctx)
+		}
+		_ = w.Close(ctx)
+	}
 
-	// Wire the four host capabilities the runtime imports. We
-	// build instances for ALL four regardless of what the
-	// manifest declares — the imports must be satisfied at
-	// instantiation, period. The user-supplied managers are
-	// the source of truth at runtime; the manifest filters
-	// what's reachable from JS via build-time import checks.
-	credInst, err := r.cfg.Credentials.NewCredentialsInstance(ctx, manifest.Name)
+	loggingInst, err := newLoggingHost(ctx, r.cfg.Engine, cfg.log)
 	if err != nil {
-		cleanup()
+		closeAll()
+		return nil, fmt.Errorf("runtime: build wasi:logging host: %w", err)
+	}
+	hostInsts = append(hostInsts, loggingInst)
+
+	// Wire the four particle:host capabilities. Every import
+	// must be satisfied at instantiation (the runtime.wasm
+	// imports them unconditionally); when the caller opted out
+	// of a Store, we build the host against a do-nothing scope.
+	credInst, err := r.cfg.Credentials.NewCredentialsInstance(ctx, credStore)
+	if err != nil {
+		closeAll()
 		return nil, fmt.Errorf("runtime: build credentials host instance: %w", err)
 	}
-	oauthInst, err := r.cfg.Credentials.NewOAuthInstance(ctx, manifest.Name)
+	hostInsts = append(hostInsts, credInst)
+
+	oauthInst, err := r.cfg.Credentials.NewOAuthInstance(ctx, credStore)
 	if err != nil {
-		_ = credInst.Close(ctx)
-		cleanup()
+		closeAll()
 		return nil, fmt.Errorf("runtime: build oauth host instance: %w", err)
 	}
-	signingInst, err := r.cfg.Credentials.NewSigningInstance(ctx, manifest.Name)
+	hostInsts = append(hostInsts, oauthInst)
+
+	signingInst, err := r.cfg.Credentials.NewSigningInstance(ctx, credStore)
 	if err != nil {
-		_ = credInst.Close(ctx)
-		_ = oauthInst.Close(ctx)
-		cleanup()
+		closeAll()
 		return nil, fmt.Errorf("runtime: build signing host instance: %w", err)
 	}
-	kvInst, err := r.cfg.KV.NewInstance(ctx, manifest.Name)
+	hostInsts = append(hostInsts, signingInst)
+
+	kvInst, err := r.cfg.KV.NewInstance(ctx, kvStore)
 	if err != nil {
-		_ = credInst.Close(ctx)
-		_ = oauthInst.Close(ctx)
-		_ = signingInst.Close(ctx)
-		cleanup()
+		closeAll()
 		return nil, fmt.Errorf("runtime: build kv host instance: %w", err)
 	}
+	hostInsts = append(hostInsts, kvInst)
 
 	imports := append(
 		w.Imports(),
-		wc.WithInstanceImport(loggingInterfaceName, r.logging.inst.(*host.ComponentInstance).Core()),
+		wc.WithInstanceImport(loggingInterfaceName, loggingInst.Core()),
 		wc.WithInstanceImport("particle:host/credentials@0.1.0", credInst.Core()),
 		wc.WithInstanceImport("particle:host/oauth@0.1.0", oauthInst.Core()),
 		wc.WithInstanceImport("particle:host/signing@0.1.0", signingInst.Core()),
@@ -258,11 +288,7 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, opts ...Par
 
 	inst, err := r.comp.Instantiate(ctx, imports...)
 	if err != nil {
-		_ = credInst.Close(ctx)
-		_ = oauthInst.Close(ctx)
-		_ = signingInst.Close(ctx)
-		_ = kvInst.Close(ctx)
-		cleanup()
+		closeAll()
 		return nil, fmt.Errorf("runtime: instantiate: %w\nstderr:\n%s", err, stderrSinkBytes(stderr))
 	}
 
@@ -275,18 +301,20 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, opts ...Par
 	// is unsafe.
 
 	return &Particle{
-		manifest: manifest,
-		inst:     inst,
-		wasi:     w,
-		stderr:   stderr,
+		manifest:  manifest,
+		inst:      inst,
+		wasi:      w,
+		hostInsts: hostInsts,
+		stderr:    stderr,
 	}, nil
 }
 
 // Manifest returns the particle's parsed manifest (read-only).
 func (p *Particle) Manifest() Manifest { return p.manifest }
 
-// Close releases the per-particle wasm instance and wasi world.
-// Safe to call once.
+// Close releases the per-particle wasm instance, the per-particle
+// host instances (logging, credentials, oauth, signing, kv), and
+// the wasi world. Safe to call once.
 func (p *Particle) Close(ctx context.Context) error {
 	var first error
 	if p.inst != nil {
@@ -295,6 +323,14 @@ func (p *Particle) Close(ctx context.Context) error {
 		}
 		p.inst = nil
 	}
+	// Host instances close in reverse build order so each
+	// layer's resources release cleanly.
+	for i := len(p.hostInsts) - 1; i >= 0; i-- {
+		if err := p.hostInsts[i].Close(ctx); err != nil && first == nil {
+			first = err
+		}
+	}
+	p.hostInsts = nil
 	if p.wasi != nil {
 		if err := p.wasi.Close(ctx); err != nil && first == nil {
 			first = err

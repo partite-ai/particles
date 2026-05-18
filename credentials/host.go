@@ -21,21 +21,20 @@ import (
 const PlaceholderPrefix = "__particle_cred_"
 
 // -----------------------------------------------------------------------------
-// adapter: implements gen.Credentials on top of Store + particle.
-// One adapter per particle instance. Stateless beyond the (store,
-// particle) pair — placeholders are deterministic, so no
-// per-instance bookkeeping is needed.
+// adapter: implements gen.Credentials on top of a particle-scoped
+// Store. One adapter per particle instance — the store is already
+// pre-bound to a particle, so the adapter is purely the WIT/Go
+// translation layer.
 // -----------------------------------------------------------------------------
 
 type adapter struct {
-	store    Store
-	particle string
+	store Store
 }
 
 var _ gen.Credentials = (*adapter)(nil)
 
-func newAdapter(store Store, particle string) *adapter {
-	return &adapter{store: store, particle: particle}
+func newAdapter(store Store) *adapter {
+	return &adapter{store: store}
 }
 
 // IDFromPlaceholder reverses the placeholder format applied here:
@@ -58,7 +57,7 @@ func placeholderFor(id string) string { return PlaceholderPrefix + id }
 func (a *adapter) GetPlaceholder(ctx context.Context, name string) (gen.ResultPlaceholderInfoCredentialError, error) {
 	defer hostmeter.EnterHost(ctx)()
 
-	desc, err := a.store.GetByName(ctx, a.particle, name)
+	desc, err := a.store.GetByName(ctx, name)
 	if err != nil {
 		return gen.ResultPlaceholderInfoCredentialErrorErr{Value: errToCredentialError(err)}, nil
 	}
@@ -86,7 +85,7 @@ func (a *adapter) GetPlaceholder(ctx context.Context, name string) (gen.ResultPl
 func (a *adapter) GetConfiguredMethod(ctx context.Context, name string) (gen.ResultOptionStringCredentialError, error) {
 	defer hostmeter.EnterHost(ctx)()
 
-	method, err := a.store.ConfiguredMethod(ctx, a.particle, name)
+	method, err := a.store.ConfiguredMethod(ctx, name)
 	if err != nil {
 		return gen.ResultOptionStringCredentialErrorErr{Value: errToCredentialError(err)}, nil
 	}
@@ -102,7 +101,7 @@ func (a *adapter) GetConfiguredMethod(ctx context.Context, name string) (gen.Res
 func (a *adapter) GetRaw(ctx context.Context, name string) (gen.ResultStringCredentialError, error) {
 	defer hostmeter.EnterHost(ctx)()
 
-	desc, err := a.store.GetByName(ctx, a.particle, name)
+	desc, err := a.store.GetByName(ctx, name)
 	if err != nil {
 		return gen.ResultStringCredentialErrorErr{Value: errToCredentialError(err)}, nil
 	}
@@ -113,7 +112,7 @@ func (a *adapter) GetRaw(ctx context.Context, name string) (gen.ResultStringCred
 			},
 		}, nil
 	}
-	value, err := a.store.ReadSecret(ctx, a.particle, desc.ID, SecretRoleValue)
+	value, err := a.store.ReadSecret(ctx, desc.ID, SecretRoleValue)
 	if err != nil {
 		// Both ErrNotFound and ErrSecretNotSet surface as
 		// not-configured here — the entry exists but no

@@ -1,5 +1,5 @@
-// Package memory is an in-process, map-backed [kv.Store]
-// implementation. Useful for tests and for any host that doesn't
+// Package memory is an in-process, map-backed multi-particle
+// kv backend. Useful for tests and for any host that doesn't
 // need persistence.
 //
 // All state lives in memory — restarting the host loses every
@@ -15,13 +15,15 @@ import (
 	"github.com/partite-ai/particles/kv"
 )
 
-// Store is an in-process kv.Store with optional per-particle
-// quota.
+// Backend is the in-process multi-particle kv backing store.
+// Per-particle [kv.Store] views are produced via
+// [*Backend.Scoped]; the Backend itself isn't a Store (every
+// method on Store is particle-scoped).
 //
 // Safe for concurrent use. Operations are O(1) for Get/Set/Delete
 // and O(n) for List where n is the number of entries in the
 // requested particle's namespace.
-type Store struct {
+type Backend struct {
 	mu sync.RWMutex
 	// entries[particle][key] = value. Two-level map so
 	// per-particle iteration / quota counting is cheap.
@@ -34,17 +36,43 @@ type Store struct {
 	QuotaBytes int
 }
 
-// New returns an empty Store with no quota.
-func New() *Store {
-	return &Store{entries: map[string]map[string]string{}}
+// New returns an empty Backend with no quota.
+func New() *Backend {
+	return &Backend{entries: map[string]map[string]string{}}
 }
 
-var _ kv.Store = (*Store)(nil)
+// Scoped returns a [kv.Store] view pre-bound to `particle`.
+// Mirrors `sqlite.(*Backend).Scoped`.
+func (b *Backend) Scoped(particle string) kv.Store {
+	return &scopedStore{backend: b, particle: particle}
+}
 
-func (s *Store) Get(_ context.Context, particle, key string) (string, bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	bucket, ok := s.entries[particle]
+// scopedStore is the per-particle wrapper. Methods just thread
+// `particle` into the matching Backend method.
+type scopedStore struct {
+	backend  *Backend
+	particle string
+}
+
+var _ kv.Store = (*scopedStore)(nil)
+
+func (s *scopedStore) Get(ctx context.Context, key string) (string, bool, error) {
+	return s.backend.Get(ctx, s.particle, key)
+}
+func (s *scopedStore) Set(ctx context.Context, key, value string) error {
+	return s.backend.Set(ctx, s.particle, key, value)
+}
+func (s *scopedStore) Delete(ctx context.Context, key string) error {
+	return s.backend.Delete(ctx, s.particle, key)
+}
+func (s *scopedStore) List(ctx context.Context, prefix string) ([]string, error) {
+	return s.backend.List(ctx, s.particle, prefix)
+}
+
+func (b *Backend) Get(_ context.Context, particle, key string) (string, bool, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	bucket, ok := b.entries[particle]
 	if !ok {
 		return "", false, nil
 	}
@@ -52,23 +80,23 @@ func (s *Store) Get(_ context.Context, particle, key string) (string, bool, erro
 	return v, ok, nil
 }
 
-func (s *Store) Set(_ context.Context, particle, key, value string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	bucket, ok := s.entries[particle]
+func (b *Backend) Set(_ context.Context, particle, key, value string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	bucket, ok := b.entries[particle]
 	if !ok {
 		bucket = map[string]string{}
-		s.entries[particle] = bucket
+		b.entries[particle] = bucket
 	}
-	if s.QuotaBytes > 0 {
+	if b.QuotaBytes > 0 {
 		// Compute the prospective total: existing usage minus
 		// the prior value at `key` plus the new write.
 		prev := 0
 		if existing, ok := bucket[key]; ok {
 			prev = len(key) + len(existing)
 		}
-		total := s.usageLocked(bucket) - prev + len(key) + len(value)
-		if total > s.QuotaBytes {
+		total := b.usageLocked(bucket) - prev + len(key) + len(value)
+		if total > b.QuotaBytes {
 			return kv.ErrQuotaExceeded
 		}
 	}
@@ -76,24 +104,24 @@ func (s *Store) Set(_ context.Context, particle, key, value string) error {
 	return nil
 }
 
-func (s *Store) Delete(_ context.Context, particle, key string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	bucket, ok := s.entries[particle]
+func (b *Backend) Delete(_ context.Context, particle, key string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	bucket, ok := b.entries[particle]
 	if !ok {
 		return nil
 	}
 	delete(bucket, key)
 	if len(bucket) == 0 {
-		delete(s.entries, particle)
+		delete(b.entries, particle)
 	}
 	return nil
 }
 
-func (s *Store) List(_ context.Context, particle, prefix string) ([]string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	bucket, ok := s.entries[particle]
+func (b *Backend) List(_ context.Context, particle, prefix string) ([]string, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	bucket, ok := b.entries[particle]
 	if !ok {
 		return nil, nil
 	}
@@ -109,7 +137,7 @@ func (s *Store) List(_ context.Context, particle, prefix string) ([]string, erro
 
 // usageLocked returns the current total bytes used by `bucket`.
 // Caller must hold the lock.
-func (s *Store) usageLocked(bucket map[string]string) int {
+func (b *Backend) usageLocked(bucket map[string]string) int {
 	total := 0
 	for k, v := range bucket {
 		total += len(k) + len(v)

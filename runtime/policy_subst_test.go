@@ -36,16 +36,18 @@ func (d *recordingDoer) Do(req *http.Request) (*http.Response, error) {
 
 // newPolicyWithStore builds an httpPolicy that allows a single
 // host (so substitution can be exercised without tripping the
-// allow-list), backed by a memory.Store. The variadic `declared`
+// allow-list), backed by a memory.Backend. The variadic declared
 // argument names the credentials the policy should treat as
 // manifest-declared — substitution only ever attempts those.
 //
-// Returns the policy + store + recording doer.
-func newPolicyWithStore(t *testing.T, particle string, declared ...string) (*httpPolicy, *memory.Store, *recordingDoer) {
+// It returns the policy, the underlying backend, and a recording
+// doer. Tests use the backend directly via its multi-particle
+// methods; the policy is given a particle-scoped view.
+func newPolicyWithStore(t *testing.T, particle string, declared ...string) (*httpPolicy, *memory.Backend, *recordingDoer) {
 	t.Helper()
 	store := memory.New()
 	rec := &recordingDoer{}
-	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store, particle, declared, nil, nil)
+	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store.Scoped(particle), declared, nil, nil)
 	return pol, store, rec
 }
 
@@ -191,7 +193,7 @@ func TestSubstitute_OAuth2_ExpiredToken_ProactivelyRefreshed(t *testing.T) {
 			ExpiresAt: time.Now().Add(1 * time.Hour),
 		}, nil
 	}
-	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store, "p", []string{"gh"}, nil, refresh)
+	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store.Scoped("p"), []string{"gh"}, nil, refresh)
 
 	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
 		"Authorization": {"Bearer " + placeholder},
@@ -227,7 +229,7 @@ func TestSubstitute_OAuth2_FreshToken_NoRefresh(t *testing.T) {
 		t.Fatal("refresh must not be called for a token outside the skew window")
 		return credentials.AccessToken{}, nil
 	}
-	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store, "p", []string{"gh"}, nil, refresh)
+	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store.Scoped("p"), []string{"gh"}, nil, refresh)
 
 	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
 		"Authorization": {"Bearer " + placeholder},
@@ -263,7 +265,7 @@ func TestSubstitute_OAuth2_RefreshFailure_FallsBackToStale(t *testing.T) {
 	refresh := func(context.Context, string) (credentials.AccessToken, error) {
 		return credentials.AccessToken{}, errors.New("provider unreachable")
 	}
-	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store, "p", []string{"gh"}, nil, refresh)
+	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store.Scoped("p"), []string{"gh"}, nil, refresh)
 
 	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
 		"Authorization": {"Bearer " + placeholder},
@@ -294,7 +296,7 @@ func TestSubstitute_OAuth2_ZeroExpiresAt_NoRefresh(t *testing.T) {
 		t.Fatal("refresh must not fire when ExpiresAt is zero")
 		return credentials.AccessToken{}, nil
 	}
-	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store, "p", []string{"gh"}, nil, refresh)
+	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store.Scoped("p"), []string{"gh"}, nil, refresh)
 
 	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
 		"Authorization": {"Bearer " + placeholder},
@@ -546,7 +548,7 @@ func TestSubstitute_SecretMissing_ReturnsError(t *testing.T) {
 func TestSubstitute_DeniedHost_ShortCircuitsBeforeSubstitution(t *testing.T) {
 	store := memory.New()
 	rec := &recordingDoer{}
-	pol := newHTTPPolicy([]string{"only.allowed.test"}, rec, store, "p", []string{"k"}, nil, nil)
+	pol := newHTTPPolicy([]string{"only.allowed.test"}, rec, store.Scoped("p"), []string{"k"}, nil, nil)
 
 	desc, _ := store.Put(context.Background(), "p", "k", "k",
 		credentials.APIKeyMeta{Location: credentials.ApplySpec{

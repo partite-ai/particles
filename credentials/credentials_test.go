@@ -11,13 +11,14 @@ import (
 	gen "github.com/partite-ai/particles/internal/host/gen/particle/host/credentials"
 )
 
-// fakeStore is a minimal in-test Store used to drive the adapter.
-// It models the (metadata, secrets) split the real interface exposes.
+// fakeStore is a minimal in-test [Store] used to drive the
+// adapter. It models the (metadata, secrets) split the real
+// interface exposes.
 type fakeStore struct {
-	byName map[[2]string]*fakeRecord
-	byID   map[[2]string]*fakeRecord
+	byName map[string]*fakeRecord
+	byID   map[string]*fakeRecord
 
-	// optional override returned from any Get/ReadSecret/WriteSecret
+	// optional override returned from any Get/ReadSecret/Write
 	// call, regardless of arguments.
 	getErr error
 }
@@ -30,48 +31,48 @@ type fakeRecord struct {
 	secrets map[SecretRole][]byte
 }
 
-func (s *fakeStore) GetByID(_ context.Context, particle, id string) (Descriptor, error) {
+var _ Store = (*fakeStore)(nil)
+
+func (s *fakeStore) GetByID(_ context.Context, id string) (Descriptor, error) {
 	if s.getErr != nil {
 		return Descriptor{}, s.getErr
 	}
-	rec, ok := s.byID[[2]string{particle, id}]
+	rec, ok := s.byID[id]
 	if !ok {
 		return Descriptor{}, ErrNotFound
 	}
 	return Descriptor{ID: rec.id, Name: rec.name, Method: rec.method, Meta: rec.meta}, nil
 }
 
-func (s *fakeStore) GetByName(_ context.Context, particle, name string) (Descriptor, error) {
+func (s *fakeStore) GetByName(_ context.Context, name string) (Descriptor, error) {
 	if s.getErr != nil {
 		return Descriptor{}, s.getErr
 	}
-	rec, ok := s.byName[[2]string{particle, name}]
+	rec, ok := s.byName[name]
 	if !ok {
 		return Descriptor{}, ErrNotFound
 	}
 	return Descriptor{ID: rec.id, Name: rec.name, Method: rec.method, Meta: rec.meta}, nil
 }
 
-func (s *fakeStore) List(_ context.Context, particle string) ([]ListEntry, error) {
+func (s *fakeStore) List(_ context.Context) ([]ListEntry, error) {
 	var out []ListEntry
-	for k, rec := range s.byName {
-		if k[0] == particle {
-			out = append(out, ListEntry{ID: rec.id, Name: rec.name, Method: rec.method, Kind: rec.meta.Kind()})
-		}
+	for _, rec := range s.byName {
+		out = append(out, ListEntry{ID: rec.id, Name: rec.name, Method: rec.method, Kind: rec.meta.Kind()})
 	}
 	return out, nil
 }
 
-func (s *fakeStore) Put(_ context.Context, particle, name, method string, meta Metadata, secrets ...Secret) (Descriptor, error) {
+func (s *fakeStore) Put(_ context.Context, name, method string, meta Metadata, secrets ...Secret) (Descriptor, error) {
 	if s.byName == nil {
-		s.byName = map[[2]string]*fakeRecord{}
-		s.byID = map[[2]string]*fakeRecord{}
+		s.byName = map[string]*fakeRecord{}
+		s.byID = map[string]*fakeRecord{}
 	}
-	rec, ok := s.byName[[2]string{particle, name}]
+	rec, ok := s.byName[name]
 	if !ok {
 		rec = &fakeRecord{id: "id-" + name, name: name, method: method, meta: meta, secrets: map[SecretRole][]byte{}}
-		s.byName[[2]string{particle, name}] = rec
-		s.byID[[2]string{particle, rec.id}] = rec
+		s.byName[name] = rec
+		s.byID[rec.id] = rec
 	} else {
 		if rec.method != method {
 			// Mirror the production "method switch wipes
@@ -88,29 +89,29 @@ func (s *fakeStore) Put(_ context.Context, particle, name, method string, meta M
 	return Descriptor{ID: rec.id, Name: rec.name, Method: rec.method, Meta: rec.meta}, nil
 }
 
-func (s *fakeStore) ConfiguredMethod(_ context.Context, particle, name string) (string, error) {
-	rec, ok := s.byName[[2]string{particle, name}]
+func (s *fakeStore) ConfiguredMethod(_ context.Context, name string) (string, error) {
+	rec, ok := s.byName[name]
 	if !ok {
 		return "", nil
 	}
 	return rec.method, nil
 }
 
-func (s *fakeStore) Delete(_ context.Context, particle, id string) error {
-	rec, ok := s.byID[[2]string{particle, id}]
+func (s *fakeStore) Delete(_ context.Context, id string) error {
+	rec, ok := s.byID[id]
 	if !ok {
 		return nil
 	}
-	delete(s.byID, [2]string{particle, id})
-	delete(s.byName, [2]string{particle, rec.name})
+	delete(s.byID, id)
+	delete(s.byName, rec.name)
 	return nil
 }
 
-func (s *fakeStore) ReadSecret(_ context.Context, particle, id string, role SecretRole) ([]byte, error) {
+func (s *fakeStore) ReadSecret(_ context.Context, id string, role SecretRole) ([]byte, error) {
 	if s.getErr != nil {
 		return nil, s.getErr
 	}
-	rec, ok := s.byID[[2]string{particle, id}]
+	rec, ok := s.byID[id]
 	if !ok {
 		return nil, ErrNotFound
 	}
@@ -121,8 +122,8 @@ func (s *fakeStore) ReadSecret(_ context.Context, particle, id string, role Secr
 	return append([]byte(nil), v...), nil
 }
 
-func (s *fakeStore) WriteSecrets(_ context.Context, particle, id string, secrets ...Secret) error {
-	rec, ok := s.byID[[2]string{particle, id}]
+func (s *fakeStore) WriteSecrets(_ context.Context, id string, secrets ...Secret) error {
+	rec, ok := s.byID[id]
 	if !ok {
 		return ErrNotFound
 	}
@@ -132,8 +133,8 @@ func (s *fakeStore) WriteSecrets(_ context.Context, particle, id string, secrets
 	return nil
 }
 
-func (s *fakeStore) DeleteSecret(_ context.Context, particle, id string, role SecretRole) error {
-	rec, ok := s.byID[[2]string{particle, id}]
+func (s *fakeStore) DeleteSecret(_ context.Context, id string, role SecretRole) error {
+	rec, ok := s.byID[id]
 	if !ok {
 		return nil
 	}
@@ -141,22 +142,21 @@ func (s *fakeStore) DeleteSecret(_ context.Context, particle, id string, role Se
 	return nil
 }
 
-// putWithSecrets is a tiny helper that pre-populates an entry with
-// its metadata and (optionally) some secret values for adapter
-// tests. The credential's `method` defaults to its `name` — every
-// caller used the old "name == method" convention, so the helper
-// preserves that.
-func (s *fakeStore) putWithSecrets(particle, id, name string, meta Metadata, secrets map[SecretRole][]byte) {
+// putWithSecrets pre-populates an entry with its metadata and
+// (optionally) some secret values for adapter tests. The
+// credential's method is set to its name; adapter tests don't
+// exercise the method dimension.
+func (s *fakeStore) putWithSecrets(id, name string, meta Metadata, secrets map[SecretRole][]byte) {
 	if s.byName == nil {
-		s.byName = map[[2]string]*fakeRecord{}
-		s.byID = map[[2]string]*fakeRecord{}
+		s.byName = map[string]*fakeRecord{}
+		s.byID = map[string]*fakeRecord{}
 	}
 	rec := &fakeRecord{id: id, name: name, method: name, meta: meta, secrets: map[SecretRole][]byte{}}
 	for k, v := range secrets {
 		rec.secrets[k] = append([]byte(nil), v...)
 	}
-	s.byName[[2]string{particle, name}] = rec
-	s.byID[[2]string{particle, id}] = rec
+	s.byName[name] = rec
+	s.byID[id] = rec
 }
 
 // -----------------------------------------------------------------------------
@@ -168,13 +168,13 @@ func TestManager_NewCredentialsInstance(t *testing.T) {
 	e := wacogo.NewEngine(ctx)
 	defer e.Close(ctx)
 
-	mgr, err := NewManager(ctx, ManagerConfig{Engine: e, Store: &fakeStore{}})
+	mgr, err := NewManager(ctx, ManagerConfig{Engine: e})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
 	defer mgr.Close(ctx)
 
-	inst, err := mgr.NewCredentialsInstance(ctx, "yaml-tools")
+	inst, err := mgr.NewCredentialsInstance(ctx, &fakeStore{})
 	if err != nil {
 		t.Fatalf("NewCredentialsInstance: %v", err)
 	}
@@ -189,13 +189,13 @@ func TestManager_NewOAuthInstance(t *testing.T) {
 	e := wacogo.NewEngine(ctx)
 	defer e.Close(ctx)
 
-	mgr, err := NewManager(ctx, ManagerConfig{Engine: e, Store: &fakeStore{}})
+	mgr, err := NewManager(ctx, ManagerConfig{Engine: e})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
 	defer mgr.Close(ctx)
 
-	inst, err := mgr.NewOAuthInstance(ctx, "yaml-tools")
+	inst, err := mgr.NewOAuthInstance(ctx, &fakeStore{})
 	if err != nil {
 		t.Fatalf("NewOAuthInstance: %v", err)
 	}
@@ -210,13 +210,13 @@ func TestManager_NewSigningInstance(t *testing.T) {
 	e := wacogo.NewEngine(ctx)
 	defer e.Close(ctx)
 
-	mgr, err := NewManager(ctx, ManagerConfig{Engine: e, Store: &fakeStore{}})
+	mgr, err := NewManager(ctx, ManagerConfig{Engine: e})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
 	defer mgr.Close(ctx)
 
-	inst, err := mgr.NewSigningInstance(ctx, "yaml-tools")
+	inst, err := mgr.NewSigningInstance(ctx, &fakeStore{})
 	if err != nil {
 		t.Fatalf("NewSigningInstance: %v", err)
 	}
@@ -226,27 +226,28 @@ func TestManager_NewSigningInstance(t *testing.T) {
 	}
 }
 
-// One Manager builds host instances for multiple capabilities for
-// the same particle in parallel — this is the wiring shape a real
-// runtime composition uses.
+// One Manager builds host instances for multiple capabilities
+// for the same particle in parallel — this is the wiring shape
+// a real runtime composition uses.
 func TestManager_BothCapabilitiesForOneParticle(t *testing.T) {
 	ctx := context.Background()
 	e := wacogo.NewEngine(ctx)
 	defer e.Close(ctx)
 
-	mgr, err := NewManager(ctx, ManagerConfig{Engine: e, Store: &fakeStore{}})
+	mgr, err := NewManager(ctx, ManagerConfig{Engine: e})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mgr.Close(ctx)
 
-	credInst, err := mgr.NewCredentialsInstance(ctx, "yaml-tools")
+	store := &fakeStore{}
+	credInst, err := mgr.NewCredentialsInstance(ctx, store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer credInst.Close(ctx)
 
-	oauthInst, err := mgr.NewOAuthInstance(ctx, "yaml-tools")
+	oauthInst, err := mgr.NewOAuthInstance(ctx, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,38 +258,31 @@ func TestManager_BothCapabilitiesForOneParticle(t *testing.T) {
 	}
 }
 
-func TestNewManager_RejectsMissingFields(t *testing.T) {
-	ctx := context.Background()
-	e := wacogo.NewEngine(ctx)
-	defer e.Close(ctx)
-
-	if _, err := NewManager(ctx, ManagerConfig{Store: &fakeStore{}}); err == nil {
+func TestNewManager_RejectsMissingEngine(t *testing.T) {
+	if _, err := NewManager(context.Background(), ManagerConfig{}); err == nil {
 		t.Error("expected error when Engine is nil")
-	}
-	if _, err := NewManager(ctx, ManagerConfig{Engine: e}); err == nil {
-		t.Error("expected error when Store is nil")
 	}
 }
 
-func TestManager_RejectsEmptyParticle(t *testing.T) {
+func TestManager_RejectsNilStore(t *testing.T) {
 	ctx := context.Background()
 	e := wacogo.NewEngine(ctx)
 	defer e.Close(ctx)
 
-	mgr, err := NewManager(ctx, ManagerConfig{Engine: e, Store: &fakeStore{}})
+	mgr, err := NewManager(ctx, ManagerConfig{Engine: e})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mgr.Close(ctx)
 
-	if _, err := mgr.NewCredentialsInstance(ctx, ""); err == nil {
-		t.Error("expected error for empty particle name")
+	if _, err := mgr.NewCredentialsInstance(ctx, nil); err == nil {
+		t.Error("expected error for nil store")
 	}
-	if _, err := mgr.NewOAuthInstance(ctx, ""); err == nil {
-		t.Error("expected error for empty particle name")
+	if _, err := mgr.NewOAuthInstance(ctx, nil); err == nil {
+		t.Error("expected error for nil store")
 	}
-	if _, err := mgr.NewSigningInstance(ctx, ""); err == nil {
-		t.Error("expected error for empty particle name")
+	if _, err := mgr.NewSigningInstance(ctx, nil); err == nil {
+		t.Error("expected error for nil store")
 	}
 }
 
@@ -299,7 +293,7 @@ func TestNewManager_NilRefresher_DefaultsToHTTPRefresher(t *testing.T) {
 	e := wacogo.NewEngine(ctx)
 	defer e.Close(ctx)
 
-	mgr, err := NewManager(ctx, ManagerConfig{Engine: e, Store: &fakeStore{}})
+	mgr, err := NewManager(ctx, ManagerConfig{Engine: e})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,9 +309,9 @@ func TestNewManager_NilRefresher_DefaultsToHTTPRefresher(t *testing.T) {
 
 func TestAdapter_GetPlaceholder_Basic(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("yaml-tools", "id-1", "db_creds", BasicMeta{Username: "alice"}, nil)
+	store.putWithSecrets("id-1", "db_creds", BasicMeta{Username: "alice"}, nil)
 
-	a := newAdapter(store, "yaml-tools")
+	a := newAdapter(store)
 	res, err := a.GetPlaceholder(context.Background(), "db_creds")
 	if err != nil {
 		t.Fatalf("GetPlaceholder: %v", err)
@@ -333,9 +327,9 @@ func TestAdapter_GetPlaceholder_Basic(t *testing.T) {
 
 func TestAdapter_GetPlaceholder_OAuth2(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("yaml-tools", "id-2", "gh", OAuth2Meta{ClientID: "client"}, nil)
+	store.putWithSecrets("id-2", "gh", OAuth2Meta{ClientID: "client"}, nil)
 
-	a := newAdapter(store, "yaml-tools")
+	a := newAdapter(store)
 	res, _ := a.GetPlaceholder(context.Background(), "gh")
 	ok := res.(gen.ResultPlaceholderInfoCredentialErrorOk)
 	if ok.Value.Apply.Kind != gen.ApplyKindBearer {
@@ -345,13 +339,13 @@ func TestAdapter_GetPlaceholder_OAuth2(t *testing.T) {
 
 func TestAdapter_GetPlaceholder_APIKey_PopulatesLocation(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("yaml-tools", "i1", "k_header",
+	store.putWithSecrets("i1", "k_header",
 		APIKeyMeta{Location: ApplySpec{Kind: ApplyHeader, Name: "X-API-Key"}}, nil)
-	store.putWithSecrets("yaml-tools", "i2", "k_query",
+	store.putWithSecrets("i2", "k_query",
 		APIKeyMeta{Location: ApplySpec{Kind: ApplyQueryParam, Name: "api_key"}}, nil)
-	store.putWithSecrets("yaml-tools", "i3", "k_scheme",
+	store.putWithSecrets("i3", "k_scheme",
 		APIKeyMeta{Location: ApplySpec{Kind: ApplyAuthScheme, Scheme: "Token"}}, nil)
-	a := newAdapter(store, "yaml-tools")
+	a := newAdapter(store)
 
 	t.Run("header", func(t *testing.T) {
 		res, _ := a.GetPlaceholder(context.Background(), "k_header")
@@ -380,7 +374,7 @@ func TestAdapter_GetPlaceholder_APIKey_PopulatesLocation(t *testing.T) {
 }
 
 func TestAdapter_GetPlaceholder_NotConfigured(t *testing.T) {
-	a := newAdapter(&fakeStore{}, "yaml-tools")
+	a := newAdapter(&fakeStore{})
 	res, _ := a.GetPlaceholder(context.Background(), "missing")
 	errRes := res.(gen.ResultPlaceholderInfoCredentialErrorErr)
 	if _, ok := errRes.Value.(gen.CredentialErrorNotConfigured); !ok {
@@ -390,7 +384,7 @@ func TestAdapter_GetPlaceholder_NotConfigured(t *testing.T) {
 
 func TestAdapter_GetPlaceholder_StorageError(t *testing.T) {
 	store := &fakeStore{getErr: errors.New("disk full")}
-	a := newAdapter(store, "yaml-tools")
+	a := newAdapter(store)
 	res, _ := a.GetPlaceholder(context.Background(), "x")
 	errRes := res.(gen.ResultPlaceholderInfoCredentialErrorErr)
 	storage, ok := errRes.Value.(gen.CredentialErrorStorageError)
@@ -414,8 +408,8 @@ func TestAdapter_GetPlaceholder_TypeMismatch(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.label, func(t *testing.T) {
 			store := &fakeStore{}
-			store.putWithSecrets("yaml-tools", "i", "x", c.meta, nil)
-			a := newAdapter(store, "yaml-tools")
+			store.putWithSecrets("i", "x", c.meta, nil)
+			a := newAdapter(store)
 			res, _ := a.GetPlaceholder(context.Background(), "x")
 			errRes := res.(gen.ResultPlaceholderInfoCredentialErrorErr)
 			tm, ok := errRes.Value.(gen.CredentialErrorTypeMismatch)
@@ -433,8 +427,8 @@ func TestAdapter_GetPlaceholder_TypeMismatch(t *testing.T) {
 // policy can recover it deterministically by stripping the prefix.
 func TestAdapter_GetPlaceholder_EmbedsID(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("yaml-tools", "stable-id-7", "db", BasicMeta{}, nil)
-	a := newAdapter(store, "yaml-tools")
+	store.putWithSecrets("stable-id-7", "db", BasicMeta{}, nil)
+	a := newAdapter(store)
 	res, _ := a.GetPlaceholder(context.Background(), "db")
 	ok := res.(gen.ResultPlaceholderInfoCredentialErrorOk)
 	if want := PlaceholderPrefix + "stable-id-7"; ok.Value.Placeholder != want {
@@ -444,8 +438,8 @@ func TestAdapter_GetPlaceholder_EmbedsID(t *testing.T) {
 
 func TestAdapter_GetPlaceholder_StablePerCall(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("yaml-tools", "i", "db", BasicMeta{}, nil)
-	a := newAdapter(store, "yaml-tools")
+	store.putWithSecrets("i", "db", BasicMeta{}, nil)
+	a := newAdapter(store)
 	res1, _ := a.GetPlaceholder(context.Background(), "db")
 	res2, _ := a.GetPlaceholder(context.Background(), "db")
 	p1 := res1.(gen.ResultPlaceholderInfoCredentialErrorOk).Value.Placeholder
@@ -484,9 +478,9 @@ func TestIDFromPlaceholder(t *testing.T) {
 
 func TestAdapter_GetRaw_Ok(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("yaml-tools", "i", "sec", RawMeta{},
+	store.putWithSecrets("i", "sec", RawMeta{},
 		map[SecretRole][]byte{SecretRoleValue: []byte("the-actual-value")})
-	a := newAdapter(store, "yaml-tools")
+	a := newAdapter(store)
 
 	res, _ := a.GetRaw(context.Background(), "sec")
 	ok := res.(gen.ResultStringCredentialErrorOk)
@@ -499,8 +493,8 @@ func TestAdapter_GetRaw_TypeMismatch(t *testing.T) {
 	// Meta exists but isn't RawMeta — adapter rejects before
 	// reading any slot.
 	store := &fakeStore{}
-	store.putWithSecrets("yaml-tools", "i", "oauth", OAuth2Meta{}, nil)
-	a := newAdapter(store, "yaml-tools")
+	store.putWithSecrets("i", "oauth", OAuth2Meta{}, nil)
+	a := newAdapter(store)
 
 	res, _ := a.GetRaw(context.Background(), "oauth")
 	errRes := res.(gen.ResultStringCredentialErrorErr)
@@ -514,7 +508,7 @@ func TestAdapter_GetRaw_TypeMismatch(t *testing.T) {
 }
 
 func TestAdapter_GetRaw_NotConfigured_NoEntry(t *testing.T) {
-	a := newAdapter(&fakeStore{}, "yaml-tools")
+	a := newAdapter(&fakeStore{})
 	res, _ := a.GetRaw(context.Background(), "missing")
 	errRes := res.(gen.ResultStringCredentialErrorErr)
 	if _, ok := errRes.Value.(gen.CredentialErrorNotConfigured); !ok {
@@ -529,8 +523,8 @@ func TestAdapter_GetRaw_NotConfigured_EntryButSecretEmpty(t *testing.T) {
 	// empty) into not-configured because the particle's view is
 	// the same: no usable secret.
 	store := &fakeStore{}
-	store.putWithSecrets("yaml-tools", "i", "sec", RawMeta{}, nil) // no secrets
-	a := newAdapter(store, "yaml-tools")
+	store.putWithSecrets("i", "sec", RawMeta{}, nil) // no secrets
+	a := newAdapter(store)
 
 	res, _ := a.GetRaw(context.Background(), "sec")
 	errRes := res.(gen.ResultStringCredentialErrorErr)
@@ -540,16 +534,19 @@ func TestAdapter_GetRaw_NotConfigured_EntryButSecretEmpty(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Particle scoping
+// Store scoping
 // -----------------------------------------------------------------------------
 
-func TestAdapter_ScopedByParticle(t *testing.T) {
-	store := &fakeStore{}
-	store.putWithSecrets("yaml-tools", "y", "k", BasicMeta{Username: "yaml-user"}, nil)
-	store.putWithSecrets("json-tools", "j", "k", BasicMeta{Username: "json-user"}, nil)
+// Two adapters built against two independent Stores see disjoint
+// state.
+func TestAdapter_ScopedByStore(t *testing.T) {
+	yamlStore := &fakeStore{}
+	yamlStore.putWithSecrets("y", "k", BasicMeta{Username: "yaml-user"}, nil)
+	jsonStore := &fakeStore{}
+	jsonStore.putWithSecrets("j", "k", BasicMeta{Username: "json-user"}, nil)
 
-	yaml := newAdapter(store, "yaml-tools")
-	json := newAdapter(store, "json-tools")
+	yaml := newAdapter(yamlStore)
+	json := newAdapter(jsonStore)
 
 	res1, _ := yaml.GetPlaceholder(context.Background(), "k")
 	res2, _ := json.GetPlaceholder(context.Background(), "k")
@@ -557,7 +554,7 @@ func TestAdapter_ScopedByParticle(t *testing.T) {
 	ok1 := res1.(gen.ResultPlaceholderInfoCredentialErrorOk)
 	ok2 := res2.(gen.ResultPlaceholderInfoCredentialErrorOk)
 	if ok1.Value.Placeholder == ok2.Value.Placeholder {
-		t.Errorf("placeholders shouldn't match across particles: %q", ok1.Value.Placeholder)
+		t.Errorf("placeholders shouldn't match across stores: %q", ok1.Value.Placeholder)
 	}
 }
 
@@ -584,22 +581,22 @@ func TestMetadataKind(t *testing.T) {
 }
 
 // Put with varargs is exercised against the fake store here as a
-// sanity check of the test fake's behavior; the memory-store tests
-// are the authoritative coverage of Put semantics.
+// sanity check of the test fake's behavior; the memory-store
+// tests are the authoritative coverage of Put semantics.
 func TestFakeStore_PutWithSecretsAtomic(t *testing.T) {
 	s := &fakeStore{}
-	desc, err := s.Put(context.Background(), "yaml-tools", "gh", "gh", OAuth2Meta{ClientID: "c"},
+	desc, err := s.Put(context.Background(), "gh", "gh", OAuth2Meta{ClientID: "c"},
 		Secret{Role: SecretRoleAccessToken, Value: []byte("at")},
 		Secret{Role: SecretRoleRefreshToken, Value: []byte("rt")},
 	)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	at, err := s.ReadSecret(context.Background(), "yaml-tools", desc.ID, SecretRoleAccessToken)
+	at, err := s.ReadSecret(context.Background(), desc.ID, SecretRoleAccessToken)
 	if err != nil || string(at) != "at" {
 		t.Errorf("access secret = %q (err=%v)", at, err)
 	}
-	rt, err := s.ReadSecret(context.Background(), "yaml-tools", desc.ID, SecretRoleRefreshToken)
+	rt, err := s.ReadSecret(context.Background(), desc.ID, SecretRoleRefreshToken)
 	if err != nil || string(rt) != "rt" {
 		t.Errorf("refresh secret = %q (err=%v)", rt, err)
 	}

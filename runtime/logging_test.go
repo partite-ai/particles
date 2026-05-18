@@ -3,6 +3,7 @@ package runtime_test
 import (
 	"bytes"
 	"context"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -283,51 +284,63 @@ type doerFunc func(*http.Request) (*http.Response, error)
 
 func (f doerFunc) Do(r *http.Request) (*http.Response, error) { return f(r) }
 
-func newRuntimeWithLog(t *testing.T, ctx context.Context, cb runtime.LogCallback) (*runtime.Runtime, func()) {
-	t.Helper()
-	e := wacogo.NewEngine(ctx)
-	credMgr, err := credentials.NewManager(ctx, credentials.ManagerConfig{Engine: e, Store: credmem.New()})
-	if err != nil {
-		t.Fatalf("credentials.NewManager: %v", err)
-	}
-	kvMgr, err := kv.NewManager(ctx, kv.ManagerConfig{Engine: e, Store: kvmem.New()})
-	if err != nil {
-		t.Fatalf("kv.NewManager: %v", err)
-	}
-	rt, err := runtime.New(ctx, runtime.Config{
-		Engine: e, Credentials: credMgr, KV: kvMgr,
-		Log: cb,
-	})
-	if err != nil {
-		t.Fatalf("runtime.New: %v", err)
-	}
-	return rt, func() {
-		_ = rt.Close(ctx)
-		_ = credMgr.Close(ctx)
-		_ = kvMgr.Close(ctx)
-		_ = e.Close(ctx)
-	}
+// testRuntime bundles a runtime with the per-particle stores
+// and options each test must thread through rt.NewParticle.
+type testRuntime struct {
+	rt        *runtime.Runtime
+	credStore credentials.Store
+	kvStore   kv.Store
+	opts      []runtime.ParticleOption
 }
 
-func newRuntimeWithHTTPClient(t *testing.T, ctx context.Context, c runtime.HTTPDoer) (*runtime.Runtime, func()) {
+// NewParticle forwards to the embedded runtime, pre-binding the
+// harness's stores and ParticleOptions. Extra options passed by
+// the caller follow the harness defaults and so take precedence.
+func (h *testRuntime) NewParticle(ctx context.Context, particleFS fs.FS, extra ...runtime.ParticleOption) (*runtime.Particle, error) {
+	merged := make([]runtime.ParticleOption, 0, len(h.opts)+len(extra))
+	merged = append(merged, h.opts...)
+	merged = append(merged, extra...)
+	return h.rt.NewParticle(ctx, particleFS, h.credStore, h.kvStore, merged...)
+}
+
+func newRuntimeWithLog(t *testing.T, ctx context.Context, cb runtime.LogCallback) (*testRuntime, func()) {
+	t.Helper()
+	// nil cb → don't pass WithLog, so the particle picks up
+	// runtime.DefaultLogCallback. WithLog(nil) would explicitly
+	// set log to "drop everything" instead.
+	if cb == nil {
+		return newTestRuntime(t, ctx)
+	}
+	return newTestRuntime(t, ctx, runtime.WithLog(cb))
+}
+
+func newRuntimeWithHTTPClient(t *testing.T, ctx context.Context, c runtime.HTTPDoer) (*testRuntime, func()) {
+	t.Helper()
+	return newTestRuntime(t, ctx, runtime.WithHTTPClient(c))
+}
+
+func newTestRuntime(t *testing.T, ctx context.Context, opts ...runtime.ParticleOption) (*testRuntime, func()) {
 	t.Helper()
 	e := wacogo.NewEngine(ctx)
-	credMgr, err := credentials.NewManager(ctx, credentials.ManagerConfig{Engine: e, Store: credmem.New()})
+	credMgr, err := credentials.NewManager(ctx, credentials.ManagerConfig{Engine: e})
 	if err != nil {
 		t.Fatalf("credentials.NewManager: %v", err)
 	}
-	kvMgr, err := kv.NewManager(ctx, kv.ManagerConfig{Engine: e, Store: kvmem.New()})
+	kvMgr, err := kv.NewManager(ctx, kv.ManagerConfig{Engine: e})
 	if err != nil {
 		t.Fatalf("kv.NewManager: %v", err)
 	}
-	rt, err := runtime.New(ctx, runtime.Config{
-		Engine: e, Credentials: credMgr, KV: kvMgr,
-		HTTPClient: c,
-	})
+	rt, err := runtime.New(ctx, runtime.Config{Engine: e, Credentials: credMgr, KV: kvMgr})
 	if err != nil {
 		t.Fatalf("runtime.New: %v", err)
 	}
-	return rt, func() {
+	harness := &testRuntime{
+		rt:        rt,
+		credStore: credmem.New().Scoped("test"),
+		kvStore:   kvmem.New().Scoped("test"),
+		opts:      opts,
+	}
+	return harness, func() {
 		_ = rt.Close(ctx)
 		_ = credMgr.Close(ctx)
 		_ = kvMgr.Close(ctx)

@@ -23,7 +23,7 @@ const (
 //
 // The method's `flows` list constrains which flow runs. When
 // multiple are offered, the user picks one at the prompt.
-func setupOAuth2(ctx context.Context, opts Options, particle, credName string, method credentialMethod) error {
+func setupOAuth2(ctx context.Context, opts Options, credName string, method credentialMethod) error {
 	if len(method.Flows) == 0 {
 		return fmt.Errorf("manifest declares oauth2 %s.%s without flows", credName, method.Name)
 	}
@@ -67,7 +67,7 @@ func setupOAuth2(ctx context.Context, opts Options, particle, credName string, m
 		})
 	}
 
-	if _, err := opts.Credentials.Put(ctx, particle, credName, method.Name, meta, secrets...); err != nil {
+	if _, err := opts.Credentials.Put(ctx, credName, method.Name, meta, secrets...); err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
 	opts.Prompter.Info(fmt.Sprintf("✓ %s.%s — OAuth complete (%s)", credName, method.Name, flow))

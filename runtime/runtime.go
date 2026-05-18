@@ -1,28 +1,19 @@
 // Package runtime hosts the particle JS runtime — the QuickJS-based
 // WASM component that executes a particle's tool handlers.
 //
-// A [Runtime] owns the engine, the loaded runtime.wasm, and host
-// capability managers (credentials + kv). Hosts spin up
-// [Particle]s from the runtime — one per particle they want to
-// serve — and invoke ListTools / CallTool / Ping on each.
+// A [Runtime] owns the shared host-side state: the wacogo engine,
+// the loaded runtime.wasm, and the credentials and kv Managers
+// (the reusable WIT-host factory templates). Per-particle state
+// — which Store backs the credentials and kv host shims, who
+// handles outbound HTTP, where log lines land — is passed at
+// [Runtime.NewParticle] time, the Stores as positional parameters
+// and the optional knobs as [ParticleOption]s.
 //
-// Capability checks are enforced per-particle:
-//
-//   - The build phase (internal/importscan) already rejects
-//     particles whose source imports a `particle:*` capability they
-//     don't declare in their manifest.
-//
-//   - The runtime additionally requires the host to provide the
-//     matching Manager for any declared capability. Constructing a
-//     Particle whose manifest declares `credentials` against a
-//     [Config] without a Credentials manager fails at NewParticle
-//     time, before any tool call lands.
-//
-//   - For undeclared capabilities, the runtime still wires the
-//     manager (the WIT imports must be satisfied) but the Store is
-//     the host's normal Store, so unknown credential names surface
-//     as `not-configured` and unknown kv keys as `not-found` —
-//     defense in depth on top of the build's import check.
+// Capability checks are enforced per-particle: the build phase
+// (internal/importscan) already rejects particles whose source
+// imports a particle:* capability they don't declare in their
+// manifest, and NewParticle additionally requires the host to
+// pass non-nil Store views for both credentials and kv.
 //
 // The runtime.wasm artifact is embedded into the binary at compile
 // time; see runtime/embed and the //go:generate directive in
@@ -35,7 +26,6 @@ import (
 	"embed"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/partite-ai/wacogo"
@@ -53,7 +43,7 @@ import (
 //
 // Type-aliased from wacogo's wasi.HTTPDoer so callers don't have
 // to pull wacogo into their import set just to satisfy
-// [Config.HTTPClient].
+// [WithHTTPClient].
 type HTTPDoer = wasihttp.HTTPDoer
 
 //go:embed all:embed
@@ -61,65 +51,43 @@ var embeddedRuntime embed.FS
 
 const embeddedRuntimePath = "embed/particle-runtime.wasm"
 
-// Config configures a [Runtime].
+// Config configures a [Runtime] — the shared, process-wide host
+// state. Per-particle wiring (Stores, HTTP client, log sink) is
+// passed at [Runtime.NewParticle] time.
 type Config struct {
 	// Engine is the wacogo runtime particles are built against.
 	// Required.
 	Engine *wacogo.Engine
 
-	// Credentials supplies host-side credential storage (the
-	// particle:host/{credentials,oauth,signing} interfaces).
-	// Required: the runtime.wasm imports those interfaces
-	// unconditionally, and they must be satisfied at
-	// instantiation.
+	// Credentials owns the host-side credential, oauth, and
+	// signing WIT-host factory templates. Required — runtime.wasm
+	// imports those interfaces unconditionally, and they must be
+	// satisfied at instantiation. Per-particle Stores are passed
+	// as the credStore argument to [Runtime.NewParticle].
 	Credentials *credentials.Manager
 
-	// KV supplies the host-side key/value store
-	// (particle:host/kv). Required for the same reason.
+	// KV owns the host-side kv WIT-host factory template.
+	// Required for the same reason as Credentials. Per-particle
+	// Stores are passed as the kvStore argument to
+	// [Runtime.NewParticle].
 	KV *kv.Manager
-
-	// HTTPClient handles a particle's outbound HTTP requests
-	// after the per-particle policy (allowed-hosts gate +
-	// credential substitution) has done its work. nil →
-	// [http.DefaultClient].
-	//
-	// Use the override to plug in retry middleware, an HTTP/2
-	// transport tuned for long-lived connections, or a recording
-	// proxy for tests.
-	HTTPClient HTTPDoer
-
-	// Log receives every wasi:logging/log call a particle
-	// makes (i.e., the destination of `console.*`). nil →
-	// [DefaultLogCallback], which writes one line per call to
-	// the standard library's [log.Default]. To silence
-	// particle output, pass an explicit no-op callback.
-	//
-	// Useful when embedding the runtime in a host that has its
-	// own structured-log sink: drop your logger in here and
-	// per-particle output threads through without any
-	// per-particle wiring.
-	//
-	// Callbacks run inline while the wasm guest is paused; keep
-	// them cheap and non-blocking. Errors aren't reported back
-	// to the guest (wasi:logging/log has no result type).
-	Log LogCallback
 }
 
 // Runtime is the entry point: hosts construct one per
-// (engine, credentials, kv) tuple and spin Particles off of it.
+// (engine, credentials-manager, kv-manager) tuple and spin
+// Particles off of it.
 //
 // One Runtime owns one wacogo Component (the loaded runtime.wasm)
-// and the four host-capability factories the runtime imports. Per-
-// particle state lives entirely in the [Particle] handle.
+// plus references to the shared Managers. Per-particle state lives
+// entirely in the [Particle] handle.
 type Runtime struct {
-	cfg     Config
-	comp    *wacogo.Component
-	logging *wacogoInstanceCloser
+	cfg  Config
+	comp *wacogo.Component
 }
 
 // New constructs a Runtime, loading the embedded runtime.wasm.
 // Validates that the required dependencies are present so a missing
-// manager produces an error here rather than at the first
+// Manager produces an error here rather than at the first
 // NewParticle call.
 func New(ctx context.Context, cfg Config) (*Runtime, error) {
 	if cfg.Engine == nil {
@@ -141,53 +109,13 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 		return nil, fmt.Errorf("runtime: load runtime wasm: %w", err)
 	}
 
-	// Default the log callback before building the host so
-	// every code path downstream can treat cfg.Log as non-nil.
-	if cfg.Log == nil {
-		cfg.Log = DefaultLogCallback
-	}
-	logging, err := newLoggingHost(ctx, cfg.Engine, cfg.Log)
-	if err != nil {
-		return nil, fmt.Errorf("runtime: build wasi:logging host: %w", err)
-	}
-	// Default the HTTP client here so [Particle] construction
-	// doesn't carry a per-particle "is it nil?" dance.
-	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = http.DefaultClient
-	}
-
-	return &Runtime{
-		cfg:     cfg,
-		comp:    comp,
-		logging: &wacogoInstanceCloser{inst: logging},
-	}, nil
+	return &Runtime{cfg: cfg, comp: comp}, nil
 }
 
 // Close releases runtime-scoped resources. Existing Particles
 // remain callable until each is individually closed; closing the
 // wacogo.Engine cascades and closes everything.
-func (r *Runtime) Close(ctx context.Context) error {
-	if r.logging != nil {
-		return r.logging.Close(ctx)
-	}
-	return nil
-}
-
-// wacogoInstanceCloser is a tiny interface over *host.ComponentInstance
-// just so the Runtime fields stay readable (the *host.* type lives
-// in a deeper import path).
-type wacogoInstanceCloser struct {
-	inst interface {
-		Close(context.Context) error
-	}
-}
-
-func (c *wacogoInstanceCloser) Close(ctx context.Context) error {
-	if c == nil || c.inst == nil {
-		return nil
-	}
-	return c.inst.Close(ctx)
-}
+func (r *Runtime) Close(_ context.Context) error { return nil }
 
 // stderrSinkBytes returns whatever the runtime's wasi-cli/stderr
 // captured, formatted for inclusion in error messages. Used by the

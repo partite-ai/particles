@@ -63,7 +63,6 @@ type httpPolicy struct {
 	inner        httptypes.HTTPDoer
 
 	store               credentials.Store
-	particle            string
 	declaredCredentials []string
 
 	// credentialHosts maps a declared credential's name to the
@@ -108,7 +107,6 @@ func newHTTPPolicy(
 	allowedHosts []string,
 	inner httptypes.HTTPDoer,
 	store credentials.Store,
-	particle string,
 	declaredCredentials []string,
 	credentialHosts map[string][]string,
 	refreshAccessToken func(ctx context.Context, id string) (credentials.AccessToken, error),
@@ -116,7 +114,6 @@ func newHTTPPolicy(
 	p := &httpPolicy{
 		inner:               inner,
 		store:               store,
-		particle:            particle,
 		declaredCredentials: declaredCredentials,
 		refreshAccessToken:  refreshAccessToken,
 	}
@@ -223,7 +220,7 @@ func (p *httpPolicy) substituteOne(req *http.Request, name string) error {
 			return nil
 		}
 	}
-	desc, err := p.store.GetByName(req.Context(), p.particle, name)
+	desc, err := p.store.GetByName(req.Context(), name)
 	if err != nil {
 		// Declared but not configured → nothing to substitute.
 		// The JS-side getPlaceholder for this name would have
@@ -349,7 +346,7 @@ func (p *httpPolicy) substituteAPIKey(req *http.Request, id, placeholder string,
 // is missing the password secret" rather than a bare
 // "credentials: not found".
 func (p *httpPolicy) readSecret(ctx context.Context, id string, role credentials.SecretRole) ([]byte, error) {
-	v, err := p.store.ReadSecret(ctx, p.particle, id, role)
+	v, err := p.store.ReadSecret(ctx, id, role)
 	if err != nil {
 		if errors.Is(err, credentials.ErrNotFound) {
 			return nil, fmt.Errorf("substitute %s: %s secret not set", id, role)

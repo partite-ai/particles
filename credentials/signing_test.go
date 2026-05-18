@@ -18,11 +18,11 @@ import (
 func TestSigningAdapter_Sign_HMACSHA256(t *testing.T) {
 	store := &fakeStore{}
 	key := []byte("super-secret-key-1234")
-	store.putWithSecrets("yaml-tools", "id-1", "webhook",
+	store.putWithSecrets("id-1", "webhook",
 		SigningKeyMeta{Algorithm: AlgorithmHMACSHA256},
 		map[SecretRole][]byte{SecretRoleKey: key},
 	)
-	a := newSigningAdapter(store, "yaml-tools")
+	a := newSigningAdapter(store)
 
 	data := []byte("hello world")
 	res, err := a.Sign(context.Background(), "webhook", data)
@@ -46,11 +46,11 @@ func TestSigningAdapter_Sign_HMACSHA256(t *testing.T) {
 func TestSigningAdapter_Sign_HMACSHA512(t *testing.T) {
 	store := &fakeStore{}
 	key := []byte("a-different-key")
-	store.putWithSecrets("yaml-tools", "id-2", "longer",
+	store.putWithSecrets("id-2", "longer",
 		SigningKeyMeta{Algorithm: AlgorithmHMACSHA512},
 		map[SecretRole][]byte{SecretRoleKey: key},
 	)
-	a := newSigningAdapter(store, "yaml-tools")
+	a := newSigningAdapter(store)
 
 	data := []byte("payload")
 	res, _ := a.Sign(context.Background(), "longer", data)
@@ -74,11 +74,11 @@ func TestSigningAdapter_Sign_HMACSHA512(t *testing.T) {
 func TestSigningAdapter_Verify_RoundTrip(t *testing.T) {
 	store := &fakeStore{}
 	key := []byte("k")
-	store.putWithSecrets("p", "i", "x",
+	store.putWithSecrets("i", "x",
 		SigningKeyMeta{Algorithm: AlgorithmHMACSHA256},
 		map[SecretRole][]byte{SecretRoleKey: key},
 	)
-	a := newSigningAdapter(store, "p")
+	a := newSigningAdapter(store)
 
 	data := []byte("contents")
 	signRes, _ := a.Sign(context.Background(), "x", data)
@@ -96,11 +96,11 @@ func TestSigningAdapter_Verify_RoundTrip(t *testing.T) {
 
 func TestSigningAdapter_Verify_MismatchReturnsFalse(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("p", "i", "x",
+	store.putWithSecrets("i", "x",
 		SigningKeyMeta{Algorithm: AlgorithmHMACSHA256},
 		map[SecretRole][]byte{SecretRoleKey: []byte("k")},
 	)
-	a := newSigningAdapter(store, "p")
+	a := newSigningAdapter(store)
 
 	verifyRes, _ := a.Verify(context.Background(), "x", []byte("contents"), []byte("not the right signature"))
 	ok := verifyRes.(gen.ResultBoolSigningErrorOk)
@@ -113,11 +113,11 @@ func TestSigningAdapter_Verify_MismatchReturnsFalse(t *testing.T) {
 // safely — we shouldn't surface them as invalid-input.
 func TestSigningAdapter_Verify_LengthMismatchReturnsFalse(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("p", "i", "x",
+	store.putWithSecrets("i", "x",
 		SigningKeyMeta{Algorithm: AlgorithmHMACSHA256},
 		map[SecretRole][]byte{SecretRoleKey: []byte("k")},
 	)
-	a := newSigningAdapter(store, "p")
+	a := newSigningAdapter(store)
 
 	verifyRes, err := a.Verify(context.Background(), "x", []byte("data"), []byte{0x00, 0x01})
 	if err != nil {
@@ -137,7 +137,7 @@ func TestSigningAdapter_Verify_LengthMismatchReturnsFalse(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestSigningAdapter_NotConfigured_NoEntry(t *testing.T) {
-	a := newSigningAdapter(&fakeStore{}, "p")
+	a := newSigningAdapter(&fakeStore{})
 	res, _ := a.Sign(context.Background(), "missing", []byte("d"))
 	errRes := res.(gen.ResultListU8SigningErrorErr)
 	if _, ok := errRes.Value.(gen.SigningErrorNotConfigured); !ok {
@@ -148,11 +148,11 @@ func TestSigningAdapter_NotConfigured_NoEntry(t *testing.T) {
 func TestSigningAdapter_NotSigningKey(t *testing.T) {
 	// Entry exists, but it's a different credential kind.
 	store := &fakeStore{}
-	store.putWithSecrets("p", "i", "x",
+	store.putWithSecrets("i", "x",
 		BasicMeta{Username: "u"},
 		map[SecretRole][]byte{SecretRolePassword: []byte("hunter2")},
 	)
-	a := newSigningAdapter(store, "p")
+	a := newSigningAdapter(store)
 
 	res, _ := a.Sign(context.Background(), "x", []byte("d"))
 	errRes := res.(gen.ResultListU8SigningErrorErr)
@@ -170,11 +170,11 @@ func TestSigningAdapter_NotSigningKey(t *testing.T) {
 
 func TestSigningAdapter_InvalidInput_UnsupportedAlgorithm(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("p", "i", "x",
+	store.putWithSecrets("i", "x",
 		SigningKeyMeta{Algorithm: "rsa-sha256"}, // not in v1
 		map[SecretRole][]byte{SecretRoleKey: []byte("k")},
 	)
-	a := newSigningAdapter(store, "p")
+	a := newSigningAdapter(store)
 
 	res, _ := a.Sign(context.Background(), "x", []byte("d"))
 	errRes := res.(gen.ResultListU8SigningErrorErr)
@@ -190,11 +190,11 @@ func TestSigningAdapter_InvalidInput_UnsupportedAlgorithm(t *testing.T) {
 func TestSigningAdapter_NotConfigured_KeyMissing(t *testing.T) {
 	// Metadata exists, but the key bytes were never written.
 	store := &fakeStore{}
-	store.putWithSecrets("p", "i", "x",
+	store.putWithSecrets("i", "x",
 		SigningKeyMeta{Algorithm: AlgorithmHMACSHA256},
 		nil, // no SecretRoleKey
 	)
-	a := newSigningAdapter(store, "p")
+	a := newSigningAdapter(store)
 
 	res, _ := a.Sign(context.Background(), "x", []byte("d"))
 	errRes := res.(gen.ResultListU8SigningErrorErr)
@@ -212,11 +212,11 @@ func TestSigningAdapter_NotConfigured_KeyMissing(t *testing.T) {
 // inject any salt or nonce.
 func TestSigningAdapter_Sign_Deterministic(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("p", "i", "x",
+	store.putWithSecrets("i", "x",
 		SigningKeyMeta{Algorithm: AlgorithmHMACSHA256},
 		map[SecretRole][]byte{SecretRoleKey: []byte("k")},
 	)
-	a := newSigningAdapter(store, "p")
+	a := newSigningAdapter(store)
 
 	data := []byte("identical bytes")
 	first, _ := a.Sign(context.Background(), "x", data)
@@ -228,21 +228,22 @@ func TestSigningAdapter_Sign_Deterministic(t *testing.T) {
 	}
 }
 
-func TestSigningAdapter_ScopedByParticle(t *testing.T) {
-	// Same name in different particles must produce different
-	// signatures (because each has its own key, with different IDs).
-	store := &fakeStore{}
-	store.putWithSecrets("yaml-tools", "y", "k",
+func TestSigningAdapter_ScopedByStore(t *testing.T) {
+	// Each adapter is bound to its own Store; same name in
+	// different stores must produce different signatures.
+	storeY := &fakeStore{}
+	storeY.putWithSecrets("y", "k",
 		SigningKeyMeta{Algorithm: AlgorithmHMACSHA256},
 		map[SecretRole][]byte{SecretRoleKey: []byte("yaml-key")},
 	)
-	store.putWithSecrets("json-tools", "j", "k",
+	storeJ := &fakeStore{}
+	storeJ.putWithSecrets("j", "k",
 		SigningKeyMeta{Algorithm: AlgorithmHMACSHA256},
 		map[SecretRole][]byte{SecretRoleKey: []byte("json-key")},
 	)
 
-	yaml := newSigningAdapter(store, "yaml-tools")
-	json := newSigningAdapter(store, "json-tools")
+	yaml := newSigningAdapter(storeY)
+	json := newSigningAdapter(storeJ)
 
 	data := []byte("hello")
 	resY, _ := yaml.Sign(context.Background(), "k", data)
@@ -250,6 +251,6 @@ func TestSigningAdapter_ScopedByParticle(t *testing.T) {
 	sigY := resY.(gen.ResultListU8SigningErrorOk).Value
 	sigJ := resJ.(gen.ResultListU8SigningErrorOk).Value
 	if hmac.Equal(sigY, sigJ) {
-		t.Error("signatures collided across particle scopes — keys leaked")
+		t.Error("signatures collided across stores — keys leaked")
 	}
 }

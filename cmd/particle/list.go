@@ -60,9 +60,9 @@ func runList(cmd *cobra.Command, dbPath string) error {
 	}
 
 	// `particle list` only reads metadata; it never decrypts.
-	// Construct a sealer-less Store so the OS keychain isn't
+	// Construct a sealer-less Backend so the OS keychain isn't
 	// prompted just to render the table.
-	credStore, err := credsqlite.New(ctx, db, nil)
+	credBackend, err := credsqlite.New(ctx, db, nil)
 	if err != nil {
 		return fmt.Errorf("credentials store: %w", err)
 	}
@@ -76,7 +76,7 @@ func runList(cmd *cobra.Command, dbPath string) error {
 	for _, e := range entries {
 		summary, ok := summaries[e.Name]
 		if !ok {
-			entries, err := credStore.List(ctx, e.Name)
+			entries, err := credBackend.Scoped(e.Name).List(ctx)
 			if err != nil {
 				return fmt.Errorf("list credentials for %s: %w", e.Name, err)
 			}

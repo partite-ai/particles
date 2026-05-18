@@ -50,9 +50,13 @@ import (
 	"time"
 )
 
-// Store is the host-side credential storage interface. All
-// operations are scoped by particle name: each particle gets its
-// own credential namespace.
+// Store is the host-side credential storage interface, scoped to
+// a single particle: every method operates against the
+// particle's own namespace, with no cross-particle visibility.
+// Construct one via a backend-specific helper — e.g.,
+// `credentials/sqlite.(*Backend).Scoped(particle)` returns a
+// Store that wraps the multi-particle sqlite backing store and
+// pre-binds it to `particle`.
 //
 // A "credential" is identified by a particle-scoped name (e.g.,
 // "github" or "openai" — what the manifest's top-level
@@ -72,28 +76,28 @@ type Store interface {
 	// -------- entry-level (metadata) operations --------
 
 	// GetByID returns the descriptor (id, name, metadata) for
-	// the entry under (particle, id). Returns ErrNotFound when
-	// no such entry exists. Does NOT read secrets — cheap.
-	GetByID(ctx context.Context, particle, id string) (Descriptor, error)
+	// the entry under `id`. Returns ErrNotFound when no such
+	// entry exists. Does NOT read secrets — cheap.
+	GetByID(ctx context.Context, id string) (Descriptor, error)
 
 	// GetByName returns the descriptor for the entry under
-	// (particle, name). Same error contract as GetByID.
+	// `name`. Same error contract as GetByID.
 	//
 	// The runtime adapter consults this on every
 	// `getPlaceholder` / `getRaw` call to determine the
 	// credential's id and apply-spec.
-	GetByName(ctx context.Context, particle, name string) (Descriptor, error)
+	GetByName(ctx context.Context, name string) (Descriptor, error)
 
-	// List returns a lightweight summary of every entry in the
+	// List returns a lightweight summary of every entry in this
 	// particle's namespace.
-	List(ctx context.Context, particle string) ([]ListEntry, error)
+	List(ctx context.Context) ([]ListEntry, error)
 
-	// Put configures the (particle, name) credential with the
-	// given method and metadata, replacing any prior configuration
-	// for the same (particle, name).
+	// Put configures the `name` credential with the given
+	// method and metadata, replacing any prior configuration
+	// for the same name.
 	//
-	// Each (particle, name) holds at most one row — Put enforces
-	// the invariant atomically:
+	// Each name holds at most one row — Put enforces the
+	// invariant atomically:
 	//
 	//   - If no prior row exists, a fresh entry is inserted with a
 	//     new ID.
@@ -108,25 +112,25 @@ type Store interface {
 	//     supplied secrets. (Method switching never leaves stray
 	//     secrets from the old method behind.)
 	//
-	// Different (particle, name) credentials coexist freely — a
-	// particle declaring both "github" and "openai" gets two rows.
+	// Different names coexist freely — a particle declaring
+	// both "github" and "openai" gets two rows.
 	//
 	// Returns the resulting descriptor.
-	Put(ctx context.Context, particle, name, method string, meta Metadata, secrets ...Secret) (Descriptor, error)
+	Put(ctx context.Context, name, method string, meta Metadata, secrets ...Secret) (Descriptor, error)
 
 	// Delete removes the entire entry — metadata and every
 	// secret. Idempotent: returns nil if no such entry existed.
-	Delete(ctx context.Context, particle, id string) error
+	Delete(ctx context.Context, id string) error
 
 	// ConfiguredMethod returns the method name currently stored
-	// for (particle, name), or "" when no credential is configured
-	// under that name.
+	// for `name`, or "" when no credential is configured under
+	// that name.
 	//
 	// Used to drive the "which authentication method is
 	// configured?" question — the answer the runtime surfaces to
 	// particles via getConfiguredMethod(name) and the CLI shows
 	// in `particle list`.
-	ConfiguredMethod(ctx context.Context, particle, name string) (string, error)
+	ConfiguredMethod(ctx context.Context, name string) (string, error)
 
 	// -------- secret-level operations --------
 	//
@@ -136,13 +140,12 @@ type Store interface {
 	// kind are listed below; implementations don't validate
 	// roles — they're treated as opaque keys.
 
-	// ReadSecret returns the raw bytes stored for (particle,
-	// id, role). Returns ErrSecretNotSet when the role has not
-	// been written. ErrSecretNotSet wraps ErrNotFound, so
-	// callers using `errors.Is(err, ErrNotFound)` to detect
-	// both missing-entry and missing-secret get the right
-	// answer.
-	ReadSecret(ctx context.Context, particle, id string, role SecretRole) ([]byte, error)
+	// ReadSecret returns the raw bytes stored for (id, role).
+	// Returns ErrSecretNotSet when the role has not been
+	// written. ErrSecretNotSet wraps ErrNotFound, so callers
+	// using `errors.Is(err, ErrNotFound)` to detect both
+	// missing-entry and missing-secret get the right answer.
+	ReadSecret(ctx context.Context, id string, role SecretRole) ([]byte, error)
 
 	// WriteSecrets atomically writes one or more secrets to an
 	// existing entry, replacing each named role. Does not
@@ -155,11 +158,11 @@ type Store interface {
 	// AccessToken bundle; metadata stays static post-setup.
 	//
 	// Returns ErrNotFound if the entry itself does not exist.
-	WriteSecrets(ctx context.Context, particle, id string, secrets ...Secret) error
+	WriteSecrets(ctx context.Context, id string, secrets ...Secret) error
 
 	// DeleteSecret removes a secret. Idempotent: returns nil
 	// when the role is already absent or the entry is missing.
-	DeleteSecret(ctx context.Context, particle, id string, role SecretRole) error
+	DeleteSecret(ctx context.Context, id string, role SecretRole) error
 }
 
 // Descriptor is the metadata-level record for an entry: stable ID,

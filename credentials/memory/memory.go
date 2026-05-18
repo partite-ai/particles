@@ -19,28 +19,73 @@ import (
 	"github.com/partite-ai/particles/credentials"
 )
 
-// Store is an in-process credentials.Store.
+// Backend is an in-process multi-particle credentials store.
+// Per-particle [credentials.Store] views are produced via
+// [*Backend.Scoped].
 //
 // Safe for concurrent use. Operations are O(1) for GetByID,
 // GetByName, Put, Delete, ReadSecret, DeleteSecret; O(k) for
 // WriteSecrets where k is the number of secrets passed; O(n) for
-// List where n is the number of entries in the requested particle's
-// namespace.
-type Store struct {
+// List where n is the number of entries in the requested
+// particle's namespace.
+type Backend struct {
 	mu          sync.RWMutex
 	byParticle  map[string]*particleSlot
 	idGenerator func() string // overridable for tests; defaults to newID
 }
 
-// New returns an empty in-memory store.
-func New() *Store {
-	return &Store{
+// New returns an empty in-memory backend.
+func New() *Backend {
+	return &Backend{
 		byParticle:  map[string]*particleSlot{},
 		idGenerator: newID,
 	}
 }
 
-var _ credentials.Store = (*Store)(nil)
+// Scoped returns a [credentials.Store] view pre-bound to the
+// given particle. Mirrors `sqlite.(*Backend).Scoped` so the two
+// implementations are drop-in interchangeable from a caller's
+// perspective.
+func (b *Backend) Scoped(particle string) credentials.Store {
+	return &scopedStore{backend: b, particle: particle}
+}
+
+// scopedStore is the per-particle wrapper. Every method just
+// threads `particle` into the matching Backend method.
+type scopedStore struct {
+	backend  *Backend
+	particle string
+}
+
+var _ credentials.Store = (*scopedStore)(nil)
+
+func (s *scopedStore) GetByID(ctx context.Context, id string) (credentials.Descriptor, error) {
+	return s.backend.GetByID(ctx, s.particle, id)
+}
+func (s *scopedStore) GetByName(ctx context.Context, name string) (credentials.Descriptor, error) {
+	return s.backend.GetByName(ctx, s.particle, name)
+}
+func (s *scopedStore) List(ctx context.Context) ([]credentials.ListEntry, error) {
+	return s.backend.List(ctx, s.particle)
+}
+func (s *scopedStore) Put(ctx context.Context, name, method string, meta credentials.Metadata, secrets ...credentials.Secret) (credentials.Descriptor, error) {
+	return s.backend.Put(ctx, s.particle, name, method, meta, secrets...)
+}
+func (s *scopedStore) Delete(ctx context.Context, id string) error {
+	return s.backend.Delete(ctx, s.particle, id)
+}
+func (s *scopedStore) ConfiguredMethod(ctx context.Context, name string) (string, error) {
+	return s.backend.ConfiguredMethod(ctx, s.particle, name)
+}
+func (s *scopedStore) ReadSecret(ctx context.Context, id string, role credentials.SecretRole) ([]byte, error) {
+	return s.backend.ReadSecret(ctx, s.particle, id, role)
+}
+func (s *scopedStore) WriteSecrets(ctx context.Context, id string, secrets ...credentials.Secret) error {
+	return s.backend.WriteSecrets(ctx, s.particle, id, secrets...)
+}
+func (s *scopedStore) DeleteSecret(ctx context.Context, id string, role credentials.SecretRole) error {
+	return s.backend.DeleteSecret(ctx, s.particle, id, role)
+}
 
 // particleSlot holds the per-particle indexes. The same *record
 // pointer lives in both maps, so updates write once and stay
@@ -58,7 +103,7 @@ type record struct {
 	secrets map[credentials.SecretRole][]byte
 }
 
-func (s *Store) slotFor(particle string) *particleSlot {
+func (s *Backend) slotFor(particle string) *particleSlot {
 	slot, ok := s.byParticle[particle]
 	if !ok {
 		slot = &particleSlot{
@@ -70,7 +115,7 @@ func (s *Store) slotFor(particle string) *particleSlot {
 	return slot
 }
 
-func (s *Store) recordByID(particle, id string) (*record, error) {
+func (s *Backend) recordByID(particle, id string) (*record, error) {
 	slot, ok := s.byParticle[particle]
 	if !ok {
 		return nil, credentials.ErrNotFound
@@ -86,7 +131,7 @@ func (s *Store) recordByID(particle, id string) (*record, error) {
 // Metadata operations
 // -----------------------------------------------------------------------------
 
-func (s *Store) GetByID(_ context.Context, particle, id string) (credentials.Descriptor, error) {
+func (s *Backend) GetByID(_ context.Context, particle, id string) (credentials.Descriptor, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rec, err := s.recordByID(particle, id)
@@ -96,7 +141,7 @@ func (s *Store) GetByID(_ context.Context, particle, id string) (credentials.Des
 	return descriptorOf(rec), nil
 }
 
-func (s *Store) GetByName(_ context.Context, particle, name string) (credentials.Descriptor, error) {
+func (s *Backend) GetByName(_ context.Context, particle, name string) (credentials.Descriptor, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	slot, ok := s.byParticle[particle]
@@ -110,7 +155,7 @@ func (s *Store) GetByName(_ context.Context, particle, name string) (credentials
 	return descriptorOf(rec), nil
 }
 
-func (s *Store) List(_ context.Context, particle string) ([]credentials.ListEntry, error) {
+func (s *Backend) List(_ context.Context, particle string) ([]credentials.ListEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	slot, ok := s.byParticle[particle]
@@ -133,7 +178,7 @@ func (s *Store) List(_ context.Context, particle string) ([]credentials.ListEntr
 // Put configures the (particle, name) credential — see the
 // [credentials.Store] interface for the full contract. Method
 // switch wipes the row's prior secrets before writing new ones.
-func (s *Store) Put(_ context.Context, particle, name, method string, meta credentials.Metadata, secrets ...credentials.Secret) (credentials.Descriptor, error) {
+func (s *Backend) Put(_ context.Context, particle, name, method string, meta credentials.Metadata, secrets ...credentials.Secret) (credentials.Descriptor, error) {
 	if meta == nil {
 		return credentials.Descriptor{}, fmt.Errorf("memory: Put requires a non-nil Metadata")
 	}
@@ -185,7 +230,7 @@ func (s *Store) Put(_ context.Context, particle, name, method string, meta crede
 // ConfiguredMethod returns the method name stored for
 // (particle, name), or "" when no credential is configured under
 // that name.
-func (s *Store) ConfiguredMethod(_ context.Context, particle, name string) (string, error) {
+func (s *Backend) ConfiguredMethod(_ context.Context, particle, name string) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	slot, ok := s.byParticle[particle]
@@ -200,7 +245,7 @@ func (s *Store) ConfiguredMethod(_ context.Context, particle, name string) (stri
 }
 
 // Delete removes the entire entry. Idempotent.
-func (s *Store) Delete(_ context.Context, particle, id string) error {
+func (s *Backend) Delete(_ context.Context, particle, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -224,7 +269,7 @@ func (s *Store) Delete(_ context.Context, particle, id string) error {
 // Secret operations
 // -----------------------------------------------------------------------------
 
-func (s *Store) ReadSecret(_ context.Context, particle, id string, role credentials.SecretRole) ([]byte, error) {
+func (s *Backend) ReadSecret(_ context.Context, particle, id string, role credentials.SecretRole) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -241,7 +286,7 @@ func (s *Store) ReadSecret(_ context.Context, particle, id string, role credenti
 	return out, nil
 }
 
-func (s *Store) WriteSecrets(_ context.Context, particle, id string, secrets ...credentials.Secret) error {
+func (s *Backend) WriteSecrets(_ context.Context, particle, id string, secrets ...credentials.Secret) error {
 	for i, sec := range secrets {
 		if sec.Role == "" {
 			return fmt.Errorf("memory: WriteSecrets: secrets[%d] has empty Role", i)
@@ -263,7 +308,7 @@ func (s *Store) WriteSecrets(_ context.Context, particle, id string, secrets ...
 	return nil
 }
 
-func (s *Store) DeleteSecret(_ context.Context, particle, id string, role credentials.SecretRole) error {
+func (s *Backend) DeleteSecret(_ context.Context, particle, id string, role credentials.SecretRole) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

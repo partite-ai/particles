@@ -1,19 +1,61 @@
 package runtime
 
-import "time"
+import (
+	"net/http"
+	"time"
+)
 
-// ParticleOption configures a [Runtime.NewParticle] call.
-//
-// At present no options are exposed — the runtime derives every
-// per-particle setting from the manifest. This type and its
-// associated wiring is kept so callers and tests have a stable
-// place to attach options as they're added.
+// ParticleOption configures one [Runtime.NewParticle] call. The
+// per-particle options cover the optional knobs — the HTTP doer
+// the wasi:http policy delegates to, the wasi:logging sink. The
+// required per-particle stores (credentials, kv) are positional
+// parameters on [Runtime.NewParticle].
 type ParticleOption func(*particleConfig)
 
 // particleConfig holds the resolved per-particle settings the
 // runtime needs at instantiation time. Populated by applying every
 // [ParticleOption] in order.
-type particleConfig struct{}
+type particleConfig struct {
+	httpClient HTTPDoer
+	log        LogCallback
+}
+
+// WithHTTPClient overrides the [HTTPDoer] the per-particle wasi:http
+// policy delegates to. nil → [http.DefaultClient].
+//
+// The policy's allowed-hosts gate and credential substitution
+// always run first; this doer sees only the already-validated
+// outbound request.
+func WithHTTPClient(d HTTPDoer) ParticleOption {
+	return func(c *particleConfig) { c.httpClient = d }
+}
+
+// WithLog routes every wasi:logging/log call this particle makes
+// (the destination of console.*) to cb. Passing nil installs a
+// no-op sink that drops every entry for this particle.
+//
+// Callbacks run inline while the guest is paused; keep them
+// cheap and non-blocking. The runtime defaults the callback to
+// [DefaultLogCallback] (stdlib log) when no WithLog option is
+// supplied; pass an explicit no-op to silence a single particle.
+func WithLog(cb LogCallback) ParticleOption {
+	return func(c *particleConfig) { c.log = cb }
+}
+
+// applyParticleOptions folds the variadic ParticleOption slice
+// into a populated config. Defaults are filled in after option
+// application so explicit nil-passes (WithLog(nil)) are honored.
+func applyParticleOptions(opts []ParticleOption) particleConfig {
+	var cfg particleConfig
+	cfg.log = DefaultLogCallback
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.httpClient == nil {
+		cfg.httpClient = http.DefaultClient
+	}
+	return cfg
+}
 
 // CallOption configures a single [Particle.CallTool],
 // [Particle.ListTools], or [Particle.Ping] invocation. The

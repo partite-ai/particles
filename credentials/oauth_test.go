@@ -45,7 +45,7 @@ func TestOAuthAdapter_Refresh_HappyPath(t *testing.T) {
 	}
 	// Existing access token bundle (will be replaced).
 	prev := AccessToken{Token: "at-old", Type: "Bearer", ExpiresAt: time.Unix(1_000, 0)}.Marshal()
-	store.putWithSecrets("yaml-tools", "id-gh", "github_oauth", originalMeta,
+	store.putWithSecrets("id-gh", "github_oauth", originalMeta,
 		map[SecretRole][]byte{
 			SecretRoleAccessToken:  prev,
 			SecretRoleRefreshToken: []byte("rt-old"),
@@ -69,7 +69,7 @@ func TestOAuthAdapter_Refresh_HappyPath(t *testing.T) {
 		},
 	}
 
-	a := newOAuthAdapter(store, rf, "yaml-tools")
+	a := newOAuthAdapter(store, rf)
 	res, err := a.Refresh(context.Background(), "github_oauth")
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
@@ -80,7 +80,7 @@ func TestOAuthAdapter_Refresh_HappyPath(t *testing.T) {
 
 	// Access token rotated, refresh token preserved (provider
 	// didn't return one), client secret untouched.
-	atBytes, _ := store.ReadSecret(context.Background(), "yaml-tools", "id-gh", SecretRoleAccessToken)
+	atBytes, _ := store.ReadSecret(context.Background(), "id-gh", SecretRoleAccessToken)
 	at, err := UnmarshalAccessToken(atBytes)
 	if err != nil {
 		t.Fatalf("UnmarshalAccessToken: %v", err)
@@ -95,17 +95,17 @@ func TestOAuthAdapter_Refresh_HappyPath(t *testing.T) {
 		t.Errorf("access bundle ExpiresAt = %v, want %v", at.ExpiresAt, newExpiry)
 	}
 
-	rt, _ := store.ReadSecret(context.Background(), "yaml-tools", "id-gh", SecretRoleRefreshToken)
+	rt, _ := store.ReadSecret(context.Background(), "id-gh", SecretRoleRefreshToken)
 	if string(rt) != "rt-old" {
 		t.Errorf("refresh secret = %q, want rt-old (preserved)", rt)
 	}
-	cs, _ := store.ReadSecret(context.Background(), "yaml-tools", "id-gh", SecretRoleClientSecret)
+	cs, _ := store.ReadSecret(context.Background(), "id-gh", SecretRoleClientSecret)
 	if string(cs) != "cs" {
 		t.Errorf("client secret = %q, want cs (preserved)", cs)
 	}
 
 	// Crucially: metadata is unchanged. Refresh writes only secrets.
-	desc, _ := store.GetByName(context.Background(), "yaml-tools", "github_oauth")
+	desc, _ := store.GetByName(context.Background(), "github_oauth")
 	if !reflect.DeepEqual(desc.Meta, originalMeta) {
 		t.Errorf("metadata mutated by refresh:\n got: %+v\nwant: %+v", desc.Meta, originalMeta)
 	}
@@ -115,7 +115,7 @@ func TestOAuthAdapter_Refresh_RotatesRefreshToken(t *testing.T) {
 	// When the provider returns a new refresh token (Okta,
 	// Auth0 with rotation, etc.), the adapter writes it.
 	store := &fakeStore{}
-	store.putWithSecrets("p", "id-1", "x",
+	store.putWithSecrets("id-1", "x",
 		OAuth2Meta{TokenURL: "https://example.test/token"},
 		map[SecretRole][]byte{
 			SecretRoleAccessToken:  []byte("at-old"),
@@ -132,18 +132,18 @@ func TestOAuthAdapter_Refresh_RotatesRefreshToken(t *testing.T) {
 			}, nil
 		},
 	}
-	a := newOAuthAdapter(store, rf, "p")
+	a := newOAuthAdapter(store, rf)
 	if _, err := a.Refresh(context.Background(), "x"); err != nil {
 		t.Fatal(err)
 	}
-	rt, _ := store.ReadSecret(context.Background(), "p", "id-1", SecretRoleRefreshToken)
+	rt, _ := store.ReadSecret(context.Background(), "id-1", SecretRoleRefreshToken)
 	if string(rt) != "rt-new" {
 		t.Errorf("refresh secret = %q, want rt-new", rt)
 	}
 }
 
 func TestOAuthAdapter_Refresh_NotConfigured_NoEntry(t *testing.T) {
-	a := newOAuthAdapter(&fakeStore{}, &fakeRefresher{}, "p")
+	a := newOAuthAdapter(&fakeStore{}, &fakeRefresher{})
 	res, _ := a.Refresh(context.Background(), "missing")
 	errRes := res.(gen.Result_OauthErrorErr)
 	if _, ok := errRes.Value.(gen.OauthErrorNotConfigured); !ok {
@@ -154,8 +154,8 @@ func TestOAuthAdapter_Refresh_NotConfigured_NoEntry(t *testing.T) {
 func TestOAuthAdapter_Refresh_NotOAuth(t *testing.T) {
 	// Entry exists but isn't OAuth2 → not-oauth.
 	store := &fakeStore{}
-	store.putWithSecrets("p", "i", "x", APIKeyMeta{Location: ApplySpec{Kind: ApplyHeader, Name: "X-API"}}, nil)
-	a := newOAuthAdapter(store, &fakeRefresher{}, "p")
+	store.putWithSecrets("i", "x", APIKeyMeta{Location: ApplySpec{Kind: ApplyHeader, Name: "X-API"}}, nil)
+	a := newOAuthAdapter(store, &fakeRefresher{})
 	res, _ := a.Refresh(context.Background(), "x")
 	errRes := res.(gen.Result_OauthErrorErr)
 	if _, ok := errRes.Value.(gen.OauthErrorNotOauth); !ok {
@@ -165,8 +165,8 @@ func TestOAuthAdapter_Refresh_NotOAuth(t *testing.T) {
 
 func TestOAuthAdapter_Refresh_NotConfigured_RefreshTokenMissing(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("p", "i", "x", OAuth2Meta{TokenURL: "https://x"}, nil) // no refresh token slot
-	a := newOAuthAdapter(store, &fakeRefresher{}, "p")
+	store.putWithSecrets("i", "x", OAuth2Meta{TokenURL: "https://x"}, nil) // no refresh token slot
+	a := newOAuthAdapter(store, &fakeRefresher{})
 	res, _ := a.Refresh(context.Background(), "x")
 	errRes := res.(gen.Result_OauthErrorErr)
 	if _, ok := errRes.Value.(gen.OauthErrorNotConfigured); !ok {
@@ -176,7 +176,7 @@ func TestOAuthAdapter_Refresh_NotConfigured_RefreshTokenMissing(t *testing.T) {
 
 func TestOAuthAdapter_Refresh_RefreshFailed_UpstreamError(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("p", "i", "x",
+	store.putWithSecrets("i", "x",
 		OAuth2Meta{TokenURL: "https://x"},
 		map[SecretRole][]byte{SecretRoleRefreshToken: []byte("rt")},
 	)
@@ -185,7 +185,7 @@ func TestOAuthAdapter_Refresh_RefreshFailed_UpstreamError(t *testing.T) {
 			return RefreshResponse{}, errors.New("server returned 500")
 		},
 	}
-	a := newOAuthAdapter(store, rf, "p")
+	a := newOAuthAdapter(store, rf)
 	res, _ := a.Refresh(context.Background(), "x")
 	errRes := res.(gen.Result_OauthErrorErr)
 	rf2, ok := errRes.Value.(gen.OauthErrorRefreshFailed)
@@ -199,7 +199,7 @@ func TestOAuthAdapter_Refresh_RefreshFailed_UpstreamError(t *testing.T) {
 
 func TestOAuthAdapter_Refresh_RefreshFailed_EmptyAccessToken(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("p", "i", "x",
+	store.putWithSecrets("i", "x",
 		OAuth2Meta{TokenURL: "https://x"},
 		map[SecretRole][]byte{SecretRoleRefreshToken: []byte("rt")},
 	)
@@ -208,7 +208,7 @@ func TestOAuthAdapter_Refresh_RefreshFailed_EmptyAccessToken(t *testing.T) {
 			return RefreshResponse{}, nil // empty AccessToken
 		},
 	}
-	a := newOAuthAdapter(store, rf, "p")
+	a := newOAuthAdapter(store, rf)
 	res, _ := a.Refresh(context.Background(), "x")
 	errRes := res.(gen.Result_OauthErrorErr)
 	if _, ok := errRes.Value.(gen.OauthErrorRefreshFailed); !ok {
@@ -220,7 +220,7 @@ func TestOAuthAdapter_Refresh_RefreshFailed_EmptyAccessToken(t *testing.T) {
 // ClientSecret without an error.
 func TestOAuthAdapter_Refresh_PKCE_NoClientSecret(t *testing.T) {
 	store := &fakeStore{}
-	store.putWithSecrets("p", "i", "x",
+	store.putWithSecrets("i", "x",
 		OAuth2Meta{TokenURL: "https://x", Flow: "authorization-code-pkce"},
 		map[SecretRole][]byte{SecretRoleRefreshToken: []byte("rt")},
 	)
@@ -234,7 +234,7 @@ func TestOAuthAdapter_Refresh_PKCE_NoClientSecret(t *testing.T) {
 			}, nil
 		},
 	}
-	a := newOAuthAdapter(store, rf, "p")
+	a := newOAuthAdapter(store, rf)
 	if _, err := a.Refresh(context.Background(), "x"); err != nil {
 		t.Fatal(err)
 	}

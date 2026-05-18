@@ -18,7 +18,7 @@ import (
 // isolated) and returns a fresh Store. cache=shared keeps the
 // in-memory database reachable across the connection pool's
 // distinct connections.
-func newStore(t *testing.T) *sqlite.Store {
+func newStore(t *testing.T) *sqlite.Backend {
 	t.Helper()
 	dsn := "file:" + t.Name() + "?mode=memory&cache=shared"
 	db, err := sql.Open("sqlite", dsn)

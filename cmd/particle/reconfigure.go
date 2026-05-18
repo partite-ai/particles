@@ -69,7 +69,7 @@ func runReconfigure(cmd *cobra.Command, particleName, credName, dbPath string) e
 	if err != nil {
 		return fmt.Errorf("keyring: %w", err)
 	}
-	credStore, err := credsqlite.New(ctx, db, sealer)
+	credBackend, err := credsqlite.New(ctx, db, sealer)
 	if err != nil {
 		return fmt.Errorf("credentials store: %w", err)
 	}
@@ -81,7 +81,7 @@ func runReconfigure(cmd *cobra.Command, particleName, credName, dbPath string) e
 
 	entry, method, err := importer.Reconfigure(ctx, particleName, credName, importer.Options{
 		Registry:    reg,
-		Credentials: credStore,
+		Credentials: credBackend.Scoped(particleName),
 		Prompter:    stdio,
 	})
 	if err != nil {

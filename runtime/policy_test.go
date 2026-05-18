@@ -71,9 +71,9 @@ func TestRuntime_HTTP_AllowedHostSucceeds(t *testing.T) {
 	caps := fmt.Sprintf(`{ "http": { "allowedHosts": [%q] } }`, host)
 	res := buildParticle(t, fetchParticleSource("http-ok", caps))
 
-	rt, _, _, cleanup := newRuntime(t, ctx)
+	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
-	p, err := rt.NewParticle(ctx, res.Particle)
+	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,9 +105,9 @@ func TestRuntime_HTTP_DisallowedHostBlocked(t *testing.T) {
 	caps := `{ "http": { "allowedHosts": ["only.allowed.example"] } }`
 	res := buildParticle(t, fetchParticleSource("http-denied", caps))
 
-	rt, _, _, cleanup := newRuntime(t, ctx)
+	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
-	p, err := rt.NewParticle(ctx, res.Particle)
+	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,9 +152,9 @@ func TestRuntime_HTTP_AllowedHostsCaseInsensitive(t *testing.T) {
 	caps := fmt.Sprintf(`{ "http": { "allowedHosts": [%q] } }`, strings.ToUpper(host))
 	res := buildParticle(t, fetchParticleSource("http-case", caps))
 
-	rt, _, _, cleanup := newRuntime(t, ctx)
+	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
-	p, err := rt.NewParticle(ctx, res.Particle)
+	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,9 +180,9 @@ func TestRuntime_HTTP_NoCapability_AllDenied(t *testing.T) {
 
 	res := buildParticle(t, fetchParticleSource("http-undeclared", `{}`))
 
-	rt, _, _, cleanup := newRuntime(t, ctx)
+	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
-	p, err := rt.NewParticle(ctx, res.Particle)
+	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
 	if err != nil {
 		t.Fatal(err)
 	}

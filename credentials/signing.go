@@ -38,14 +38,13 @@ func hashFor(algorithm string) (func() hash.Hash, bool) {
 // -----------------------------------------------------------------------------
 
 type signingAdapter struct {
-	store    Store
-	particle string
+	store Store
 }
 
 var _ gen.Signing = (*signingAdapter)(nil)
 
-func newSigningAdapter(store Store, particle string) *signingAdapter {
-	return &signingAdapter{store: store, particle: particle}
+func newSigningAdapter(store Store) *signingAdapter {
+	return &signingAdapter{store: store}
 }
 
 // Sign computes a MAC over data using the named credential's key.
@@ -84,13 +83,13 @@ func (a *signingAdapter) Verify(ctx context.Context, name string, data []uint8, 
 	return gen.ResultBoolSigningErrorOk{Value: hmac.Equal(expected, signature)}, nil
 }
 
-// macFor resolves (particle, name) to a fresh hash.Hash keyed with
-// the credential's key material, ready to .Write() data into. On
-// failure it returns the SigningError variant the caller should
-// surface. Splitting it out keeps Sign and Verify near-identical at
-// the top level.
+// macFor resolves `name` (in the adapter's pre-bound particle
+// scope) to a fresh hash.Hash keyed with the credential's key
+// material, ready to .Write() data into. On failure it returns
+// the SigningError variant the caller should surface. Splitting
+// it out keeps Sign and Verify near-identical at the top level.
 func (a *signingAdapter) macFor(ctx context.Context, name string) (hash.Hash, gen.SigningError, bool) {
-	desc, err := a.store.GetByName(ctx, a.particle, name)
+	desc, err := a.store.GetByName(ctx, name)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil, gen.SigningErrorNotConfigured{}, false
@@ -108,7 +107,7 @@ func (a *signingAdapter) macFor(ctx context.Context, name string) (hash.Hash, ge
 				meta.Algorithm, AlgorithmHMACSHA256, AlgorithmHMACSHA512),
 		}, false
 	}
-	key, err := a.store.ReadSecret(ctx, a.particle, desc.ID, SecretRoleKey)
+	key, err := a.store.ReadSecret(ctx, desc.ID, SecretRoleKey)
 	if err != nil {
 		// Both ErrNotFound and ErrSecretNotSet collapse to
 		// not-configured — without key material there's

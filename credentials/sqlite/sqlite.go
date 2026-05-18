@@ -41,49 +41,100 @@ import (
 	"github.com/partite-ai/particles/credentials"
 )
 
-// Store is a SQLite-backed credentials.Store.
+// Backend is the SQLite-backed multi-particle credentials store.
+// It's the long-lived process-wide handle; per-particle
+// [credentials.Store] views come from [*Backend.Scoped].
 //
 // Safe for concurrent use — the underlying *sql.DB serializes
 // access through its connection pool, and every multi-statement
 // operation is wrapped in a transaction.
-type Store struct {
+type Backend struct {
 	db          *sql.DB
 	sealer      Sealer
 	idGenerator func() string // overridable for tests; defaults to newID
 }
 
-// New constructs a Store against an already-open *sql.DB and
+// New constructs a Backend against an already-open *sql.DB and
 // applies the schema. `sealer` is the encryption layer applied to
 // secret blobs; pass [NewKeyringSealer]'s result for the default
 // "key in OS keychain, secretbox at rest" behavior.
 //
-// A nil sealer constructs a metadata-only Store: Put /
+// A nil sealer constructs a metadata-only Backend: Put /
 // WriteSecrets / ReadSecret all error with a clear message, but
 // the no-crypto operations (List, GetByID, GetByName,
 // ConfiguredMethod, Delete, DeleteSecret) work. This is how
 // `particle list` avoids surfacing a keychain prompt when all it
 // needs is the configured-method name per particle.
 //
-// The caller retains ownership of the DB — closing the Store does
-// NOT close the DB; the caller decides when to.
-func New(ctx context.Context, db *sql.DB, sealer Sealer) (*Store, error) {
+// The caller retains ownership of the DB — closing the Backend
+// does NOT close the DB; the caller decides when to.
+func New(ctx context.Context, db *sql.DB, sealer Sealer) (*Backend, error) {
 	if db == nil {
 		return nil, errors.New("credentials/sqlite: db is required")
 	}
-	s := &Store{db: db, sealer: sealer, idGenerator: newID}
-	if err := s.migrate(ctx); err != nil {
+	b := &Backend{db: db, sealer: sealer, idGenerator: newID}
+	if err := b.migrate(ctx); err != nil {
 		return nil, err
 	}
-	return s, nil
+	return b, nil
 }
 
-// errNoSealer is the canonical error a metadata-only Store
+// Scoped returns a [credentials.Store] view of the Backend
+// pre-bound to the given particle. Every operation through the
+// returned Store flows through the Backend with `particle`
+// applied implicitly — exactly the row set the runtime would
+// have looked at via the old `Store.GetByName(ctx, particle, …)`
+// API. The Backend handle stays usable concurrently for other
+// particles.
+func (b *Backend) Scoped(particle string) credentials.Store {
+	return &scopedStore{backend: b, particle: particle}
+}
+
+// errNoSealer is the canonical error a metadata-only Backend
 // returns when a secret operation is attempted. Constants instead
 // of fresh allocations so errors.Is comparisons work for callers
 // that want to detect "this store doesn't have a sealer."
-var errNoSealer = errors.New("credentials/sqlite: secret operation requires a Sealer (Store was constructed without one)")
+var errNoSealer = errors.New("credentials/sqlite: secret operation requires a Sealer (Backend was constructed without one)")
 
-var _ credentials.Store = (*Store)(nil)
+// scopedStore is the per-particle credentials.Store wrapper
+// produced by Backend.Scoped. Methods just thread `particle` into
+// the matching Backend methods (which still carry it explicitly
+// so a single sqlite handle can serve every particle the host
+// hosts).
+type scopedStore struct {
+	backend  *Backend
+	particle string
+}
+
+var _ credentials.Store = (*scopedStore)(nil)
+
+func (s *scopedStore) GetByID(ctx context.Context, id string) (credentials.Descriptor, error) {
+	return s.backend.GetByID(ctx, s.particle, id)
+}
+func (s *scopedStore) GetByName(ctx context.Context, name string) (credentials.Descriptor, error) {
+	return s.backend.GetByName(ctx, s.particle, name)
+}
+func (s *scopedStore) List(ctx context.Context) ([]credentials.ListEntry, error) {
+	return s.backend.List(ctx, s.particle)
+}
+func (s *scopedStore) Put(ctx context.Context, name, method string, meta credentials.Metadata, secrets ...credentials.Secret) (credentials.Descriptor, error) {
+	return s.backend.Put(ctx, s.particle, name, method, meta, secrets...)
+}
+func (s *scopedStore) Delete(ctx context.Context, id string) error {
+	return s.backend.Delete(ctx, s.particle, id)
+}
+func (s *scopedStore) ConfiguredMethod(ctx context.Context, name string) (string, error) {
+	return s.backend.ConfiguredMethod(ctx, s.particle, name)
+}
+func (s *scopedStore) ReadSecret(ctx context.Context, id string, role credentials.SecretRole) ([]byte, error) {
+	return s.backend.ReadSecret(ctx, s.particle, id, role)
+}
+func (s *scopedStore) WriteSecrets(ctx context.Context, id string, secrets ...credentials.Secret) error {
+	return s.backend.WriteSecrets(ctx, s.particle, id, secrets...)
+}
+func (s *scopedStore) DeleteSecret(ctx context.Context, id string, role credentials.SecretRole) error {
+	return s.backend.DeleteSecret(ctx, s.particle, id, role)
+}
 
 // schema: one row per (particle, name) — `name` is the credential's
 // user-facing name (e.g., "github"); `method` is the configured
@@ -114,7 +165,7 @@ CREATE TABLE IF NOT EXISTS particle_credential_secrets (
 );
 `
 
-func (s *Store) migrate(ctx context.Context) error {
+func (s *Backend) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("credentials/sqlite: migrate: %w", err)
 	}
@@ -125,19 +176,19 @@ func (s *Store) migrate(ctx context.Context) error {
 // Metadata operations
 // -----------------------------------------------------------------------------
 
-func (s *Store) GetByID(ctx context.Context, particle, id string) (credentials.Descriptor, error) {
+func (s *Backend) GetByID(ctx context.Context, particle, id string) (credentials.Descriptor, error) {
 	return s.getOne(ctx,
 		`SELECT id, name, method, kind, meta_json FROM particle_credentials WHERE particle = ? AND id = ?`,
 		particle, id)
 }
 
-func (s *Store) GetByName(ctx context.Context, particle, name string) (credentials.Descriptor, error) {
+func (s *Backend) GetByName(ctx context.Context, particle, name string) (credentials.Descriptor, error) {
 	return s.getOne(ctx,
 		`SELECT id, name, method, kind, meta_json FROM particle_credentials WHERE particle = ? AND name = ?`,
 		particle, name)
 }
 
-func (s *Store) getOne(ctx context.Context, query string, args ...any) (credentials.Descriptor, error) {
+func (s *Backend) getOne(ctx context.Context, query string, args ...any) (credentials.Descriptor, error) {
 	row := s.db.QueryRowContext(ctx, query, args...)
 	var id, name, method, kind string
 	var metaJSON []byte
@@ -154,7 +205,7 @@ func (s *Store) getOne(ctx context.Context, query string, args ...any) (credenti
 	return credentials.Descriptor{ID: id, Name: name, Method: method, Meta: meta}, nil
 }
 
-func (s *Store) List(ctx context.Context, particle string) ([]credentials.ListEntry, error) {
+func (s *Backend) List(ctx context.Context, particle string) ([]credentials.ListEntry, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, name, method, kind FROM particle_credentials WHERE particle = ? ORDER BY name`,
 		particle)
@@ -180,7 +231,7 @@ func (s *Store) List(ctx context.Context, particle string) ([]credentials.ListEn
 // Put configures the (particle, name) credential — see the
 // [credentials.Store] interface for the full contract. Atomic via a
 // single transaction.
-func (s *Store) Put(ctx context.Context, particle, name, method string, meta credentials.Metadata, secrets ...credentials.Secret) (credentials.Descriptor, error) {
+func (s *Backend) Put(ctx context.Context, particle, name, method string, meta credentials.Metadata, secrets ...credentials.Secret) (credentials.Descriptor, error) {
 	if s.sealer == nil {
 		return credentials.Descriptor{}, errNoSealer
 	}
@@ -203,7 +254,7 @@ func (s *Store) Put(ctx context.Context, particle, name, method string, meta cre
 // ConfiguredMethod returns the method name stored for
 // (particle, name), or "" when no credential is configured under
 // that name.
-func (s *Store) ConfiguredMethod(ctx context.Context, particle, name string) (string, error) {
+func (s *Backend) ConfiguredMethod(ctx context.Context, particle, name string) (string, error) {
 	var method string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT method FROM particle_credentials WHERE particle = ? AND name = ?`,
@@ -222,7 +273,7 @@ func (s *Store) ConfiguredMethod(ctx context.Context, particle, name string) (st
 // preserves the existing ID and unmentioned secrets; switching
 // method wipes every prior secret for the row before writing new
 // ones.
-func (s *Store) putInTx(ctx context.Context, tx *sql.Tx, particle, name, method string, meta credentials.Metadata, secrets []credentials.Secret) (credentials.Descriptor, error) {
+func (s *Backend) putInTx(ctx context.Context, tx *sql.Tx, particle, name, method string, meta credentials.Metadata, secrets []credentials.Secret) (credentials.Descriptor, error) {
 	if meta == nil {
 		return credentials.Descriptor{}, fmt.Errorf("credentials/sqlite: requires a non-nil Metadata")
 	}
@@ -299,7 +350,7 @@ func (s *Store) putInTx(ctx context.Context, tx *sql.Tx, particle, name, method 
 
 // Delete removes the entire entry — metadata and every secret.
 // Idempotent.
-func (s *Store) Delete(ctx context.Context, particle, id string) error {
+func (s *Backend) Delete(ctx context.Context, particle, id string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("credentials/sqlite: Delete: begin: %w", err)
@@ -323,7 +374,7 @@ func (s *Store) Delete(ctx context.Context, particle, id string) error {
 // Secret operations
 // -----------------------------------------------------------------------------
 
-func (s *Store) ReadSecret(ctx context.Context, particle, id string, role credentials.SecretRole) ([]byte, error) {
+func (s *Backend) ReadSecret(ctx context.Context, particle, id string, role credentials.SecretRole) ([]byte, error) {
 	if s.sealer == nil {
 		return nil, errNoSealer
 	}
@@ -357,7 +408,7 @@ func (s *Store) ReadSecret(ctx context.Context, particle, id string, role creden
 
 // WriteSecrets atomically writes the given secrets, returning
 // ErrNotFound if the entry doesn't exist.
-func (s *Store) WriteSecrets(ctx context.Context, particle, id string, secrets ...credentials.Secret) error {
+func (s *Backend) WriteSecrets(ctx context.Context, particle, id string, secrets ...credentials.Secret) error {
 	if s.sealer == nil {
 		return errNoSealer
 	}
@@ -402,7 +453,7 @@ func (s *Store) WriteSecrets(ctx context.Context, particle, id string, secrets .
 
 // DeleteSecret removes a secret. Idempotent — silent on missing
 // entry or already-absent role.
-func (s *Store) DeleteSecret(ctx context.Context, particle, id string, role credentials.SecretRole) error {
+func (s *Backend) DeleteSecret(ctx context.Context, particle, id string, role credentials.SecretRole) error {
 	if _, err := s.db.ExecContext(ctx,
 		`DELETE FROM particle_credential_secrets WHERE particle = ? AND entry_id = ? AND role = ?`,
 		particle, id, string(role)); err != nil {

@@ -131,16 +131,25 @@ func runRegister(cmd *cobra.Command, res *build.Result, dbPath string, permMode 
 	// Read surfaces a clear EOF error.
 	var prompter importer.Prompter = importer.NewStdioPrompter()
 
+	// Scope the credential backend to this particle's name so
+	// the importer sees a particle-bound Store. The build path
+	// pulls the name straight off the manifest the bundler just
+	// produced.
+	name, _, err := manifestNameVersion(res.Particle)
+	if err != nil {
+		return err
+	}
 	var credStore credentials.Store
 	if len(declared) > 0 {
-		sealer, err := credsqlite.NewKeyringSealer(keyringService, keyringName)
-		if err != nil {
-			return fmt.Errorf("keyring: %w", err)
+		sealer, sErr := credsqlite.NewKeyringSealer(keyringService, keyringName)
+		if sErr != nil {
+			return fmt.Errorf("keyring: %w", sErr)
 		}
-		credStore, err = credsqlite.New(ctx, db, sealer)
-		if err != nil {
-			return fmt.Errorf("credentials store: %w", err)
+		backend, bErr := credsqlite.New(ctx, db, sealer)
+		if bErr != nil {
+			return fmt.Errorf("credentials store: %w", bErr)
 		}
+		credStore = backend.Scoped(name)
 	}
 
 	reg, err := regsqlite.New(ctx, db)

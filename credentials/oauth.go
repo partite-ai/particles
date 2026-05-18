@@ -211,13 +211,12 @@ func parseExpiresIn(raw json.RawMessage) (int64, bool) {
 type oauthAdapter struct {
 	store     Store
 	refresher OAuthRefresher
-	particle  string
 }
 
 var _ gen.Oauth = (*oauthAdapter)(nil)
 
-func newOAuthAdapter(store Store, refresher OAuthRefresher, particle string) *oauthAdapter {
-	return &oauthAdapter{store: store, refresher: refresher, particle: particle}
+func newOAuthAdapter(store Store, refresher OAuthRefresher) *oauthAdapter {
+	return &oauthAdapter{store: store, refresher: refresher}
 }
 
 // Refresh resolves the credential by name, verifies it's an OAuth2
@@ -234,7 +233,7 @@ func newOAuthAdapter(store Store, refresher OAuthRefresher, particle string) *oa
 func (a *oauthAdapter) Refresh(ctx context.Context, name string) (gen.Result_OauthError, error) {
 	defer hostmeter.EnterHost(ctx)()
 
-	desc, err := a.store.GetByName(ctx, a.particle, name)
+	desc, err := a.store.GetByName(ctx, name)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return gen.Result_OauthErrorErr{Value: gen.OauthErrorNotConfigured{}}, nil
@@ -244,7 +243,7 @@ func (a *oauthAdapter) Refresh(ctx context.Context, name string) (gen.Result_Oau
 	if _, ok := desc.Meta.(OAuth2Meta); !ok {
 		return gen.Result_OauthErrorErr{Value: gen.OauthErrorNotOauth{}}, nil
 	}
-	if _, err := rotateAccessToken(ctx, a.store, a.refresher, a.particle, desc.ID); err != nil {
+	if _, err := rotateAccessToken(ctx, a.store, a.refresher, desc.ID); err != nil {
 		// ErrNotFound (and the ErrSecretNotSet that wraps it)
 		// at this layer means the refresh token slot was empty —
 		// the credential isn't usable for refresh.
@@ -257,7 +256,8 @@ func (a *oauthAdapter) Refresh(ctx context.Context, name string) (gen.Result_Oau
 }
 
 // rotateAccessToken performs the OAuth 2.0 refresh mechanics for
-// the credential identified by (particle, id):
+// the credential identified by `id` in the (particle-scoped)
+// store:
 //
 //  1. Read the current refresh token + (optionally) client secret.
 //  2. Hand them to the [OAuthRefresher] along with the entry's
@@ -277,8 +277,8 @@ func (a *oauthAdapter) Refresh(ctx context.Context, name string) (gen.Result_Oau
 // verifying that the entry IS an OAuth2 credential before
 // calling — if it isn't, rotate returns a clear error pointing
 // at the type mismatch.
-func rotateAccessToken(ctx context.Context, store Store, refresher OAuthRefresher, particle, id string) (AccessToken, error) {
-	desc, err := store.GetByID(ctx, particle, id)
+func rotateAccessToken(ctx context.Context, store Store, refresher OAuthRefresher, id string) (AccessToken, error) {
+	desc, err := store.GetByID(ctx, id)
 	if err != nil {
 		return AccessToken{}, fmt.Errorf("rotate: lookup %s: %w", id, err)
 	}
@@ -287,14 +287,14 @@ func rotateAccessToken(ctx context.Context, store Store, refresher OAuthRefreshe
 		return AccessToken{}, fmt.Errorf("rotate %s: not an oauth2 credential", id)
 	}
 
-	refreshTok, err := store.ReadSecret(ctx, particle, id, SecretRoleRefreshToken)
+	refreshTok, err := store.ReadSecret(ctx, id, SecretRoleRefreshToken)
 	if err != nil {
 		return AccessToken{}, fmt.Errorf("rotate %s: read refresh token: %w", id, err)
 	}
 
 	// Client secret is optional (PKCE flows omit it). Tolerate
 	// ErrSecretNotSet and pass an empty value through.
-	clientSecret, err := store.ReadSecret(ctx, particle, id, SecretRoleClientSecret)
+	clientSecret, err := store.ReadSecret(ctx, id, SecretRoleClientSecret)
 	if err != nil && !errors.Is(err, ErrSecretNotSet) {
 		return AccessToken{}, fmt.Errorf("rotate %s: read client secret: %w", id, err)
 	}
@@ -324,7 +324,7 @@ func rotateAccessToken(ctx context.Context, store Store, refresher OAuthRefreshe
 	if len(resp.RefreshToken) > 0 {
 		secrets = append(secrets, Secret{Role: SecretRoleRefreshToken, Value: resp.RefreshToken})
 	}
-	if err := store.WriteSecrets(ctx, particle, id, secrets...); err != nil {
+	if err := store.WriteSecrets(ctx, id, secrets...); err != nil {
 		return AccessToken{}, fmt.Errorf("rotate %s: store: %w", id, err)
 	}
 	return bundle, nil

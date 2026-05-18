@@ -30,13 +30,15 @@ import (
 	"github.com/partite-ai/particles/kv"
 )
 
-// Store is a SQLite-backed kv.Store with optional per-particle quota.
+// Backend is the SQLite-backed multi-particle kv backing store
+// with optional per-particle quota. Per-particle [kv.Store] views
+// come from [*Backend.Scoped].
 //
 // Safe for concurrent use — the underlying *sql.DB serializes
 // access through its connection pool, and Set wraps its
 // read-then-write quota check in a transaction so two concurrent
 // writes can't both squeak past the cap.
-type Store struct {
+type Backend struct {
 	db *sql.DB
 
 	// QuotaBytes, if non-zero, caps the total number of bytes
@@ -46,22 +48,48 @@ type Store struct {
 	QuotaBytes int
 }
 
-// New constructs a Store against an already-open *sql.DB and
+// New constructs a Backend against an already-open *sql.DB and
 // applies the schema. The caller retains ownership of the DB —
-// closing the Store does NOT close the DB; the caller decides when
-// to.
-func New(ctx context.Context, db *sql.DB) (*Store, error) {
+// closing the Backend does NOT close the DB; the caller decides
+// when to.
+func New(ctx context.Context, db *sql.DB) (*Backend, error) {
 	if db == nil {
 		return nil, errors.New("kv/sqlite: db is required")
 	}
-	s := &Store{db: db}
-	if err := s.migrate(ctx); err != nil {
+	b := &Backend{db: db}
+	if err := b.migrate(ctx); err != nil {
 		return nil, err
 	}
-	return s, nil
+	return b, nil
 }
 
-var _ kv.Store = (*Store)(nil)
+// Scoped returns a [kv.Store] view of the Backend pre-bound to
+// `particle`. Mirrors `credentials/sqlite.(*Backend).Scoped`.
+func (b *Backend) Scoped(particle string) kv.Store {
+	return &scopedStore{backend: b, particle: particle}
+}
+
+// scopedStore is the per-particle wrapper. Methods just thread
+// `particle` into the matching Backend method.
+type scopedStore struct {
+	backend  *Backend
+	particle string
+}
+
+var _ kv.Store = (*scopedStore)(nil)
+
+func (s *scopedStore) Get(ctx context.Context, key string) (string, bool, error) {
+	return s.backend.Get(ctx, s.particle, key)
+}
+func (s *scopedStore) Set(ctx context.Context, key, value string) error {
+	return s.backend.Set(ctx, s.particle, key, value)
+}
+func (s *scopedStore) Delete(ctx context.Context, key string) error {
+	return s.backend.Delete(ctx, s.particle, key)
+}
+func (s *scopedStore) List(ctx context.Context, prefix string) ([]string, error) {
+	return s.backend.List(ctx, s.particle, prefix)
+}
 
 const schema = `
 CREATE TABLE IF NOT EXISTS particle_kv (
@@ -76,14 +104,14 @@ CREATE TABLE IF NOT EXISTS particle_kv_usage (
 );
 `
 
-func (s *Store) migrate(ctx context.Context) error {
+func (s *Backend) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("kv/sqlite: migrate: %w", err)
 	}
 	return nil
 }
 
-func (s *Store) Get(ctx context.Context, particle, key string) (string, bool, error) {
+func (s *Backend) Get(ctx context.Context, particle, key string) (string, bool, error) {
 	var v string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT value FROM particle_kv WHERE particle = ? AND key = ?`,
@@ -101,7 +129,7 @@ func (s *Store) Get(ctx context.Context, particle, key string) (string, bool, er
 // QuotaBytes if non-zero. The per-particle usage counter in
 // particle_kv_usage is updated transactionally with the data row,
 // so the quota check is O(1) regardless of namespace size.
-func (s *Store) Set(ctx context.Context, particle, key, value string) error {
+func (s *Backend) Set(ctx context.Context, particle, key, value string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("kv/sqlite: Set: begin: %w", err)
@@ -159,7 +187,7 @@ func (s *Store) Set(ctx context.Context, particle, key, value string) error {
 
 // Delete removes (particle, key) and decrements the usage counter
 // transactionally. Idempotent — a missing key is a no-op.
-func (s *Store) Delete(ctx context.Context, particle, key string) error {
+func (s *Backend) Delete(ctx context.Context, particle, key string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("kv/sqlite: Delete: begin: %w", err)
@@ -202,7 +230,7 @@ func (s *Store) Delete(ctx context.Context, particle, key string) error {
 // List returns keys in `particle` whose name has `prefix` as a
 // prefix, sorted ascending. SQLite's `LIKE` with an escape clause
 // keeps `%` and `_` in the prefix from matching as wildcards.
-func (s *Store) List(ctx context.Context, particle, prefix string) ([]string, error) {
+func (s *Backend) List(ctx context.Context, particle, prefix string) ([]string, error) {
 	pattern := likeEscape(prefix) + "%"
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT key FROM particle_kv

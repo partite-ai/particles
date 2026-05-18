@@ -9,7 +9,7 @@ import (
 
 // setupBasic captures username + password for an HTTP Basic
 // credential. The password is masked at the terminal.
-func setupBasic(ctx context.Context, opts Options, particle, credName string, method credentialMethod) error {
+func setupBasic(ctx context.Context, opts Options, credName string, method credentialMethod) error {
 	username, err := opts.Prompter.String("Username", "")
 	if err != nil {
 		return err
@@ -18,7 +18,7 @@ func setupBasic(ctx context.Context, opts Options, particle, credName string, me
 	if err != nil {
 		return err
 	}
-	_, err = opts.Credentials.Put(ctx, particle, credName, method.Name,
+	_, err = opts.Credentials.Put(ctx, credName, method.Name,
 		credentials.BasicMeta{Username: username},
 		credentials.Secret{Role: credentials.SecretRolePassword, Value: []byte(password)},
 	)
@@ -37,7 +37,7 @@ func setupBasic(ctx context.Context, opts Options, particle, credName string, me
 // Pre-setting matters when the API has a single canonical
 // placement (GitHub PATs always go in `Authorization: Bearer
 // <pat>`) — re-asking the user is just noise.
-func setupAPIKey(ctx context.Context, opts Options, particle, credName string, method credentialMethod) error {
+func setupAPIKey(ctx context.Context, opts Options, credName string, method credentialMethod) error {
 	var loc credentials.ApplySpec
 	var err error
 	if method.Location != nil {
@@ -56,7 +56,7 @@ func setupAPIKey(ctx context.Context, opts Options, particle, credName string, m
 	if err != nil {
 		return err
 	}
-	_, err = opts.Credentials.Put(ctx, particle, credName, method.Name,
+	_, err = opts.Credentials.Put(ctx, credName, method.Name,
 		credentials.APIKeyMeta{Location: loc},
 		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte(key)},
 	)
@@ -140,7 +140,7 @@ func promptAPIKeyLocation(p Prompter) (credentials.ApplySpec, error) {
 // is taken from the method declaration (the manifest author
 // committed to one at design time) — re-prompting would invite
 // drift between the schema and what's stored.
-func setupSigningKey(ctx context.Context, opts Options, particle, credName string, method credentialMethod) error {
+func setupSigningKey(ctx context.Context, opts Options, credName string, method credentialMethod) error {
 	if method.Algorithm == "" {
 		return fmt.Errorf("manifest declares signing-key %s.%s without algorithm", credName, method.Name)
 	}
@@ -148,7 +148,7 @@ func setupSigningKey(ctx context.Context, opts Options, particle, credName strin
 	if err != nil {
 		return err
 	}
-	_, err = opts.Credentials.Put(ctx, particle, credName, method.Name,
+	_, err = opts.Credentials.Put(ctx, credName, method.Name,
 		credentials.SigningKeyMeta{Algorithm: method.Algorithm},
 		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte(key)},
 	)
@@ -158,7 +158,7 @@ func setupSigningKey(ctx context.Context, opts Options, particle, credName strin
 // setupRaw captures an opaque value, after warning the user that
 // it'll be visible to the JS handler (and any transitive npm
 // dep) in plaintext. Per design doc §7.
-func setupRaw(ctx context.Context, opts Options, particle, credName string, method credentialMethod) error {
+func setupRaw(ctx context.Context, opts Options, credName string, method credentialMethod) error {
 	opts.Prompter.Warn("'raw' credentials are returned to your particle's JavaScript in their actual value.")
 	opts.Prompter.Warn("They will be visible to all code in the particle, including transitive npm dependencies.")
 	opts.Prompter.Warn("Use a more specific type (basic, oauth2, apikey, signing-key) where possible.")
@@ -173,7 +173,7 @@ func setupRaw(ctx context.Context, opts Options, particle, credName string, meth
 	if err != nil {
 		return err
 	}
-	_, err = opts.Credentials.Put(ctx, particle, credName, method.Name,
+	_, err = opts.Credentials.Put(ctx, credName, method.Name,
 		credentials.RawMeta{},
 		credentials.Secret{Role: credentials.SecretRoleValue, Value: []byte(value)},
 	)

@@ -15,21 +15,19 @@ import (
 
 // Manager produces wacogo host instances for every host capability
 // the credentials package implements — credentials, oauth, and
-// signing. (kv lives in a sibling package: it doesn't need a Store.)
+// signing. (kv lives in a sibling package.)
 //
-// One Manager per (engine, store, refresher) tuple, shared across
-// every particle the host runs. Calling
-// [Manager.NewCredentialsInstance] / [Manager.NewOAuthInstance]
-// (etc.) per particle produces lightweight host.ComponentInstances
-// scoped to that particle's name; the underlying host.Component
-// templates are owned by the Manager and reused.
+// The Manager owns the host.Component templates (the "wasm wiring"
+// part) and the OAuth refresher; it does NOT own a Store. Per-
+// particle [Store] views are passed in to each
+// `NewXxxInstance` call so the same set of factories can serve
+// every particle the host hosts.
 //
 // Lifecycle: build with [NewManager], use across particles, [Close]
 // when done. Closing the wacogo.Engine is also sufficient — Manager
 // state lives within it.
 type Manager struct {
 	engine    *wacogo.Engine
-	store     Store
 	refresher OAuthRefresher
 
 	credFac    *gen_creds.Factory
@@ -37,24 +35,16 @@ type Manager struct {
 	signingFac *gen_sign.Factory
 }
 
-// ManagerConfig is the input to [NewManager]. Adding new optional
-// fields here (next: signing key provider, kv backend) is
-// non-breaking; the only required fields are Engine and Store.
+// ManagerConfig is the input to [NewManager].
 type ManagerConfig struct {
 	// Engine is the wacogo runtime the host instances will be
 	// built against. Required.
 	Engine *wacogo.Engine
 
-	// Store backs every capability — the credentials adapter
-	// consults it for placeholders + raw lookups, the oauth
-	// adapter for refresh-token reads + access-token writes.
-	// Required.
-	Store Store
-
 	// Refresher performs the upstream OAuth 2.0 token refresh
 	// exchange. nil → [HTTPRefresher] with the default
 	// http.DefaultClient. Only consulted when the host calls
-	// [Manager.NewOAuthInstance].
+	// [Manager.NewOAuthInstance] or [Manager.RotateAccessToken].
 	Refresher OAuthRefresher
 }
 
@@ -65,9 +55,6 @@ type ManagerConfig struct {
 func NewManager(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 	if cfg.Engine == nil {
 		return nil, errors.New("credentials: NewManager: Engine is required")
-	}
-	if cfg.Store == nil {
-		return nil, errors.New("credentials: NewManager: Store is required")
 	}
 
 	credFac, err := gen_creds.NewFactory(ctx, cfg.Engine)
@@ -93,7 +80,6 @@ func NewManager(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 
 	return &Manager{
 		engine:     cfg.Engine,
-		store:      cfg.Store,
 		refresher:  refresher,
 		credFac:    credFac,
 		oauthFac:   oauthFac,
@@ -101,18 +87,11 @@ func NewManager(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 	}, nil
 }
 
-// Store returns the Store the Manager was built around. Exposed
-// for callers that need direct read access alongside the WIT-level
-// host instances — e.g., the runtime's wasi:http policy reads
-// secrets at substitution time without going through a host
-// component.
-func (m *Manager) Store() Store { return m.store }
-
 // RotateAccessToken performs an OAuth 2.0 token refresh for the
-// credential identified by (particle, id) and writes the rotated
-// secrets back to the Store. Returns the new access-token bundle
-// (Token + Type + ExpiresAt) so the caller doesn't need a follow-
-// up ReadSecret.
+// credential identified by `id` in `store` and writes the rotated
+// secrets back. Returns the new access-token bundle (Token +
+// Type + ExpiresAt) so the caller doesn't need a follow-up
+// ReadSecret.
 //
 // Exposed so the wasi:http policy can proactively refresh tokens
 // approaching their ExpiresAt before substituting them into
@@ -122,8 +101,8 @@ func (m *Manager) Store() Store { return m.store }
 // failure, or store write failure; callers decide whether to fail
 // the operation, fall through to the stale token, or surface
 // somewhere else.
-func (m *Manager) RotateAccessToken(ctx context.Context, particle, id string) (AccessToken, error) {
-	return rotateAccessToken(ctx, m.store, m.refresher, particle, id)
+func (m *Manager) RotateAccessToken(ctx context.Context, store Store, id string) (AccessToken, error) {
+	return rotateAccessToken(ctx, store, m.refresher, id)
 }
 
 // Close releases the host.Component templates for every
@@ -147,13 +126,14 @@ func (m *Manager) Close(ctx context.Context) error {
 }
 
 // NewCredentialsInstance produces a host instance satisfying
-// `import particle:host/credentials@0.1.0`, scoped to the named
-// particle. Pass `inst.Core()` to `wacogo.WithInstanceImport(...)`.
-func (m *Manager) NewCredentialsInstance(ctx context.Context, particle string) (*host.ComponentInstance, error) {
-	if particle == "" {
-		return nil, errors.New("credentials: NewCredentialsInstance: particle name is required")
+// `import particle:host/credentials@0.1.0`. The instance reads
+// and writes through the supplied (particle-scoped) Store. Pass
+// `inst.Core()` to `wacogo.WithInstanceImport(...)`.
+func (m *Manager) NewCredentialsInstance(ctx context.Context, store Store) (*host.ComponentInstance, error) {
+	if store == nil {
+		return nil, errors.New("credentials: NewCredentialsInstance: store is required")
 	}
-	inst, err := m.credFac.NewInstance(ctx, newAdapter(m.store, particle), nil)
+	inst, err := m.credFac.NewInstance(ctx, newAdapter(store), nil)
 	if err != nil {
 		return nil, fmt.Errorf("credentials: instantiate credentials: %w", err)
 	}
@@ -161,13 +141,14 @@ func (m *Manager) NewCredentialsInstance(ctx context.Context, particle string) (
 }
 
 // NewOAuthInstance produces a host instance satisfying
-// `import particle:host/oauth@0.1.0`, scoped to the named particle.
-// Pass `inst.Core()` to `wacogo.WithInstanceImport(...)`.
-func (m *Manager) NewOAuthInstance(ctx context.Context, particle string) (*host.ComponentInstance, error) {
-	if particle == "" {
-		return nil, errors.New("credentials: NewOAuthInstance: particle name is required")
+// `import particle:host/oauth@0.1.0`. The instance reads and
+// writes through the supplied (particle-scoped) Store. Pass
+// `inst.Core()` to `wacogo.WithInstanceImport(...)`.
+func (m *Manager) NewOAuthInstance(ctx context.Context, store Store) (*host.ComponentInstance, error) {
+	if store == nil {
+		return nil, errors.New("credentials: NewOAuthInstance: store is required")
 	}
-	inst, err := m.oauthFac.NewInstance(ctx, newOAuthAdapter(m.store, m.refresher, particle), nil)
+	inst, err := m.oauthFac.NewInstance(ctx, newOAuthAdapter(store, m.refresher), nil)
 	if err != nil {
 		return nil, fmt.Errorf("credentials: instantiate oauth: %w", err)
 	}
@@ -175,16 +156,17 @@ func (m *Manager) NewOAuthInstance(ctx context.Context, particle string) (*host.
 }
 
 // NewSigningInstance produces a host instance satisfying
-// `import particle:host/signing@0.1.0`, scoped to the named
-// particle. Sign / verify operate on SigningKeyMeta entries — the
-// adapter looks up the entry by name, fetches the key bytes from
+// `import particle:host/signing@0.1.0`. The instance reads
+// and writes through the supplied (particle-scoped) Store.
+// Sign / verify operate on SigningKeyMeta entries — the adapter
+// looks up the entry by name, fetches the key bytes from
 // SecretRoleKey, and dispatches to crypto/hmac per the entry's
 // Algorithm.
-func (m *Manager) NewSigningInstance(ctx context.Context, particle string) (*host.ComponentInstance, error) {
-	if particle == "" {
-		return nil, errors.New("credentials: NewSigningInstance: particle name is required")
+func (m *Manager) NewSigningInstance(ctx context.Context, store Store) (*host.ComponentInstance, error) {
+	if store == nil {
+		return nil, errors.New("credentials: NewSigningInstance: store is required")
 	}
-	inst, err := m.signingFac.NewInstance(ctx, newSigningAdapter(m.store, particle), nil)
+	inst, err := m.signingFac.NewInstance(ctx, newSigningAdapter(store), nil)
 	if err != nil {
 		return nil, fmt.Errorf("credentials: instantiate signing: %w", err)
 	}

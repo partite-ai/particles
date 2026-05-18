@@ -22,9 +22,11 @@ import (
 	"errors"
 )
 
-// Store is the host-side key/value store interface. All operations
-// are scoped by particle name — each particle has its own
-// namespace.
+// Store is the host-side key/value store interface, scoped to a
+// single particle. Construct one via a backend-specific helper —
+// e.g., `kv/sqlite.(*Backend).Scoped(particle)` returns a Store
+// that pre-binds the multi-particle sqlite backing store to the
+// named particle so every method here can stay particle-free.
 //
 // Values are strings (the WIT contract is `string`, not `list<u8>`).
 // Hosts that need to store binary data should base64-encode in the
@@ -32,30 +34,30 @@ import (
 //
 // Implementations should be safe for concurrent use.
 type Store interface {
-	// Get returns the value stored under (particle, key). The
-	// boolean is false when no entry exists for that key — the
-	// runtime maps this to `option<string>::none` for the
-	// particle. error is reserved for storage failures.
-	Get(ctx context.Context, particle, key string) (value string, found bool, err error)
+	// Get returns the value stored under `key`. The boolean is
+	// false when no entry exists for that key — the runtime
+	// maps this to `option<string>::none` for the particle.
+	// error is reserved for storage failures.
+	Get(ctx context.Context, key string) (value string, found bool, err error)
 
 	// Set creates or replaces the value. Returns ErrQuotaExceeded
 	// if the host enforces a per-particle quota and writing
 	// would exceed it; the runtime maps that to
 	// `kv-error::quota-exceeded`.
-	Set(ctx context.Context, particle, key, value string) error
+	Set(ctx context.Context, key, value string) error
 
 	// Delete removes the entry. Idempotent: returns nil when
 	// no such entry existed.
-	Delete(ctx context.Context, particle, key string) error
+	Delete(ctx context.Context, key string) error
 
-	// List returns every key in the particle's namespace whose
+	// List returns every key in this particle's namespace whose
 	// name has `prefix` as a prefix, in unspecified order.
 	// Empty `prefix` matches every key.
 	//
 	// Implementations should not include values — this is the
 	// inventory path; the particle calls Get to fetch values
 	// individually if needed.
-	List(ctx context.Context, particle, prefix string) (keys []string, err error)
+	List(ctx context.Context, prefix string) (keys []string, err error)
 }
 
 // ErrQuotaExceeded is the sentinel a Store returns from Set when

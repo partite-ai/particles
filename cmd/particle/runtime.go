@@ -30,26 +30,22 @@ func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry) (*runti
 	if err != nil {
 		return nil, nil, fmt.Errorf("keyring: %w", err)
 	}
-	credStore, err := credsqlite.New(ctx, db, sealer)
+	credBackend, err := credsqlite.New(ctx, db, sealer)
 	if err != nil {
 		return nil, nil, fmt.Errorf("credentials store: %w", err)
 	}
-	kvStore, err := kvsqlite.New(ctx, db)
+	kvBackend, err := kvsqlite.New(ctx, db)
 	if err != nil {
 		return nil, nil, fmt.Errorf("kv store: %w", err)
 	}
 
 	engine := wacogo.NewEngine(ctx)
-	credMgr, err := credentials.NewManager(ctx, credentials.ManagerConfig{
-		Engine: engine, Store: credStore,
-	})
+	credMgr, err := credentials.NewManager(ctx, credentials.ManagerConfig{Engine: engine})
 	if err != nil {
 		_ = engine.Close(ctx)
 		return nil, nil, fmt.Errorf("credentials manager: %w", err)
 	}
-	kvMgr, err := kv.NewManager(ctx, kv.ManagerConfig{
-		Engine: engine, Store: kvStore,
-	})
+	kvMgr, err := kv.NewManager(ctx, kv.ManagerConfig{Engine: engine})
 	if err != nil {
 		_ = credMgr.Close(ctx)
 		_ = engine.Close(ctx)
@@ -66,7 +62,14 @@ func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry) (*runti
 		return nil, nil, fmt.Errorf("runtime: %w", err)
 	}
 
-	p, err := rt.NewParticle(ctx, entry.Particle)
+	// Scope the multi-particle backends to this particle's
+	// name. The resulting per-particle Stores are what
+	// NewParticle reads through; the Managers themselves stay
+	// particle-agnostic.
+	p, err := rt.NewParticle(ctx, entry.Particle,
+		credBackend.Scoped(entry.Name),
+		kvBackend.Scoped(entry.Name),
+	)
 	if err != nil {
 		_ = rt.Close(ctx)
 		_ = kvMgr.Close(ctx)

@@ -46,7 +46,7 @@ var idShape = regexp.MustCompile(`^[a-z2-7]{26}$`)
 // isolated) and returns a fresh Store. Cache=shared lets the single
 // in-memory database remain reachable across the connection pool's
 // distinct connections.
-func newStore(t *testing.T) *sqlite.Store {
+func newStore(t *testing.T) *sqlite.Backend {
 	t.Helper()
 	dsn := "file:" + t.Name() + "?mode=memory&cache=shared"
 	db, err := sql.Open("sqlite", dsn)

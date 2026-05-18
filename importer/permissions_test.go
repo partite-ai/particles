@@ -18,7 +18,7 @@ import (
 // proceeds when the user accepts.
 func TestImport_Permission_FreshInstall_Prompts(t *testing.T) {
 	reg := newRegistry(t)
-	store := credmem.New()
+	store := credmem.New().Scoped("p")
 	prompter := &scriptedPrompter{
 		t:        t,
 		confirms: []bool{true}, // accept perms
@@ -37,7 +37,7 @@ func TestImport_Permission_FreshInstall_Prompts(t *testing.T) {
 // User declines → Import errors with "permissions declined".
 func TestImport_Permission_Declined_Aborts(t *testing.T) {
 	reg := newRegistry(t)
-	store := credmem.New()
+	store := credmem.New().Scoped("p")
 	prompter := &scriptedPrompter{
 		t:        t,
 		confirms: []bool{false}, // decline
@@ -54,7 +54,7 @@ func TestImport_Permission_Declined_Aborts(t *testing.T) {
 // Re-install with identical caps → no prompt (silent reinstall).
 func TestImport_Permission_UnchangedCaps_Silent(t *testing.T) {
 	reg := newRegistry(t)
-	store := credmem.New()
+	store := credmem.New().Scoped("p")
 	caps := `{"http":{"allowedHosts":["api.example.com"]}}`
 
 	// First install: accept perms.
@@ -80,7 +80,7 @@ func TestImport_Permission_UnchangedCaps_Silent(t *testing.T) {
 // Re-install with different caps → prompt.
 func TestImport_Permission_ChangedCaps_Prompts(t *testing.T) {
 	reg := newRegistry(t)
-	store := credmem.New()
+	store := credmem.New().Scoped("p")
 
 	// First install: one allowed host.
 	first := &scriptedPrompter{t: t, confirms: []bool{true}}
@@ -108,7 +108,7 @@ func TestImport_Permission_ChangedCaps_Prompts(t *testing.T) {
 // PermissionSkip mode auto-accepts even on a fresh install.
 func TestImport_Permission_SkipMode_NoPrompt(t *testing.T) {
 	reg := newRegistry(t)
-	store := credmem.New()
+	store := credmem.New().Scoped("p")
 	prompter := &scriptedPrompter{t: t} // empty — any prompt fails
 
 	if _, err := importer.Import(context.Background(),
@@ -125,7 +125,7 @@ func TestImport_Permission_SkipMode_NoPrompt(t *testing.T) {
 // PermissionForce mode prompts even when caps are unchanged.
 func TestImport_Permission_ForceMode_PromptsEvenIfUnchanged(t *testing.T) {
 	reg := newRegistry(t)
-	store := credmem.New()
+	store := credmem.New().Scoped("p")
 	caps := `{"http":{"allowedHosts":["api.example.com"]}}`
 
 	if _, err := importer.Import(context.Background(),
@@ -175,7 +175,7 @@ func TestImport_Permission_NoCapabilities_Silent(t *testing.T) {
 // same semantic value are treated as equal.
 func TestImport_Permission_CanonicalComparison(t *testing.T) {
 	reg := newRegistry(t)
-	store := credmem.New()
+	store := credmem.New().Scoped("p")
 
 	// First install: compact JSON.
 	first := &scriptedPrompter{t: t, confirms: []bool{true}}
@@ -212,7 +212,7 @@ func TestImport_Permission_CanonicalComparison(t *testing.T) {
 // permission — neither belongs in the summary.
 func TestImport_Permission_SummaryNamesEachCategory(t *testing.T) {
 	reg := newRegistry(t)
-	store := credmem.New()
+	store := credmem.New().Scoped("p")
 	caps := `{"http":{"allowedHosts":["api.example.com"]}}`
 	creds := `{"svc":{"required":true,"methods":{"pat":{"type":"apikey","description":"PAT"}}}}`
 	prompter := &scriptedPrompter{t: t, confirms: []bool{false}}
@@ -240,7 +240,7 @@ func TestImport_Permission_NestedArrayOrderMatters(t *testing.T) {
 	// change". That's intentional: a permission diff that
 	// reordered a list should still resurface the prompt.
 	reg := newRegistry(t)
-	store := credmem.New()
+	store := credmem.New().Scoped("p")
 
 	if _, err := importer.Import(context.Background(),
 		mkParticleFS("p", "0.1.0", `{"http":{"allowedHosts":["a.com","b.com"]}}`, "{}"),
@@ -268,7 +268,7 @@ func TestImport_Permission_NestedArrayOrderMatters(t *testing.T) {
 // browser launch — which most users won't scrutinize).
 func TestImport_Permission_OAuthURLs_Surfaced(t *testing.T) {
 	reg := newRegistry(t)
-	store := credmem.New()
+	store := credmem.New().Scoped("p")
 	creds := `{
 		"github":{"required":true,"methods":{
 			"github_oauth":{
@@ -307,7 +307,7 @@ func TestImport_Permission_OAuthURLs_Surfaced(t *testing.T) {
 // (logged by CDNs / proxies).
 func TestImport_Permission_APIKeyLocation_Surfaced(t *testing.T) {
 	reg := newRegistry(t)
-	store := credmem.New()
+	store := credmem.New().Scoped("p")
 	creds := `{
 		"svc":{"required":true,"methods":{
 			"shifty":{
