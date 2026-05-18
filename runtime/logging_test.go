@@ -1,9 +1,12 @@
 package runtime_test
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -86,15 +89,57 @@ func TestRuntime_Logging_RoutesConsoleError(t *testing.T) {
 	}
 }
 
-// Nil LogCallback keeps the host instance no-op (the import
-// still has to be satisfied for the runtime wasm to instantiate;
-// the runtime just drops anything the guest sends).
-func TestRuntime_Logging_NilCallback_DoesNotPanic(t *testing.T) {
+// A nil [runtime.LogCallback] in Config defaults to
+// [runtime.DefaultLogCallback], which writes to the stdlib
+// logger. Captures log.Default()'s output and asserts our
+// expected line shape lands.
+func TestRuntime_Logging_DefaultsToStdlib(t *testing.T) {
 	ctx := context.Background()
+	src := `export default {
+  name: "default-log-test",
+  description: "uses the default log sink",
+  version: "0.1.0",
+  capabilities: {},
+  tools: {
+    say: {
+      description: "log via console.error",
+      inputSchema: { type: "object" },
+      handler: async () => { console.error("hello default"); return { ok: true }; },
+    },
+  },
+};`
+	res := buildParticle(t, src)
+
+	// Redirect log.Default()'s output for the duration of the
+	// test. Restoring is critical — leaving log pointed at
+	// our buffer would corrupt other tests that share the
+	// process.
+	var buf bytes.Buffer
+	originalWriter := log.Default().Writer()
+	originalFlags := log.Default().Flags()
+	log.Default().SetOutput(&buf)
+	log.Default().SetFlags(0) // strip timestamp so the assertion is stable
+	defer func() {
+		log.Default().SetOutput(originalWriter)
+		log.Default().SetFlags(originalFlags)
+	}()
+
 	rt, cleanup := newRuntimeWithLog(t, ctx, nil)
 	defer cleanup()
-	if rt == nil {
-		t.Fatal("expected a runtime, got nil")
+
+	p, err := rt.NewParticle(ctx, res.Particle)
+	if err != nil {
+		t.Fatalf("NewParticle: %v", err)
+	}
+	defer p.Close(ctx)
+
+	if _, err := p.CallTool(ctx, "say", []byte(`{}`)); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "[error]") || !strings.Contains(got, "hello default") {
+		t.Errorf("log output didn't carry the expected default-callback line; got:\n%s", got)
 	}
 }
 

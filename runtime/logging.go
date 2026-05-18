@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"log"
 
 	"github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/host"
@@ -39,6 +40,23 @@ const (
 // guest (wasi:logging/log has no result type); a callback that
 // fails should record the failure host-side.
 type LogCallback func(ctx context.Context, level LogLevel, scope, message string)
+
+// DefaultLogCallback writes one line per call to the standard
+// library's package-level logger ([log.Default]). Used as the
+// fallback when [Config.Log] is left unset; also exported so a
+// host can compose it (e.g., to filter low-severity calls
+// before delegating).
+//
+// Format: `[<level>] <scope>: <message>` — or `[<level>]
+// <message>` when scope is empty, which is the common case
+// when wasm-rquickjs routes console.* through.
+func DefaultLogCallback(_ context.Context, level LogLevel, scope, message string) {
+	if scope == "" {
+		log.Printf("[%s] %s", level, message)
+		return
+	}
+	log.Printf("[%s] %s: %s", level, scope, message)
+}
 
 // newLoggingHost returns a host instance satisfying
 // wasi:logging/logging by forwarding every `log` call to cb.

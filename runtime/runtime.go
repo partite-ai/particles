@@ -88,12 +88,16 @@ type Config struct {
 	// proxy for tests.
 	HTTPClient HTTPDoer
 
-	// Log, if non-nil, receives every wasi:logging/log call a
-	// particle makes (i.e., the destination of `console.*`).
-	// nil → drop. Useful when embedding the runtime in a host
-	// that already has its own structured-log sink: log into
-	// your own logger here and per-particle output threads
-	// through without per-particle wiring.
+	// Log receives every wasi:logging/log call a particle
+	// makes (i.e., the destination of `console.*`). nil →
+	// [DefaultLogCallback], which writes one line per call to
+	// the standard library's [log.Default]. To silence
+	// particle output, pass an explicit no-op callback.
+	//
+	// Useful when embedding the runtime in a host that has its
+	// own structured-log sink: drop your logger in here and
+	// per-particle output threads through without any
+	// per-particle wiring.
 	//
 	// Callbacks run inline while the wasm guest is paused; keep
 	// them cheap and non-blocking. Errors aren't reported back
@@ -137,6 +141,11 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 		return nil, fmt.Errorf("runtime: load runtime wasm: %w", err)
 	}
 
+	// Default the log callback before building the host so
+	// every code path downstream can treat cfg.Log as non-nil.
+	if cfg.Log == nil {
+		cfg.Log = DefaultLogCallback
+	}
 	logging, err := newLoggingHost(ctx, cfg.Engine, cfg.Log)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: build wasi:logging host: %w", err)
