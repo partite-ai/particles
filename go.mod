@@ -6,10 +6,10 @@ require (
 	github.com/evanw/esbuild v0.28.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.6.0
-	github.com/partite-ai/wacogo v0.0.0-20260515171256-ebfac486afcb
+	github.com/partite-ai/wacogo v0.0.0-20260518094706-ddf8b168a5a6
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
-	github.com/tetratelabs/wazero v1.11.1-0.20260418165552-5cb4bb3ec0c1
+	github.com/tetratelabs/wazero v1.11.1-0.20260511190115-a3374cf27a3a
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.50.0
 	golang.org/x/mod v0.35.0
@@ -30,7 +30,7 @@ require (
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
 	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
