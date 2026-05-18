@@ -35,14 +35,26 @@ import (
 	"embed"
 	"errors"
 	"fmt"
-	"io"
+	"net/http"
 	"strings"
 
 	"github.com/partite-ai/wacogo"
+	wasihttp "github.com/partite-ai/wacogo/wasi/http/types"
 
 	"github.com/partite-ai/particles/credentials"
 	"github.com/partite-ai/particles/kv"
 )
+
+// HTTPDoer is the interface the runtime accepts for handling a
+// particle's outbound HTTP requests. *http.Client satisfies it
+// (its `Do` method matches), as does any custom transport the
+// host wants to inject — useful for stubbing in tests,
+// inspecting / mutating requests, or routing through a proxy.
+//
+// Type-aliased from wacogo's wasi.HTTPDoer so callers don't have
+// to pull wacogo into their import set just to satisfy
+// [Config.HTTPClient].
+type HTTPDoer = wasihttp.HTTPDoer
 
 //go:embed all:embed
 var embeddedRuntime embed.FS
@@ -66,18 +78,27 @@ type Config struct {
 	// (particle:host/kv). Required for the same reason.
 	KV *kv.Manager
 
-	// HTTPClient overrides the default http.Client wired into
-	// wasi:http for outbound requests from particles. nil →
-	// http.DefaultClient. (No allowed-host policy is enforced
-	// in this iteration; that's a future addition.)
-	HTTPClient httpClientOption
-}
+	// HTTPClient handles a particle's outbound HTTP requests
+	// after the per-particle policy (allowed-hosts gate +
+	// credential substitution) has done its work. nil →
+	// [http.DefaultClient].
+	//
+	// Use the override to plug in retry middleware, an HTTP/2
+	// transport tuned for long-lived connections, or a recording
+	// proxy for tests.
+	HTTPClient HTTPDoer
 
-// httpClientOption is the placeholder type for now. We'll grow it
-// into a richer policy struct (allowedHosts, custom transport)
-// without breaking the Config signature.
-type httpClientOption struct {
-	// (intentionally empty until we wire wasi:http policy)
+	// Log, if non-nil, receives every wasi:logging/log call a
+	// particle makes (i.e., the destination of `console.*`).
+	// nil → drop. Useful when embedding the runtime in a host
+	// that already has its own structured-log sink: log into
+	// your own logger here and per-particle output threads
+	// through without per-particle wiring.
+	//
+	// Callbacks run inline while the wasm guest is paused; keep
+	// them cheap and non-blocking. Errors aren't reported back
+	// to the guest (wasi:logging/log has no result type).
+	Log LogCallback
 }
 
 // Runtime is the entry point: hosts construct one per
@@ -116,9 +137,14 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 		return nil, fmt.Errorf("runtime: load runtime wasm: %w", err)
 	}
 
-	logging, err := newLoggingStub(ctx, cfg.Engine)
+	logging, err := newLoggingHost(ctx, cfg.Engine, cfg.Log)
 	if err != nil {
-		return nil, fmt.Errorf("runtime: build wasi:logging stub: %w", err)
+		return nil, fmt.Errorf("runtime: build wasi:logging host: %w", err)
+	}
+	// Default the HTTP client here so [Particle] construction
+	// doesn't carry a per-particle "is it nil?" dance.
+	if cfg.HTTPClient == nil {
+		cfg.HTTPClient = http.DefaultClient
 	}
 
 	return &Runtime{
@@ -165,7 +191,3 @@ func stderrSinkBytes(buf *bytes.Buffer) string {
 	s := buf.String()
 	return strings.TrimRight(s, "\n")
 }
-
-// helper kept for symmetry: we'll add an io-pass-through path here
-// later when wasi:http allowed-hosts policy lands.
-var _ = io.Discard

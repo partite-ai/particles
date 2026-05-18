@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net/http"
 	"strings"
 	"sync"
 	"testing/fstest"
@@ -199,7 +198,7 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, opts ...Par
 		// never causes a Store read.
 		HttpClient: newHTTPPolicy(
 			allowedHosts,
-			http.DefaultClient,
+			r.cfg.HTTPClient,
 			r.cfg.Credentials.Store(),
 			manifest.Name,
 			manifest.declaredCredentialNames(),

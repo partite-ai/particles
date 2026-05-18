@@ -165,6 +165,39 @@ func TestBuild_RejectsNonSemverVersion(t *testing.T) {
 	}
 }
 
+// An unknown credential method type fails build-time validation
+// — same plumbing as the unknown-capability check. Without this,
+// a manifest typo like `type: "apike"` would slip past introspect
+// (which only enforces shape) and surface much later as a runtime
+// substitution error far from the offending field.
+func TestBuild_RejectsUnknownCredentialMethodType(t *testing.T) {
+	src := fstest.MapFS{
+		"Particlefile.ts": &fstest.MapFile{
+			Data: []byte(`export default {
+				name: "x",
+				description: "x",
+				version: "0.1.0",
+				capabilities: {},
+				credentials: { svc: { methods: { x: { type: "telepathy" } } } },
+				tools: {},
+			};`),
+		},
+	}
+	_, err := build.Build(context.Background(), build.Options{
+		Source:      src,
+		NoTypeCheck: true,
+	})
+	if err == nil {
+		t.Fatal("expected validation error for unknown method type")
+	}
+	if !strings.Contains(err.Error(), "telepathy") {
+		t.Errorf("error should name the offending type: %v", err)
+	}
+	if !strings.Contains(err.Error(), "credentials.svc.methods.x") {
+		t.Errorf("error should point at the offending path: %v", err)
+	}
+}
+
 // readFile reads `name` from the result FS, t.Fatal on failure.
 func readFile(t *testing.T, fsys fs.FS, name string) []byte {
 	t.Helper()

@@ -288,6 +288,19 @@ var knownCapabilities = map[string]struct{}{
 	"http": {},
 }
 
+// knownMethodTypes is the set of credential method `type:`
+// strings the runtime understands. A manifest that names anything
+// else is either a typo or a stale schema; the build rejects it
+// so a particle can't carry a credential the runtime will never
+// be able to substitute.
+var knownMethodTypes = map[string]struct{}{
+	"basic":       {},
+	"oauth2":      {},
+	"apikey":      {},
+	"signing-key": {},
+	"raw":         {},
+}
+
 // validateExtractedManifest runs the Go-side gates on the JSON
 // the introspect WASM produced:
 //
@@ -300,7 +313,13 @@ var knownCapabilities = map[string]struct{}{
 //     this is the migration-aware error users hit when they
 //     update particle but not their manifest.
 //
-//  3. Every host listed under `credentials.<name>.hosts` must
+//  3. Every credential method's `type` must be a recognized
+//     variant. An unknown type would slip through introspect
+//     (it only enforces shape, not enumeration) and then
+//     surface as a runtime substitution error far away from the
+//     manifest typo that caused it.
+//
+//  4. Every host listed under `credentials.<name>.hosts` must
 //     also appear in `capabilities.http.allowedHosts`. A
 //     credential bound to a host the particle can't actually
 //     reach is either a typo or a layering bug — fail loud at
@@ -315,7 +334,10 @@ func validateExtractedManifest(manifestJSON []byte) error {
 		Version      string                     `json:"version"`
 		Capabilities map[string]json.RawMessage `json:"capabilities"`
 		Credentials  map[string]struct {
-			Hosts []string `json:"hosts"`
+			Hosts   []string `json:"hosts"`
+			Methods map[string]struct {
+				Type string `json:"type"`
+			} `json:"methods"`
 		} `json:"credentials"`
 	}
 	if err := json.Unmarshal(manifestJSON, &mf); err != nil {
@@ -348,6 +370,14 @@ func validateExtractedManifest(manifestJSON []byte) error {
 				return fmt.Errorf("credentials.%s.hosts: %q is not in capabilities.http.allowedHosts — add it there or remove it from this credential", credName, h)
 			}
 		}
+		for methodName, method := range cred.Methods {
+			if method.Type == "" {
+				return fmt.Errorf("credentials.%s.methods.%s: missing required `type`", credName, methodName)
+			}
+			if _, ok := knownMethodTypes[method.Type]; !ok {
+				return fmt.Errorf("credentials.%s.methods.%s: type %q is not a recognized credential type (known: %s)", credName, methodName, method.Type, knownMethodTypesList())
+			}
+		}
 	}
 	return nil
 }
@@ -356,8 +386,21 @@ func validateExtractedManifest(manifestJSON []byte) error {
 // in sorted order, comma-joined — used to build error messages
 // that show the author what's actually accepted.
 func knownCapabilitiesList() string {
-	names := make([]string, 0, len(knownCapabilities))
-	for n := range knownCapabilities {
+	return sortedKeys(knownCapabilities)
+}
+
+// knownMethodTypesList is the sibling helper for the credential
+// method type set.
+func knownMethodTypesList() string {
+	return sortedKeys(knownMethodTypes)
+}
+
+// sortedKeys joins a set's keys into a comma-separated string in
+// deterministic order — used in error messages so the same input
+// always produces the same diagnostic.
+func sortedKeys(set map[string]struct{}) string {
+	names := make([]string, 0, len(set))
+	for n := range set {
 		names = append(names, n)
 	}
 	sort.Strings(names)

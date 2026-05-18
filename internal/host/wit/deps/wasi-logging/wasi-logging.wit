@@ -1,0 +1,20 @@
+/// wasi:logging is the unversioned WIT the upstream wasm-rquickjs
+/// runtime imports for its `console.*` sink. Declared
+/// unversioned here so witgen produces bindings under the bare
+/// `wasi:logging/logging` interface id — that's exactly the
+/// import name the runtime wasm has, and a versioned binding
+/// (`wasi:logging/logging@x.y`) would not satisfy it.
+package wasi:logging;
+
+interface logging {
+  enum level {
+    trace,
+    debug,
+    info,
+    warn,
+    error,
+    critical,
+  }
+
+  log: func(level: level, context: string, message: string);
+}

@@ -1,0 +1,13 @@
+package particle:host@0.1.0;
+
+// Synthetic world wacogo-witgen generates the wasi:logging
+// bindings from. Mirrors the per-capability `*-gen.wit` files
+// for credentials/oauth/signing/kv, just sourcing the interface
+// from the sibling `wasi:logging` package above.
+//
+// Package matches host.wit so wit-parser sees a single coherent
+// package across this directory — the world is purely a witgen
+// driver and never appears on the wire.
+world wasi-logging-gen {
+  import wasi:logging/logging;
+}
