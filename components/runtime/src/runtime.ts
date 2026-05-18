@@ -121,18 +121,62 @@ async function loadParticle(): Promise<UserParticle> {
   }
 }
 
-function errMessage(e: unknown): string {
+// describeThrown turns whatever a handler threw into a useful
+// string. JS's default `String(x)` on a plain object yields the
+// notorious "[object Object]" — fine for `new Error("...")` but
+// the typical particle-side throw is one of:
+//   - an Error (use .message)
+//   - a WIT variant like `{ tag: "not-configured" }` thrown by a
+//     particle:* host call when the runtime maps the error back
+//     into JS
+//   - a string, number, boolean, null
+//   - some other plain object
+// Each branch produces something a human reading the log can
+// act on. JSON.stringify is the catch-all so even unusual
+// payloads stay debuggable.
+function describeThrown(e: unknown): string {
   if (e instanceof Error) return e.message;
+  if (e === null || e === undefined) return String(e);
+  const t = typeof e;
+  if (t === "string" || t === "number" || t === "boolean" || t === "bigint") {
+    return String(e);
+  }
+  if (t === "object") {
+    const obj = e as Record<string, unknown>;
+    if (typeof obj.tag === "string") {
+      // WIT variant payload: render as `tag` or `tag: val` so
+      // the tag (which carries the semantic) leads.
+      if (obj.val === undefined || obj.val === null) return obj.tag;
+      const val = typeof obj.val === "string" ? obj.val : safeStringify(obj.val);
+      return `${obj.tag}: ${val}`;
+    }
+    return safeStringify(obj);
+  }
   return String(e);
+}
+
+function safeStringify(v: unknown): string {
+  try {
+    return JSON.stringify(v);
+  } catch {
+    // Circular / unserializable payload — fall back to
+    // Object.prototype.toString.call so the log carries SOME
+    // type info instead of a thrown error.
+    return Object.prototype.toString.call(v);
+  }
+}
+
+function errMessage(e: unknown): string {
+  return describeThrown(e);
 }
 
 function logStack(e: unknown): void {
   // Stack traces go to stderr (wasi:logging at error level), never out via WIT.
   if (e instanceof Error && e.stack) {
     console.error(e.stack);
-  } else {
-    console.error(String(e));
+    return;
   }
+  console.error(describeThrown(e));
 }
 
 // -----------------------------------------------------------------------------

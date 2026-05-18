@@ -143,6 +143,68 @@ func TestRuntime_Logging_DefaultsToStdlib(t *testing.T) {
 	}
 }
 
+// A particle whose ping throws a WIT-variant-shaped object
+// (which is what `credentials.fetcher("missing")` and similar
+// host calls throw on failure) must produce a useful log line —
+// not the JavaScript stringification `[object Object]`. Pins
+// the `describeThrown` branch in runtime.ts.
+func TestRuntime_Ping_ThrowsVariant_LogsTagNotObjectObject(t *testing.T) {
+	ctx := context.Background()
+	src := `export default {
+  name: "ping-throws-variant",
+  description: "ping throws an object — should still render",
+  version: "0.1.0",
+  capabilities: {},
+  tools: {},
+  ping: async () => {
+    // Shape matches a WIT result<_, error> variant thrown by a
+    // particle:host/* adapter when the operation errors. Before
+    // the fix the runtime stringified this to "[object Object]".
+    throw { tag: "not-configured" };
+  },
+};`
+	res := buildParticle(t, src)
+
+	var (
+		mu   sync.Mutex
+		seen []seenLog
+	)
+	cb := func(_ context.Context, level runtime.LogLevel, scope, message string) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, seenLog{level: level, scope: scope, message: message})
+	}
+
+	rt, cleanup := newRuntimeWithLog(t, ctx, cb)
+	defer cleanup()
+
+	p, err := rt.NewParticle(ctx, res.Particle)
+	if err != nil {
+		t.Fatalf("NewParticle: %v", err)
+	}
+	defer p.Close(ctx)
+
+	// Ping is expected to fail — that's the path we're
+	// exercising. We don't care about the error value, only the
+	// log output.
+	_, _ = p.Ping(ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) == 0 {
+		t.Fatal("ping failure didn't surface a log line")
+	}
+	for _, s := range seen {
+		if strings.Contains(s.message, "[object Object]") {
+			t.Errorf("log message contains useless '[object Object]'; got %q", s.message)
+		}
+		if strings.Contains(s.message, "not-configured") {
+			return // found the tag — pass
+		}
+	}
+	t.Errorf("no log message mentioned the thrown variant's tag; got %+v", seen)
+}
+
 // HTTPClient wiring: a custom doer should receive every outbound
 // request the particle initiates. Uses an httptest server so we
 // can assert the URL passed through the policy, and a recording
