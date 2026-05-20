@@ -52,11 +52,12 @@ type CheckResult struct {
 //
 // nodeModules may be nil when the particle has no npm: imports.
 func (c *Components) TypeCheck(ctx context.Context, source, nodeModules fs.FS) (*CheckResult, error) {
-	if c.typecheck == nil {
-		return nil, fmt.Errorf("wacogo: typecheck component not loaded")
-	}
 	if source == nil {
 		return nil, fmt.Errorf("typecheck: source FS is required")
+	}
+	typecheck, err := c.loadEmbedded(ctx, c.typecheck)
+	if err != nil {
+		return nil, err
 	}
 
 	mounted := mountFS{source: source, nodeModules: nodeModules}
@@ -86,7 +87,7 @@ func (c *Components) TypeCheck(ctx context.Context, source, nodeModules fs.FS) (
 
 	imports := append(w.Imports(), wc.WithInstanceImport(loggingInterfaceName, logger.Core()))
 
-	inst, err := c.typecheck.Instantiate(ctx, imports...)
+	inst, err := typecheck.Instantiate(ctx, imports...)
 	if err != nil {
 		return nil, withStderr(err, stderrBuf, "instantiate typecheck")
 	}

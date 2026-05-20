@@ -1,0 +1,198 @@
+/// Canonical particle:runtime contract. Every particle implements
+/// this interface set, regardless of how the particle was authored:
+///
+///   - JS particles run inside particle-js-runtime.wasm (QuickJS),
+///     which exports these interfaces and dispatches to user JS.
+///   - Python particles run inside particle-python-runtime.wasm
+///     (CPython), exporting the same interfaces and dispatching to
+///     user Python.
+///   - Native WASM particles ARE the implementing component — they
+///     export these interfaces directly, no shared runtime image.
+///
+/// The host calls the same exports regardless of which kind it
+/// instantiated; that uniformity is the whole point of the
+/// particle:runtime package living in one place.
+///
+/// Worlds (`world runtime`, `world python-runtime`,
+/// `world wasm-particle`) are defined in sibling files in this
+/// directory — they share the package and bind the interfaces
+/// below to per-engine import/export sets.
+///
+/// Spec: docs/initial-design.md §2.
+package particle:runtime@0.1.0;
+
+// -----------------------------------------------------------------------------
+// Outward interfaces — the runtime implements these; the host calls them.
+// -----------------------------------------------------------------------------
+
+interface tools {
+  record tool-def {
+    name: string,
+    description: string,
+    /// JSON Schema, encoded as UTF-8 JSON. Object-rooted.
+    input-schema-json: string,
+  }
+
+  variant tool-error {
+    not-found,
+    invalid-arguments(string),
+    handler-error(string),
+    capability-denied(string),
+  }
+
+  list-tools: func() -> list<tool-def>;
+
+  /// `arguments-json` is JSON pre-validated against the tool's input schema.
+  /// Returns the handler's return value as JSON.
+  call-tool: func(name: string, arguments-json: string) -> result<string, tool-error>;
+}
+
+interface health {
+  enum status { ok, degraded, unhealthy }
+
+  record ping-result {
+    status: status,
+    message: option<string>,
+    /// JSON, free-form.
+    details: option<string>,
+  }
+
+  variant health-error {
+    /// Particle did not declare `ping`.
+    not-implemented,
+    handler-error(string),
+  }
+
+  ping: func() -> result<ping-result, health-error>;
+}
+
+/// `manifest` returns the particle's self-description as a typed
+/// record. Every particle answers "who are you, what do you need,
+/// what tools do you expose?" through this export — the build
+/// pipeline uses it in Phase 5, a runtime host calls it at
+/// instantiate-time to learn which credentials to provision, and
+/// any future fully-WASM particle answers the same way.
+///
+/// JSON Schemas for tool inputs stay as opaque JSON strings —
+/// arbitrary schema documents are awkward to model in WIT, and the
+/// host already runs schema validation as a JSON Schema operation.
+/// Everything else is strongly typed.
+interface manifest {
+  variant manifest-error {
+    /// Could not load the particle's bundle / handler module.
+    bundle-load-error(string),
+    /// Bundle loaded but its self-description doesn't match the
+    /// expected shape (missing name, malformed tools entry, etc.).
+    invalid-manifest(string),
+  }
+
+  /// Which guest engine the host should instantiate for this
+  /// particle. Optional in the manifest itself: when omitted the
+  /// host applies its default (currently "js").
+  enum runtime-kind {
+    js,
+    python,
+    wasm,
+  }
+
+  /// Top-level capability declarations. Structured as a record so
+  /// future categories (sockets, env, ...) can be added without
+  /// breaking older readers.
+  record capability-set {
+    /// Outbound HTTP capability. None = no HTTP at all.
+    http: option<http-capability>,
+  }
+  record http-capability {
+    allowed-hosts: list<string>,
+  }
+
+  /// One entry in the credentials map. WIT doesn't have map types,
+  /// so we model the map as `list<entry>` with the key inlined as
+  /// a `name` field. `methods` follows the same pattern.
+  record credential-entry {
+    name: string,
+    hosts: list<string>,
+    required: bool,
+    methods: list<credential-method-entry>,
+  }
+  record credential-method-entry {
+    name: string,
+    description: string,
+    method: credential-method,
+  }
+
+  /// Discriminated union over the supported authentication method
+  /// kinds. Payload-carrying cases attach a typed record of their
+  /// per-method fields; the payload-less ones (`basic`, `raw`)
+  /// carry only the type discriminator.
+  variant credential-method {
+    basic,
+    oauth2(oauth2-method),
+    apikey(apikey-method),
+    signing-key(signing-key-method),
+    raw,
+  }
+  record oauth2-method {
+    flows: list<oauth2-flow>,
+    scopes: list<string>,
+    authorization-url: string,
+    token-url: string,
+    device-auth-url: string,
+  }
+  enum oauth2-flow {
+    authorization-code,
+    authorization-code-pkce,
+    device-code,
+  }
+  record apikey-method {
+    /// `none` means the manifest doesn't pin the location; the host
+    /// prompts the user at setup. `some` pins it.
+    location: option<apikey-location>,
+  }
+  record apikey-location {
+    kind: apikey-location-kind,
+    name: option<string>,
+    scheme: option<string>,
+  }
+  enum apikey-location-kind {
+    header,
+    auth-scheme,
+    query-param,
+  }
+  record signing-key-method {
+    algorithm: signing-algorithm,
+  }
+  enum signing-algorithm {
+    hmac-sha256,
+    hmac-sha512,
+  }
+
+  /// One tool entry. `input-schema-json` carries the tool's JSON
+  /// Schema (Draft 2020-12, object-rooted) as a UTF-8 JSON string.
+  /// We keep it as a string because: (a) the host validates with a
+  /// JSON Schema library that already parses JSON; (b) WIT can't
+  /// express arbitrary recursive schemas without a code-gen
+  /// nightmare.
+  record tool-entry {
+    name: string,
+    description: string,
+    input-schema-json: string,
+  }
+
+  /// The complete typed manifest record returned by get-manifest.
+  /// Field order chosen so that a json.Marshal of the Go struct
+  /// produced from this record yields stable, human-readable diffs
+  /// against the on-disk manifest.json.
+  record particle-manifest {
+    name: string,
+    description: string,
+    version: string,
+    /// `none` = host default (currently js).
+    runtime: option<runtime-kind>,
+    capabilities: capability-set,
+    credentials: list<credential-entry>,
+    tools: list<tool-entry>,
+  }
+
+  get-manifest: func() -> result<particle-manifest, manifest-error>;
+}

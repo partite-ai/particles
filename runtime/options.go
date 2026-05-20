@@ -16,8 +16,9 @@ type ParticleOption func(*particleConfig)
 // runtime needs at instantiation time. Populated by applying every
 // [ParticleOption] in order.
 type particleConfig struct {
-	httpClient HTTPDoer
-	log        LogCallback
+	httpClient     HTTPDoer
+	log            LogCallback
+	introspectMode bool
 }
 
 // WithHTTPClient overrides the [HTTPDoer] the per-particle wasi:http

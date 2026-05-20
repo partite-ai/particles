@@ -1,8 +1,21 @@
 // Package wacogo wires the build pipeline's WASM-backed phases to the
-// wacogo runtime. It owns the lifecycle of the three build-time wasm
-// components — deno-npm.wasm, particle-typecheck.wasm,
-// particle-introspect.wasm — and exposes a narrow Go API the build
-// orchestrator drives directly: Introspect, TypeCheck, ResolveAndFetch.
+// wacogo runtime. It owns the lifecycle of the build-time wasm
+// components — deno-npm.wasm, pip-resolve.wasm, particle-typecheck.wasm
+// — and exposes a narrow Go API the build orchestrator drives directly:
+// TypeCheck, ResolveAndFetch, PipResolveAndFetch, ExtractManifest.
+//
+// Component loads are lazy: each per-phase wasm goes through embed-
+// FS read → zstd decompress → wacogo.Engine.LoadComponent only on
+// first use. A `particle build` for JS never pays the price of
+// pip-resolve / python-runtime; a `particle build --component foo`
+// pays for neither typecheck nor deno-npm. The host-capability
+// managers stay eager because their setup is cheap (binding
+// generation, no wasm load).
+//
+// Manifest extraction goes through the runtime's
+// particle:runtime/manifest export (see ExtractManifest, which
+// delegates to runtime.Runtime.IntrospectParticle); the build wasms
+// embedded here cover only the npm/pip/typecheck phases.
 //
 // The wasm artifacts are baked into the binary via go:embed (see
 // embed/). Run `go generate ./internal/build/wacogo/` (or `make embed`
@@ -13,12 +26,16 @@ package wacogo
 //go:generate make -C ../../.. embed
 
 import (
-	"bytes"
 	"context"
 	"embed"
 	"fmt"
 
 	wc "github.com/partite-ai/wacogo"
+
+	"github.com/partite-ai/particles/credentials"
+	"github.com/partite-ai/particles/internal/embedzstd"
+	"github.com/partite-ai/particles/kv"
+	"github.com/partite-ai/particles/runtime"
 )
 
 // embeddedWasm holds the three build-pipeline wasms baked into the
@@ -35,48 +52,84 @@ import (
 //go:embed all:embed
 var embeddedWasm embed.FS
 
-// embedded names — must match the file names the Makefile copies into
-// internal/build/wacogo/embed/.
+// Embedded paths point at zstd-compressed .wasm.zst artifacts —
+// tools/embedcompress writes them, internal/embedzstd reads them.
 const (
-	embeddedDenoNpm     = "embed/deno-npm.wasm"
-	embeddedTypecheck   = "embed/particle-typecheck.wasm"
-	embeddedIntrospect  = "embed/particle-introspect.wasm"
+	embeddedDenoNpm    = "embed/deno-npm.wasm.zst"
+	embeddedPipResolve = "embed/pip-resolve.wasm.zst"
+	embeddedTypecheck  = "embed/particle-typecheck.wasm.zst"
 )
 
-// Components holds the loaded wasm artifacts plus the engine that owns
-// them. Construct one with New, drive it via the Introspect /
-// TypeCheck / ResolveAndFetch methods, and Close it when done.
+// Components owns the lifecycle of the wasm engine + lazy-loaded
+// per-phase components + the host-capability managers. Construct
+// with New, drive via the TypeCheck / ResolveAndFetch /
+// PipResolveAndFetch / ExtractManifest methods, Close when done.
 type Components struct {
 	engine *wc.Engine
 
-	denoNpm    *wc.Component
-	typecheck  *wc.Component
-	introspect *wc.Component
+	// Lazy per-phase wasm components. Each LazyComponent loads its
+	// .wasm.zst on first Get and caches the parsed result; phases
+	// that aren't reached during a given invocation never pay the
+	// decompress + parse cost.
+	denoNpm    *embedzstd.LazyComponent
+	pipResolve *embedzstd.LazyComponent
+	typecheck  *embedzstd.LazyComponent
+
+	// Capability managers + runtime. Built eagerly in New —
+	// manager setup is cheap (binding generation), and constructing
+	// runtime.Runtime is cheap because its wasms are lazy too.
+	// What's deferred is the actual wasm load, not the Go-side
+	// scaffolding.
+	credentials *credentials.Manager
+	kv          *kv.Manager
+	runtime     *runtime.Runtime
 }
 
-// New constructs a Components value by spinning up an Engine and
-// loading every embedded artifact. Failure to find an embedded file
-// surfaces with a clear "run go generate" message.
+// New constructs a Components value. Spins up the wasm engine,
+// records each per-phase wasm's lazy cell, and builds the
+// host-capability managers + runtime. No wasm load happens here —
+// the first call to TypeCheck / ResolveAndFetch / PipResolveAndFetch
+// / ExtractManifest pays the load cost for the wasms it touches.
 func New(ctx context.Context) (*Components, error) {
 	e := wc.NewEngine(ctx)
-	c := &Components{engine: e}
+	c := &Components{
+		engine:     e,
+		denoNpm:    embedzstd.NewLazyComponent(embeddedDenoNpm),
+		pipResolve: embedzstd.NewLazyComponent(embeddedPipResolve),
+		typecheck:  embedzstd.NewLazyComponent(embeddedTypecheck),
+	}
 
-	type item struct {
-		name string
-		set  func(*wc.Component)
+	// Stand up the host-capability managers and the runtime. The
+	// managers register the `particle:host/*` WIT bindings against
+	// the engine — needed before any particle instance is built.
+	// runtime.New itself is cheap; its wasms (js-runtime, python-
+	// runtime) are lazy and load on first IntrospectParticle /
+	// NewParticle for the relevant kind.
+	credMgr, err := credentials.NewManager(ctx, credentials.ManagerConfig{Engine: e})
+	if err != nil {
+		_ = c.Close(ctx)
+		return nil, fmt.Errorf("wacogo: build credentials manager: %w", err)
 	}
-	for _, it := range []item{
-		{embeddedDenoNpm, func(comp *wc.Component) { c.denoNpm = comp }},
-		{embeddedTypecheck, func(comp *wc.Component) { c.typecheck = comp }},
-		{embeddedIntrospect, func(comp *wc.Component) { c.introspect = comp }},
-	} {
-		comp, err := loadEmbedded(ctx, e, it.name)
-		if err != nil {
-			_ = c.Close(ctx)
-			return nil, err
-		}
-		it.set(comp)
+	c.credentials = credMgr
+
+	kvMgr, err := kv.NewManager(ctx, kv.ManagerConfig{Engine: e})
+	if err != nil {
+		_ = c.Close(ctx)
+		return nil, fmt.Errorf("wacogo: build kv manager: %w", err)
 	}
+	c.kv = kvMgr
+
+	rt, err := runtime.New(ctx, runtime.Config{
+		Engine:      e,
+		Credentials: credMgr,
+		KV:          kvMgr,
+	})
+	if err != nil {
+		_ = c.Close(ctx)
+		return nil, fmt.Errorf("wacogo: build runtime: %w", err)
+	}
+	c.runtime = rt
+
 	return c, nil
 }
 
@@ -86,19 +139,31 @@ func (c *Components) Close(ctx context.Context) error {
 	if c.engine == nil {
 		return nil
 	}
+	if c.runtime != nil {
+		_ = c.runtime.Close(ctx)
+		c.runtime = nil
+	}
+	if c.credentials != nil {
+		_ = c.credentials.Close(ctx)
+		c.credentials = nil
+	}
+	if c.kv != nil {
+		_ = c.kv.Close(ctx)
+		c.kv = nil
+	}
 	err := c.engine.Close(ctx)
 	c.engine = nil
 	return err
 }
 
-func loadEmbedded(ctx context.Context, e *wc.Engine, name string) (*wc.Component, error) {
-	data, err := embeddedWasm.ReadFile(name)
+// loadEmbedded resolves a lazy component. The first call materializes
+// (read + decompress + parse); subsequent calls return the cached
+// result. The wrapper exists only to surface the "run go generate"
+// hint on a missing-embed error.
+func (c *Components) loadEmbedded(ctx context.Context, lc *embedzstd.LazyComponent) (*wc.Component, error) {
+	comp, err := lc.Get(ctx, embeddedWasm, c.engine)
 	if err != nil {
-		return nil, fmt.Errorf("wacogo: embedded %s missing — run `go generate ./internal/build/wacogo/` (or `make embed`) to build it: %w", name, err)
-	}
-	comp, err := e.LoadComponent(ctx, bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("wacogo: load embedded %s: %w", name, err)
+		return nil, fmt.Errorf("wacogo: embedded component missing — run `go generate ./internal/build/wacogo/` (or `make embed`) to build it: %w", err)
 	}
 	return comp, nil
 }

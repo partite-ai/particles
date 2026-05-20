@@ -132,3 +132,14 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # restrictions, so we install globally and let the runtime project rely on
 # these tools being on PATH.
 RUN npm install -g esbuild@^0.25.0 typescript@^5.6.0
+
+# Install uv (Astral's Python manager) into the user's home and use it to
+# install Python + componentize-py. uv is preferred over distro python so
+# the version is controlled per-project; componentize-py is the build-time
+# tool used by components/python-runtime to bake CPython + the bootstrap
+# module into particle-python-runtime.wasm.
+ENV UV_INSTALL_DIR=/home/node/.local/bin
+ENV PATH=/home/node/.local/bin:$PATH
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+  && uv python install 3.12 \
+  && uv tool install componentize-py

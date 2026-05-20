@@ -14,9 +14,10 @@ const loggingInterfaceName = "wasi:logging/logging"
 
 // newLoggingStub returns a host instance that satisfies
 // wasi:logging/logging with a no-op `log` function. The QuickJS engine
-// inside particle-runtime.wasm and particle-introspect.wasm imports
-// this interface for `console.*`-style diagnostics; for build-time
-// usage we discard everything.
+// inside the wasm-rquickjs-built components (particle-js-runtime.wasm
+// and particle-typecheck.wasm) imports this interface for
+// `console.*`-style diagnostics; for build-time usage we discard
+// everything.
 //
 // A future iteration can route messages to an io.Writer (e.g., the
 // build CLI's stderr) by reading the strings off the canonical-ABI

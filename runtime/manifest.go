@@ -16,9 +16,45 @@ type Manifest struct {
 	Name         string                `json:"name"`
 	Description  string                `json:"description"`
 	Version      string                `json:"version"`
+	// Runtime selects which engine the host instantiates for this
+	// particle: the QuickJS-based JS runtime (`"js"`) or the
+	// CPython-based Python runtime (`"python"`). Omitted /
+	// empty-string is treated as `"js"` so manifests authored
+	// before the field existed keep working. Use ResolvedRuntime
+	// to read the effective value with defaulting applied.
+	Runtime      RuntimeKind           `json:"runtime,omitempty"`
 	Capabilities Capabilities          `json:"capabilities"`
 	Credentials  map[string]Credential `json:"credentials,omitempty"`
 	Tools        []ManifestTool        `json:"tools"`
+}
+
+// RuntimeKind names a guest engine. The build pipeline picks the
+// engine based on the source language (Particlefile.ts/.js → js,
+// Particlefile.py → python, Particlefile.wasm → wasm); the host
+// picks which embedded wasm to instantiate based on the same value
+// at run time.
+//
+// `js` and `python` reference shared, preloaded runtime images
+// (particle-js-runtime.wasm / particle-python-runtime.wasm). `wasm`
+// has no shared image — the particle's own component IS the runtime,
+// loaded from particle.wasm in the artifact at instantiation time.
+type RuntimeKind string
+
+const (
+	RuntimeJS     RuntimeKind = "js"
+	RuntimePython RuntimeKind = "python"
+	RuntimeWasm   RuntimeKind = "wasm"
+)
+
+// ResolvedRuntime returns the effective RuntimeKind, treating an
+// empty value as RuntimeJS. All callers that need to switch on the
+// engine should go through this rather than reading Runtime
+// directly, so a future default change is a single edit.
+func (m Manifest) ResolvedRuntime() RuntimeKind {
+	if m.Runtime == "" {
+		return RuntimeJS
+	}
+	return m.Runtime
 }
 
 // Capabilities holds the runtime-policy-relevant declarations.
@@ -198,6 +234,12 @@ func ParseManifest(r io.Reader) (Manifest, error) {
 	}
 	if m.Version == "" {
 		return Manifest{}, errors.New("manifest is missing version")
+	}
+	switch m.Runtime {
+	case "", RuntimeJS, RuntimePython, RuntimeWasm:
+		// ok — empty defaults to JS via ResolvedRuntime
+	default:
+		return Manifest{}, fmt.Errorf("manifest: unknown runtime %q (want one of: %q, %q, %q)", m.Runtime, RuntimeJS, RuntimePython, RuntimeWasm)
 	}
 	return m, nil
 }

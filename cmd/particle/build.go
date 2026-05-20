@@ -23,14 +23,21 @@ func newBuildCmd() *cobra.Command {
 	var (
 		pack         bool
 		dbPath       string
-		profile      string
 		acceptPerms  bool
 		confirmPerms bool
+		component    string
 	)
 	cmd := &cobra.Command{
 		Use:   "build",
 		Short: "Build a particle and register it in the local state DB",
 		Long: `Build the particle in the current directory.
+
+By default the source is JS/TS (Particlefile.ts/.js) or Python
+(Particlefile.py). Pass --component <path> to package a prebuilt
+wasi:p2 component instead — the file is read as-is, instantiated to
+extract its manifest, and bundled into the particle artifact. Native
+build toolchains pick how they name their output; particle build
+doesn't enforce a convention.
 
 By default the result is registered in the local state DB. Pass
 --pack to write a <name>-<version>.particle archive to CWD instead.
@@ -41,34 +48,27 @@ fresh install) and walks credential setup for any unconfigured
 authentication method.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if profile != "" {
-				stop, err := startProfile(profile, cmd.ErrOrStderr())
-				if err != nil {
-					return err
-				}
-				defer stop()
-			}
-			return runBuild(cmd, pack, dbPath, permissionModeFromFlags(acceptPerms, confirmPerms))
+			return runBuild(cmd, pack, dbPath, component, permissionModeFromFlags(acceptPerms, confirmPerms))
 		},
 	}
 	cmd.Flags().BoolVar(&pack, "pack", false, "Write <name>-<version>.particle to CWD instead of registering")
 	cmd.Flags().StringVar(&dbPath, "db", "", dbFlagUsage())
+	cmd.Flags().StringVar(&component, "component", "", "Package an already-built wasi:p2 component (.wasm) as a particle")
 	cmd.Flags().BoolVarP(&acceptPerms, "yes", "y", false, "Auto-accept the permission summary (does not skip credential prompts)")
 	cmd.Flags().BoolVar(&confirmPerms, "confirm-permissions", false, "Force the permission prompt even when capabilities match the prior version")
-	cmd.Flags().StringVar(&profile, "profile", "", "Write CPU + heap pprof profiles with this prefix")
-	_ = cmd.Flags().MarkHidden("profile")
 	cmd.MarkFlagsMutuallyExclusive("yes", "confirm-permissions")
 	return cmd
 }
 
-func runBuild(cmd *cobra.Command, pack bool, dbPath string, permMode importer.PermissionMode) error {
+func runBuild(cmd *cobra.Command, pack bool, dbPath, component string, permMode importer.PermissionMode) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getwd: %w", err)
 	}
 
 	res, err := build.Build(cmd.Context(), build.Options{
-		Source: os.DirFS(cwd),
+		Source:    os.DirFS(cwd),
+		Component: component,
 	})
 	if err != nil {
 		printLogs(cmd.ErrOrStderr(), errLogs(err))

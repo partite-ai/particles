@@ -198,6 +198,72 @@ func TestBuild_RejectsUnknownCredentialMethodType(t *testing.T) {
 	}
 }
 
+// A `runtime` value the build doesn't recognize is rejected at
+// Phase 5. The accepted values (empty / "js" / "python") are
+// covered by happy-path tests elsewhere; this asserts the gate so
+// a future typo can't silently land in the registry.
+func TestBuild_RejectsUnknownRuntime(t *testing.T) {
+	src := fstest.MapFS{
+		"Particlefile.ts": &fstest.MapFile{
+			Data: []byte(`export default {
+				name: "x",
+				description: "x",
+				version: "0.1.0",
+				runtime: "ruby" as any,
+				capabilities: {},
+				tools: {},
+			};`),
+		},
+	}
+	_, err := build.Build(context.Background(), build.Options{
+		Source:      src,
+		NoTypeCheck: true,
+	})
+	if err == nil {
+		t.Fatal("expected validation error for unknown runtime")
+	}
+	if !strings.Contains(err.Error(), "ruby") {
+		t.Errorf("error should name the offending value: %v", err)
+	}
+	if !strings.Contains(err.Error(), "runtime") {
+		t.Errorf("error should mention the field name: %v", err)
+	}
+}
+
+// An explicit `runtime: "python"` round-trips through the build —
+// the build pipeline doesn't yet emit Python artifacts from a JS
+// source, but the manifest-extract phase shouldn't object to the
+// declared field. Pinning this means the field plumbing works
+// end-to-end now, ahead of the build-routing change.
+func TestBuild_AcceptsPythonRuntime(t *testing.T) {
+	src := fstest.MapFS{
+		"Particlefile.ts": &fstest.MapFile{
+			Data: []byte(`export default {
+				name: "x",
+				description: "x",
+				version: "0.1.0",
+				runtime: "python" as const,
+				capabilities: {},
+				tools: {},
+			};`),
+		},
+	}
+	res, err := build.Build(context.Background(), build.Options{
+		Source:      src,
+		NoTypeCheck: true,
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	mf, err := fs.ReadFile(res.Particle, "manifest.json")
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if !strings.Contains(string(mf), `"runtime":"python"`) {
+		t.Errorf("manifest missing python runtime field:\n%s", mf)
+	}
+}
+
 // readFile reads `name` from the result FS, t.Fatal on failure.
 func readFile(t *testing.T, fsys fs.FS, name string) []byte {
 	t.Helper()

@@ -1,0 +1,35 @@
+// No `package` declaration: the Python runtime build assembles this
+// file onto runtime.wit before invoking componentize-py. See
+// `make python-runtime`.
+//
+// World definition for particle-python-runtime.wasm — the
+// componentize-py / CPython engine. Unlike the JS runtime's world,
+/// wasi:* imports are declared explicitly here. componentize-py's
+/// binding generator requires them up front (wasm-rquickjs autodetects
+/// them from JS usage; CPython does not).
+///
+/// wasi:http is what user Python code reaches when it does HTTP —
+/// either through the `particle.http` helper or through a monkey-
+/// patched urllib (see components/python-runtime/app/particle/http.py).
+/// wasi:sockets is intentionally not imported: raw socket access
+/// bypasses the host's HTTP policy, and blocking sockets at WIT level
+/// is stricter than blocking at host level (the deny is structural,
+/// not policy-dependent).
+world python-runtime {
+  // Capability imports — host provides these. Mirror the JS runtime.
+  import particle:host/credentials@0.1.0;
+  import particle:host/oauth@0.1.0;
+  import particle:host/signing@0.1.0;
+  import particle:host/kv@0.1.0;
+
+  // wasi:http — only way out to the network from a Python particle.
+  // Goes through the host's HTTPPolicy (allowlist + credential
+  // substitution), same as the JS path.
+  import wasi:http/outgoing-handler@0.2.3;
+  import wasi:http/types@0.2.3;
+
+  // Outward exports — host calls these.
+  export tools;
+  export health;
+  export manifest;
+}

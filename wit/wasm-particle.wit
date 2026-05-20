@@ -1,0 +1,46 @@
+// No `package` declaration: this file is meant to be assembled onto
+// runtime.wit by a particle author's own build. The author selects
+// the `wasm-particle` world via their tool's --world arg.
+//
+// World definition for native-WASM particles — components authored
+/// in any language (Rust, Go via TinyGo, C, etc.) that implement
+/// `particle:runtime` directly. The author's component IS the
+/// particle; there's no shared runtime image.
+///
+/// Build:
+///
+///     Author component.wasm → drop in a directory as Particlefile.wasm
+///                          → `particle build` → instantiates the
+///                            component, calls get-manifest, writes
+///                            manifest.json + particle.wasm into the
+///                            artifact.
+///
+/// At runtime, the host instantiates the author's component with the
+/// same `particle:host/*` bindings the JS and Python runtimes get.
+/// Native particles can therefore use credentials.fetcher, kv, etc.
+/// through the WIT bindings directly.
+///
+/// The world below is illustrative — an author building a native
+/// particle uses this as a starting point. They may narrow it (drop
+/// imports they don't use) or widen it (request additional wasi:*
+/// surfaces) as their use case demands, as long as the
+/// particle:runtime exports stay present.
+world wasm-particle {
+  // Standard host-capability imports. Drop any the particle doesn't
+  // need; the host still wires every entry below at instantiation,
+  // unused ones cost nothing.
+  import particle:host/credentials@0.1.0;
+  import particle:host/oauth@0.1.0;
+  import particle:host/signing@0.1.0;
+  import particle:host/kv@0.1.0;
+
+  // Outbound HTTP. Goes through the host's HTTPPolicy (allowlist +
+  // credential substitution), same as the Python runtime.
+  import wasi:http/outgoing-handler@0.2.3;
+  import wasi:http/types@0.2.3;
+
+  // The contract.
+  export tools;
+  export health;
+  export manifest;
+}

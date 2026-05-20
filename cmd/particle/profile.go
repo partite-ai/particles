@@ -16,12 +16,11 @@ import (
 //     in-use bytes reflect what survived rather than the
 //     allocator's working set).
 //
-// Designed to be called inside a command's RunE and stop()
-// deferred so the profiles cover the whole command lifetime.
-//
-// Hidden behind --profile on `particle build` / `particle run`.
-// The flag isn't surfaced in help — it's a debugging hatch, not
-// a user-facing knob.
+// Wired to the hidden --profile global flag on the root command
+// (see main.go). The flag covers every subcommand; the start runs
+// in PersistentPreRunE and the stop runs from main() so error
+// paths still flush the data. The flag isn't surfaced in --help —
+// it's a debugging hatch, not a user-facing knob.
 func startProfile(prefix string, log io.Writer) (stop func(), err error) {
 	cpuPath := prefix + ".cpu"
 	cpuFile, err := os.Create(cpuPath)

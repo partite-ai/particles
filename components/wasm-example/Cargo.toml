@@ -1,0 +1,19 @@
+[package]
+name = "wasm-example-component"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Minimal native-WASM particle implementing particle:runtime — used as a test fixture for the --component build path."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.39"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

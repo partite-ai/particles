@@ -49,8 +49,9 @@ type ResolveResult struct {
 // The deno-npm component is a Rust component with no QuickJS engine —
 // no wasm-rquickjs convention quirks — and imports wasi:http directly.
 func (c *Components) ResolveAndFetch(ctx context.Context, deps []importscan.NpmSpec) (*ResolveResult, error) {
-	if c.denoNpm == nil {
-		return nil, fmt.Errorf("wacogo: deno-npm component not loaded")
+	denoNpm, err := c.loadEmbedded(ctx, c.denoNpm)
+	if err != nil {
+		return nil, err
 	}
 
 	stderrBuf := &bytes.Buffer{}
@@ -67,7 +68,7 @@ func (c *Components) ResolveAndFetch(ctx context.Context, deps []importscan.NpmS
 	}
 	defer w.Close(ctx)
 
-	inst, err := c.denoNpm.Instantiate(ctx, w.Imports()...)
+	inst, err := denoNpm.Instantiate(ctx, w.Imports()...)
 	if err != nil {
 		return nil, withStderr(err, stderrBuf, "instantiate deno-npm")
 	}

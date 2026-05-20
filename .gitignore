@@ -4,5 +4,19 @@ notes.txt
 # Build artifacts
 target/
 dist/
+__pycache__/
 
 /particle
+
+# componentize-py regenerates these into components/python-runtime/app/
+# every `make python-runtime`. Treating them as derived keeps the repo
+# from drifting if a future componentize-py release changes the binding
+# shape — the Makefile is the source of truth.
+components/python-runtime/app/wit_world/
+components/python-runtime/app/componentize_py_async_support/
+components/python-runtime/app/componentize_py_types.py
+components/python-runtime/app/componentize_py_runtime.pyi
+components/python-runtime/app/poll_loop.py
+components/python-runtime/build/
+# wasm-example fixture has the same assemble-from-shared-wit pattern.
+components/wasm-example/wit/
