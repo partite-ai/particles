@@ -1,0 +1,25 @@
+// World definition for particle-js-runtime.wasm — the wasm-rquickjs-
+// based JS engine. Built with wasm-rquickjs generate-wrapper-crate;
+// the generated wrapper adds whatever wasi:* imports the QuickJS
+// engine and its JS APIs need (fetch → wasi:http, console →
+// wasi:logging, file reads → wasi:filesystem, etc.), so this world
+// only declares the imports our own JS source explicitly uses.
+//
+// No `package` declaration: the JS runtime build assembles this file
+// onto runtime.wit before invoking wasm-rquickjs (the tool wants a
+// single root .wit file). See `make js-runtime`.
+
+world runtime {
+  // Capability imports — host provides these. Env vars are NOT here; they
+  // come in via standard wasi:cli/environment (surfaced as process.env in
+  // the JS engine), filtered by the host based on the manifest.
+  import particle:host/credentials@0.1.0;
+  import particle:host/oauth@0.1.0;
+  import particle:host/signing@0.1.0;
+  import particle:host/kv@0.1.0;
+
+  // Outward exports — host calls these.
+  export tools;
+  export health;
+  export manifest;
+}

@@ -50,6 +50,15 @@ export interface Particle {
   version: string;
 
   /**
+   * Optional. Names the guest engine the runtime should use for this
+   * particle. JS/TS particles default to `"js"` if omitted — the only
+   * value this field needs in a `Particlefile.ts`. Python particles
+   * (`Particlefile.py`) are tagged `"python"` automatically by the
+   * build pipeline.
+   */
+  runtime?: "js" | "python";
+
+  /**
    * Declares which host capabilities this particle uses. Importing a
    * `particle:*` namespace whose capability isn't listed here is a build
    * error — every host call is gated by an explicit declaration.

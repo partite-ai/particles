@@ -15,10 +15,7 @@ import (
 )
 
 func newRunCmd() *cobra.Command {
-	var (
-		dbPath  string
-		profile string
-	)
+	var dbPath string
 	cmd := &cobra.Command{
 		Use:   "run <name>[@version] [tool] [tool-flags]",
 		Short: "Call a tool on a registered particle",
@@ -32,19 +29,10 @@ The --db flag must precede the particle name; everything after
 the name is forwarded to the tool.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if profile != "" {
-				stop, err := startProfile(profile, cmd.ErrOrStderr())
-				if err != nil {
-					return err
-				}
-				defer stop()
-			}
 			return runRun(cmd, args, dbPath)
 		},
 	}
 	cmd.Flags().StringVar(&dbPath, "db", "", dbFlagUsage())
-	cmd.Flags().StringVar(&profile, "profile", "", "Write CPU + heap pprof profiles with this prefix")
-	_ = cmd.Flags().MarkHidden("profile")
 	// SetInterspersed(false) tells pflag (cobra's parser) to stop
 	// processing flags at the first positional arg, so tool flags
 	// like `--input` aren't intercepted as unknown.

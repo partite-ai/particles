@@ -15,6 +15,8 @@ Six things make it different from "just a script":
 
 ## A particle, top to bottom
 
+Particles can be written in **TypeScript / JavaScript** or **Python**. The runtime contract and capability model are identical; the choice is author preference. The build pipeline picks the engine from the source filename — `Particlefile.{ts,js}` → JS runtime (QuickJS), `Particlefile.py` → Python runtime (CPython via [componentize-py](https://github.com/bytecodealliance/componentize-py)). Examples below are TypeScript; see `examples/github-py/Particlefile.py` for the equivalent in Python.
+
 A particle lives in `Particlefile.ts` (or `.js`) at the root of a directory:
 
 ```ts
@@ -168,17 +170,18 @@ Particles are in active development. On the roadmap:
 
 - **Filesystem access** exposed as a mount.
 - **Outbound sockets** with a declared allow-list, mirroring the HTTP model.
-- **Python particles** via a CPython-on-WASI runtime.
-- **Any language that compiles to a WebAssembly Component** — Rust, Go, C, etc. The capability model and runtime contract are guest-language-agnostic, so should be able to support any language - but probably with a worse DX than JS/Python.
+
 
 ## Building the project
 
-The `particle` binary embeds three WebAssembly components used by the build pipeline (npm resolution, type-check, manifest extraction). To rebuild them, you'll need:
+The `particle` binary embeds five WebAssembly components: three build-pipeline helpers (npm resolution, pip resolution, TypeScript type-check) and two runtimes (JS via QuickJS, Python via CPython). To rebuild the components you'll need:
 
 - Go 1.26+
 - Rust + the `wasm32-wasip2` target
-- [`wasm-rquickjs`](https://github.com/wasm-rquickjs/wasm-rquickjs)
+- [`wasm-rquickjs`](https://github.com/wasm-rquickjs/wasm-rquickjs) (JS runtime + typecheck)
+- [`componentize-py`](https://github.com/bytecodealliance/componentize-py) (Python runtime)
 - Node + npm (the typecheck wasm bundles the TypeScript compiler)
+- Python 3.12 (componentize-py bakes it into the Python runtime image)
 
 You may find the included devcontainer useful.
 

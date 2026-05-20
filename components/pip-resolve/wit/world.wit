@@ -1,0 +1,70 @@
+/// pip-resolve — build-time component that resolves PEP 508
+/// requirements (the dep list extracted from a Particlefile.py's PEP
+/// 723 inline metadata block) and fetches the resolved wheel set
+/// from PyPI.
+///
+/// Parallel to particle:build/installer (the deno-npm component), but
+/// for Python. Same shape: take a list of requirement strings,
+/// return a flat list of resolved wheels with their bytes and
+/// integrity hashes.
+///
+/// Filter rule: only `*-none-any` wheels are accepted (pure-Python).
+/// Anything with a compiled-ABI or platform tag is rejected with
+/// no-pure-python-wheel — the CPython interpreter baked into the
+/// Python runtime image can't load native extensions.
+package particle:build@0.1.0;
+
+interface pip-installer {
+  /// One requirement from the user's PEP 723 block, in PEP 508 form
+  /// (e.g. `httpx>=0.27`, `pyjwt[crypto]>=2`).
+  record pip-request {
+    requirement: string,
+  }
+
+  /// One resolved wheel, ready to drop into the particle artifact.
+  record resolved-wheel {
+    /// Normalized distribution name (PEP 503 normalized: lowercased,
+    /// `_` / `.` / `-` collapsed to `-`).
+    name: string,
+    /// PEP 440 version string.
+    version: string,
+    /// "sha256:<hex>" — matches the digest PyPI publishes in its
+    /// JSON metadata, suitable for Particle.lock storage.
+    sha256: string,
+    /// Wheel filename — kept so the host can unpack into a directory
+    /// using the original .whl name (callers may want to re-emit
+    /// dist-info bookkeeping later).
+    filename: string,
+    /// Raw wheel bytes. The host extracts them into the particle's
+    /// `_deps/site-packages` directory.
+    wheel-bytes: list<u8>,
+  }
+
+  variant pip-error {
+    /// HTTP-level failure talking to PyPI (timeout, 5xx, non-2xx).
+    network-error(string),
+    /// PyPI returned data that didn't match the expected schema.
+    invalid-pypi-response(string),
+    /// Resolution couldn't pick a version satisfying every
+    /// requirement (no matching version, conflicting constraints,
+    /// missing package).
+    resolution-error(string),
+    /// Every published wheel for the picked version had a compiled
+    /// ABI or platform tag. Carries the name@version that failed so
+    /// the author sees which dep is unusable.
+    no-pure-python-wheel(string),
+    /// Downloaded wheel's sha256 didn't match what PyPI advertised.
+    integrity-mismatch(string),
+  }
+
+  /// Resolve `reqs` and fetch every wheel needed for the transitive
+  /// closure. `python-version` is informational for v1 (PyPI metadata
+  /// is queried independently of interpreter version); reserved for
+  /// future environment-marker evaluation.
+  resolve-and-fetch: func(reqs: list<pip-request>, python-version: string)
+    -> result<list<resolved-wheel>, pip-error>;
+}
+
+world component {
+  export pip-installer;
+}

@@ -26,12 +26,14 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 
 	"github.com/partite-ai/wacogo"
 	wasihttp "github.com/partite-ai/wacogo/wasi/http/types"
 
 	"github.com/partite-ai/particles/credentials"
+	"github.com/partite-ai/particles/internal/embedzstd"
 	"github.com/partite-ai/particles/kv"
 )
 
@@ -49,7 +51,14 @@ type HTTPDoer = wasihttp.HTTPDoer
 //go:embed all:embed
 var embeddedRuntime embed.FS
 
-const embeddedRuntimePath = "embed/particle-runtime.wasm"
+// Embedded paths point at zstd-compressed .wasm.zst artifacts —
+// tools/embedcompress writes them, internal/embedzstd reads them.
+// Compression cuts the binary's wasm footprint by ~60%; the
+// decompression hit is a single allocation per file at New() time.
+const (
+	embeddedJSRuntimePath     = "embed/particle-js-runtime.wasm.zst"
+	embeddedPythonRuntimePath = "embed/particle-python-runtime.wasm.zst"
+)
 
 // Config configures a [Runtime] — the shared, process-wide host
 // state. Per-particle wiring (Stores, HTTP client, log sink) is
@@ -77,19 +86,67 @@ type Config struct {
 // (engine, credentials-manager, kv-manager) tuple and spin
 // Particles off of it.
 //
-// One Runtime owns one wacogo Component (the loaded runtime.wasm)
-// plus references to the shared Managers. Per-particle state lives
-// entirely in the [Particle] handle.
+// One Runtime carries lazy handles to the two preloaded engine
+// images — the JS runtime (QuickJS via wasm-rquickjs) and the
+// Python runtime (CPython via componentize-py) — plus on-demand
+// loading for native-WASM particles. Each engine's wasm decompresses
+// + parses only when the first particle of that kind is built or
+// instantiated. Per-particle state lives entirely in the [Particle]
+// handle.
 type Runtime struct {
-	cfg  Config
-	comp *wacogo.Component
+	cfg    Config
+	jsComp *embedzstd.LazyComponent
+	pyComp *embedzstd.LazyComponent
 }
 
-// New constructs a Runtime, loading the embedded runtime.wasm.
-// Validates that the required dependencies are present so a missing
-// Manager produces an error here rather than at the first
-// NewParticle call.
-func New(ctx context.Context, cfg Config) (*Runtime, error) {
+// preloadedComponentFor returns the shared engine image for the JS
+// or Python runtimes. First call loads + decompresses + parses the
+// embedded wasm; subsequent calls return the cached component.
+//
+// Returns nil for RuntimeWasm (which loads the component per-
+// particle from the artifact FS — see [Runtime.loadWasmComponent]).
+func (r *Runtime) preloadedComponentFor(ctx context.Context, rt RuntimeKind) (*wacogo.Component, error) {
+	switch rt {
+	case RuntimeJS:
+		comp, err := r.jsComp.Get(ctx, embeddedRuntime, r.cfg.Engine)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: load JS runtime wasm — run `go generate ./runtime/` (or `make runtime-embed`) to build it: %w", err)
+		}
+		return comp, nil
+	case RuntimePython:
+		comp, err := r.pyComp.Get(ctx, embeddedRuntime, r.cfg.Engine)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: load Python runtime wasm — run `go generate ./runtime/` (or `make runtime-embed`) to build it: %w", err)
+		}
+		return comp, nil
+	case RuntimeWasm:
+		return nil, nil // not preloaded — loadWasmComponent handles this kind
+	default:
+		return nil, fmt.Errorf("runtime: unknown runtime kind %q", rt)
+	}
+}
+
+// loadWasmComponent reads `particle.wasm` from the artifact FS and
+// loads it as a wacogo component. Used for RuntimeWasm particles
+// where the artifact IS the runtime — no shared image, the author's
+// component implements particle:runtime directly.
+func (r *Runtime) loadWasmComponent(ctx context.Context, particleFS fs.FS) (*wacogo.Component, error) {
+	data, err := fs.ReadFile(particleFS, "particle.wasm")
+	if err != nil {
+		return nil, fmt.Errorf("read particle.wasm: %w", err)
+	}
+	comp, err := r.cfg.Engine.LoadComponent(ctx, bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("load particle.wasm: %w", err)
+	}
+	return comp, nil
+}
+
+// New constructs a Runtime. Validates the required dependencies so
+// a missing Manager produces an error here rather than at the first
+// NewParticle call. No engine wasm is loaded at this point — the JS
+// and Python images are lazy and decompress on first use.
+func New(_ context.Context, cfg Config) (*Runtime, error) {
 	if cfg.Engine == nil {
 		return nil, errors.New("runtime: New: Engine is required")
 	}
@@ -99,17 +156,11 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 	if cfg.KV == nil {
 		return nil, errors.New("runtime: New: KV manager is required")
 	}
-
-	data, err := embeddedRuntime.ReadFile(embeddedRuntimePath)
-	if err != nil {
-		return nil, fmt.Errorf("runtime: embedded runtime wasm missing — run `go generate ./runtime/` (or `make runtime-embed`) to build it: %w", err)
-	}
-	comp, err := cfg.Engine.LoadComponent(ctx, bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("runtime: load runtime wasm: %w", err)
-	}
-
-	return &Runtime{cfg: cfg, comp: comp}, nil
+	return &Runtime{
+		cfg:    cfg,
+		jsComp: embedzstd.NewLazyComponent(embeddedJSRuntimePath),
+		pyComp: embedzstd.NewLazyComponent(embeddedPythonRuntimePath),
+	}, nil
 }
 
 // Close releases runtime-scoped resources. Existing Particles

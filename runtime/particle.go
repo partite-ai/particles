@@ -23,11 +23,35 @@ import (
 )
 
 // Canonical WIT export names the runtime publishes — see
-// components/runtime/wit/runtime.wit.
+// components/js-runtime/wit/runtime.wit (and the matching
+// components/python-runtime/wit/runtime.wit for the Python engine).
 const (
-	toolsInterface  = "particle:runtime/tools@0.1.0"
-	healthInterface = "particle:runtime/health@0.1.0"
+	toolsInterface    = "particle:runtime/tools@0.1.0"
+	healthInterface   = "particle:runtime/health@0.1.0"
+	manifestInterface = "particle:runtime/manifest@0.1.0"
 )
+
+// runtimeBundleLayout returns (artifact-filename, mount-path) for
+// the bundle file the JS / Python runtimes load at startup. Two
+// pieces because the same bytes are read from the particle FS at
+// the artifact name and mounted at the wasi:filesystem path the in-
+// runtime loader looks under.
+//
+// For RuntimeWasm there is no bundle file — the component IS the
+// runtime — so both return values are empty and the caller skips
+// the bundle-required check.
+func runtimeBundleLayout(rt RuntimeKind) (artifact, mountPath string, err error) {
+	switch rt {
+	case RuntimeJS:
+		return "bundle.js", "particle/bundle.js", nil
+	case RuntimePython:
+		return "bundle.py", "particle/bundle.py", nil
+	case RuntimeWasm:
+		return "", "", nil
+	default:
+		return "", "", fmt.Errorf("unknown runtime %q", rt)
+	}
+}
 
 // ToolDef is the metadata for one tool the particle exposes.
 // Mirrors the WIT `tool-def` record.
@@ -167,30 +191,86 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, credStore c
 	if kvStore == nil {
 		return nil, errors.New("runtime: NewParticle: kvStore is required")
 	}
+	return r.newParticleInternal(ctx, particleFS, credStore, kvStore, applyParticleOptions(opts))
+}
 
-	cfg := applyParticleOptions(opts)
-
+// newParticleInternal is the un-validated, no-options-parsing core
+// that NewParticle and IntrospectParticle both call into. Callers
+// pass a fully-resolved [particleConfig] — the public NewParticle
+// builds one from variadic options, IntrospectParticle constructs
+// one directly with `introspectMode: true` so the trap-mode wiring
+// is a private concern, not a public option that callers could
+// pass alongside the wrong stores.
+func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, credStore credentials.Store, kvStore kv.Store, cfg particleConfig) (*Particle, error) {
 	manifest, err := LoadManifest(particleFS)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
 	}
 
-	bundle, err := fs.ReadFile(particleFS, "bundle.js")
+	// Pick the wasm component to instantiate. JS / Python use the
+	// shared preloaded images; Wasm particles ARE their component,
+	// loaded fresh from particle.wasm in the artifact. All three
+	// kinds export the same particle:runtime contract.
+	selectedRuntime := manifest.ResolvedRuntime()
+	comp, err := r.preloadedComponentFor(ctx, selectedRuntime)
 	if err != nil {
-		return nil, fmt.Errorf("runtime: NewParticle: read bundle.js: %w", err)
+		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
+	}
+	if selectedRuntime == RuntimeWasm {
+		comp, err = r.loadWasmComponent(ctx, particleFS)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: NewParticle: %w", err)
+		}
+	}
+	bundleFilename, _, err := runtimeBundleLayout(selectedRuntime)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
 	}
 
 	// Build the in-memory FS the runtime sees through
-	// wasi:filesystem. The runtime's JS does dynamic
-	// `import("/particle/bundle.js")`, so the file lives at the
-	// matching path.
-	bundleFS := fstest.MapFS{
-		"particle/bundle.js": &fstest.MapFile{Data: bundle},
+	// wasi:filesystem. JS / Python read their bundle from
+	// `/particle/bundle.{js,py}` (mounted from particleFS). Wasm
+	// particles don't read any bundle from the FS — the component
+	// is fully self-contained — but we still mount the artifact so
+	// authors can ship per-particle data files alongside.
+	//
+	// For Python particles we mount the entire artifact FS (not
+	// just bundle.py) so `_deps/site-packages` comes along for the
+	// ride and `import httpx` finds the wheels resolved at build
+	// time. For JS particles the FS only contains bundle.js + the
+	// metadata files; the extra paths are harmless.
+	bundleFS, err := mountParticleFS(particleFS, bundleFilename, selectedRuntime)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
 	}
 
 	allowedHosts := manifest.Capabilities.HTTP.AllowedHosts
 
 	listener := hostmeter.Listener{}
+
+	// HTTP wiring branches on introspect mode:
+	//   - Normal: per-particle httpPolicy that gates against
+	//     allowedHosts and substitutes credential placeholders.
+	//   - Introspect: trap doer that returns
+	//     ErrIntrospectMode for every outbound — the synthesized
+	//     get-manifest particle has no real HTTP policy to enforce,
+	//     and we want module-scope fetch() to surface the explicit
+	//     introspect error.
+	var httpClient HTTPDoer
+	if cfg.introspectMode {
+		httpClient = introspectTrapHTTPDoer{}
+	} else {
+		httpClient = newHTTPPolicy(
+			allowedHosts,
+			cfg.httpClient,
+			credStore,
+			manifest.declaredCredentialNames(),
+			credentialHostBindings(manifest),
+			func(ctx context.Context, id string) (credentials.AccessToken, error) {
+				return r.cfg.Credentials.RotateAccessToken(ctx, credStore, id)
+			},
+		)
+	}
 
 	stderr := &bytes.Buffer{}
 	w, err := wasi.NewWorld(ctx, r.cfg.Engine, &wasi.Config{
@@ -200,31 +280,7 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, credStore c
 		Stdout:       io.Discard,
 		Stderr:       stderr,
 		CallListener: listener,
-		// HTTP policy is per-particle: our httpPolicy
-		// implements wacogo's wasi.HTTPDoer single-method
-		// interface directly. It does two jobs on every
-		// outbound request: (1) substitute credential
-		// placeholders the JS bundle planted in headers /
-		// query params with the real credential values, and
-		// (2) reject the request if the URL host isn't in
-		// the manifest's allowedHosts.
-		//
-		// Substitution is spec-driven: we walk the manifest's
-		// declared credential names, look each up in the
-		// per-particle Store, and check the apply-spec's
-		// expected location in the request. The manifest is
-		// the source of truth — a placeholder for an
-		// undeclared credential never causes a Store read.
-		HttpClient: newHTTPPolicy(
-			allowedHosts,
-			cfg.httpClient,
-			credStore,
-			manifest.declaredCredentialNames(),
-			credentialHostBindings(manifest),
-			func(ctx context.Context, id string) (credentials.AccessToken, error) {
-				return r.cfg.Credentials.RotateAccessToken(ctx, credStore, id)
-			},
-		),
+		HttpClient:   httpClient,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("runtime: build wasi world: %w", err)
@@ -242,12 +298,22 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, credStore c
 		_ = w.Close(ctx)
 	}
 
-	loggingInst, err := newLoggingHost(ctx, r.cfg.Engine, cfg.log, host.WithCallListener(listener))
-	if err != nil {
-		closeAll()
-		return nil, fmt.Errorf("runtime: build wasi:logging host: %w", err)
+	// wasi:logging is a JS-runtime-only import: the QuickJS engine
+	// routes console.* through it. The Python runtime writes
+	// directly to wasi:cli/stderr (captured by the per-instance
+	// stderr buffer just below the wasi.Config above), so it doesn't
+	// declare wasi:logging in its world and doesn't need an instance
+	// wired up here. Going engine-agnostic on the rest keeps the
+	// host wire-up flat — no big switch on selectedRuntime.
+	var loggingInst *host.ComponentInstance
+	if selectedRuntime == RuntimeJS {
+		loggingInst, err = newLoggingHost(ctx, r.cfg.Engine, cfg.log, host.WithCallListener(listener))
+		if err != nil {
+			closeAll()
+			return nil, fmt.Errorf("runtime: build wasi:logging host: %w", err)
+		}
+		hostInsts = append(hostInsts, loggingInst)
 	}
-	hostInsts = append(hostInsts, loggingInst)
 
 	// Wire the four particle:host capabilities. Every import
 	// must be satisfied at instantiation (the runtime.wasm
@@ -283,14 +349,16 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, credStore c
 
 	imports := append(
 		w.Imports(),
-		wc.WithInstanceImport(loggingInterfaceName, loggingInst.Core()),
 		wc.WithInstanceImport("particle:host/credentials@0.1.0", credInst.Core()),
 		wc.WithInstanceImport("particle:host/oauth@0.1.0", oauthInst.Core()),
 		wc.WithInstanceImport("particle:host/signing@0.1.0", signingInst.Core()),
 		wc.WithInstanceImport("particle:host/kv@0.1.0", kvInst.Core()),
 	)
+	if loggingInst != nil {
+		imports = append(imports, wc.WithInstanceImport(loggingInterfaceName, loggingInst.Core()))
+	}
 
-	inst, err := r.comp.Instantiate(ctx, imports...)
+	inst, err := comp.Instantiate(ctx, imports...)
 	if err != nil {
 		closeAll()
 		return nil, fmt.Errorf("runtime: instantiate: %w\nstderr:\n%s", err, stderrSinkBytes(stderr))
@@ -487,6 +555,110 @@ func (p *Particle) CallTool(ctx context.Context, name string, argumentsJSON []by
 	return nil, decodeToolError(res.Err())
 }
 
+// ManifestError is the typed error variant returned by
+// [Particle.GetManifest]. Kind discriminates between
+// `bundle-load-error` (the runtime couldn't load the user's
+// handler module) and `invalid-manifest` (the bundle loaded but
+// its declared shape didn't match the contract).
+type ManifestError struct {
+	Kind    ManifestErrorKind
+	Message string
+}
+
+// ManifestErrorKind names the variant case.
+type ManifestErrorKind int
+
+const (
+	ManifestErrorKindBundleLoadError ManifestErrorKind = iota + 1
+	ManifestErrorKindInvalidManifest
+)
+
+func (e *ManifestError) Error() string {
+	// Hyphenated to match the WIT variant case names — keeps the
+	// error substring stable for callers grep-ing for
+	// "bundle-load-error" / "invalid-manifest".
+	switch e.Kind {
+	case ManifestErrorKindBundleLoadError:
+		return "bundle-load-error: " + e.Message
+	case ManifestErrorKindInvalidManifest:
+		return "invalid-manifest: " + e.Message
+	}
+	return fmt.Sprintf("manifest error (kind=%d): %s", e.Kind, e.Message)
+}
+
+// GetManifest invokes the particle's `manifest.get-manifest` export
+// and returns the typed manifest record. Every particle (current or
+// future fully-WASM) describes itself through this export — a
+// uniform contract the host queries at build time and at setup time.
+//
+// For build-time use, prefer [Runtime.IntrospectParticle] (which
+// owns the trap-store + introspect-mode wiring). GetManifest on its
+// own is the lower-level call that assumes the particle was already
+// instantiated under the right configuration.
+func (p *Particle) GetManifest(ctx context.Context, opts ...CallOption) (*Manifest, error) {
+	iface := p.inst.ExportedInstance(manifestInterface)
+	if iface == nil {
+		return nil, fmt.Errorf("runtime: missing exported instance %q", manifestInterface)
+	}
+	fn := iface.ExportedFunc("get-manifest")
+	if fn == nil {
+		return nil, fmt.Errorf("runtime: %s does not export get-manifest", manifestInterface)
+	}
+	ctx, lim, stop := armLimit(ctx, opts)
+	defer stop()
+	results, err := fn.Call(ctx)
+	if lim != nil && lim.Tripped() {
+		return nil, &BudgetExceededError{Op: "get-manifest", Budget: lim.budget, Used: lim.Used()}
+	}
+	if err != nil {
+		return nil, p.wrapTrap(err, "get-manifest")
+	}
+	if len(results) != 1 {
+		return nil, fmt.Errorf("get-manifest returned %d results, want 1", len(results))
+	}
+	res, ok := results[0].(*wc.ValResult)
+	if !ok {
+		return nil, fmt.Errorf("get-manifest returned %T, want *wacogo.ValResult", results[0])
+	}
+	if res.IsOk() {
+		rec, ok := res.Ok().(*wc.ValRecord)
+		if !ok {
+			return nil, fmt.Errorf("get-manifest ok payload is %T, want *wacogo.ValRecord", res.Ok())
+		}
+		return decodeManifestRecord(rec)
+	}
+	return nil, decodeManifestError(res.Err())
+}
+
+// decodeManifestError lifts the WIT `variant manifest-error` into
+// *ManifestError.
+func decodeManifestError(v wc.Val) *ManifestError {
+	variant, ok := v.(*wc.ValVariant)
+	if !ok {
+		return &ManifestError{
+			Kind:    ManifestErrorKindInvalidManifest,
+			Message: fmt.Sprintf("non-variant error payload %T", v),
+		}
+	}
+	me := &ManifestError{}
+	switch variant.Discriminant() {
+	case 0:
+		me.Kind = ManifestErrorKindBundleLoadError
+		if s, ok := variant.Val().(wc.ValString); ok {
+			me.Message = string(s)
+		}
+	case 1:
+		me.Kind = ManifestErrorKindInvalidManifest
+		if s, ok := variant.Val().(wc.ValString); ok {
+			me.Message = string(s)
+		}
+	default:
+		me.Kind = ManifestErrorKindInvalidManifest
+		me.Message = fmt.Sprintf("unknown manifest-error discriminant %d", variant.Discriminant())
+	}
+	return me
+}
+
 // Ping invokes the particle's optional `ping` health-check. Returns
 // *HealthError when the particle didn't declare ping or when the
 // handler errored.
@@ -614,4 +786,58 @@ func (p *Particle) wrapTrap(err error, op string) error {
 		return fmt.Errorf("runtime: %s: %w", op, err)
 	}
 	return fmt.Errorf("runtime: %s: %w\nstderr:\n%s", op, err, msg)
+}
+
+// mountParticleFS walks the particle artifact FS and re-rooots every
+// file under `particle/`. For JS / Python particles, requires that
+// `requiredBundle` (bundle.js / bundle.py) exists at the root —
+// that's the entry point the runtime's bootstrap loads. For Wasm
+// particles requiredBundle is empty and the check is skipped.
+//
+// Python particles ship a `_deps/site-packages/` tree alongside
+// bundle.py; mounting the whole artifact means `import httpx` etc.
+// just works at runtime via the bootstrap's sys.path setup. JS
+// particles ship only bundle.js + a couple metadata files; the extra
+// mounted paths are harmless (the JS runtime doesn't read them).
+// Wasm particles may ship arbitrary data files alongside
+// particle.wasm.
+func mountParticleFS(particleFS fs.FS, requiredBundle string, rt RuntimeKind) (fs.FS, error) {
+	if requiredBundle != "" {
+		if _, err := fs.Stat(particleFS, requiredBundle); err != nil {
+			return nil, fmt.Errorf("read %s: %w", requiredBundle, err)
+		}
+	}
+	out := fstest.MapFS{}
+	err := fs.WalkDir(particleFS, ".", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		// manifest.json / build-info.json / Particle.lock don't
+		// need to be in the runtime's view (the host already read
+		// the manifest before instantiating; the others are
+		// build-pipeline bookkeeping). For wasm particles also
+		// filter particle.wasm itself — the component is already
+		// loaded as the runtime image and re-mounting it would be
+		// pointless. bundle.{js,py} and the _deps tree get through.
+		switch path {
+		case "manifest.json", "build-info.json", "bundle.js.map", "Particle.lock":
+			return nil
+		}
+		if rt == RuntimeWasm && path == "particle.wasm" {
+			return nil
+		}
+		data, err := fs.ReadFile(particleFS, path)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+		out["particle/"+path] = &fstest.MapFile{Data: data}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }

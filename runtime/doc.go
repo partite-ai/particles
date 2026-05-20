@@ -3,11 +3,11 @@
 //
 // Two things get generated:
 //
-//   1. The runtime wasm itself (`make -C ../ runtime-embed`).
-//      Requires the wasm-rquickjs toolchain and a Rust target
-//      for wasm32-wasip2; running this from a fresh checkout
-//      populates runtime/embed/particle-runtime.wasm so the
-//      //go:embed in runtime.go picks it up.
+//   1. The runtime wasms themselves (`make -C ../ runtime-embed`).
+//      Builds particle-js-runtime.wasm (wasm-rquickjs) and
+//      particle-python-runtime.wasm (componentize-py); a fresh
+//      checkout running this populates runtime/embed/ so the
+//      //go:embed in runtime.go picks them up.
 //
 //   2. The wasi:logging host bindings consumed by
 //      runtime/logging.go. Mirrors the per-capability witgen

@@ -12,7 +12,7 @@
 //	Phase 2: resolve-and-fetch (deno-npm.wasm,  via wacogo)
 //	Phase 3: typecheck         (typecheck.wasm, via wacogo) — skippable
 //	Phase 4: bundle            (esbuild Go lib)
-//	Phase 5: manifest-extract  (introspect.wasm, via wacogo)
+//	Phase 5: manifest-extract  (runtime.IntrospectParticle, via wacogo)
 //	Phase 6: assemble          (Go)
 //
 // The wasm-backed phases are embedded into the binary at compile time
@@ -27,7 +27,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"sort"
 	"strings"
 	"testing/fstest"
 	"time"
@@ -36,6 +35,7 @@ import (
 	"github.com/partite-ai/particles/internal/bundle"
 	"github.com/partite-ai/particles/internal/importscan"
 	"github.com/partite-ai/particles/internal/semver"
+	"github.com/partite-ai/particles/runtime"
 )
 
 // Options configure a single build invocation.
@@ -44,11 +44,24 @@ type Options struct {
 	Source fs.FS
 
 	// EntryPoint is the FS-relative path to the particle's entry source.
-	// Defaults to "Particlefile.ts" then "Particlefile.js".
+	// Defaults to "Particlefile.ts" then "Particlefile.js" then
+	// "Particlefile.py". Ignored when Component is set.
 	EntryPoint string
 
-	// NoTypeCheck skips Phase 3 (default: type-check on).
+	// NoTypeCheck skips Phase 3 (default: type-check on). Ignored
+	// when Component is set (the wasm build has no typecheck phase).
 	NoTypeCheck bool
+
+	// Component, when non-empty, names an FS-relative path to a
+	// prebuilt wasi:p2 component the user wants to package as a
+	// particle. The component must implement `particle:runtime`
+	// (tools + health + manifest). Setting this triggers the wasm
+	// build path: the orchestrator instantiates the component, calls
+	// get-manifest, and writes manifest.json + particle.wasm into
+	// the artifact — no source compilation involved. Native
+	// toolchains (cargo, TinyGo, ...) name their outputs how they
+	// want; the build doesn't enforce a convention.
+	Component string
 }
 
 // Result is what Build returns on success.
@@ -163,14 +176,15 @@ func (e *Error) Unwrap() error { return e.Cause }
 
 // Build runs the full pipeline. Returns *Result and nil on success;
 // *Error and nil-Result on failure.
+//
+// Dispatches to a language-specific inner builder. When
+// Options.Component is set the wasm path runs (no source
+// compilation; the component IS the runtime). Otherwise the
+// orchestrator picks JS or Python based on the entry-point file
+// extension at the source root.
 func Build(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Source == nil {
 		return nil, &Error{Cause: errors.New("Options.Source is required")}
-	}
-
-	entry, err := resolveEntryPoint(opts.Source, opts.EntryPoint)
-	if err != nil {
-		return nil, &Error{Phase: PhaseImportScan, Cause: err}
 	}
 
 	comps, err := wacogo.New(ctx)
@@ -179,6 +193,29 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 	defer comps.Close(ctx)
 
+	if opts.Component != "" {
+		return buildWasm(ctx, opts, comps)
+	}
+
+	entry, kind, err := resolveEntryPoint(opts.Source, opts.EntryPoint)
+	if err != nil {
+		return nil, &Error{Phase: PhaseImportScan, Cause: err}
+	}
+
+	switch kind {
+	case entryKindJS:
+		return buildJS(ctx, opts, comps, entry)
+	case entryKindPython:
+		return buildPython(ctx, opts, comps, entry)
+	default:
+		return nil, &Error{Cause: fmt.Errorf("unsupported entry kind for %q", entry)}
+	}
+}
+
+// buildJS runs the JS/TS pipeline — the original six phases. Split
+// out from Build so the Python path can sit alongside without
+// language-conditional plumbing in every phase.
+func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry string) (*Result, error) {
 	var (
 		logs     []Log
 		warnings []Diagnostic
@@ -249,13 +286,22 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	// ---- Phase 5: manifest-extract ------------------------------------
-	ir, err := comps.Introspect(ctx, bundleResult.JS)
-	logs = appendLog(logs, PhaseManifestExtract, ir)
+	// The runtime's particle:runtime/manifest export is the uniform
+	// way every particle answers "describe yourself" — current
+	// bundle-loading runtimes and future fully-WASM particles alike.
+	sourceFS := fstest.MapFS{"bundle.js": &fstest.MapFile{Data: bundleResult.JS}}
+	extracted, err := comps.ExtractManifest(ctx, runtime.RuntimeJS, sourceFS)
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
 	}
-	if err := validateExtractedManifest(ir.Manifest); err != nil {
+	if err := validateExtractedManifest(extracted); err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
+	}
+	// Compact JSON: keeps manifest.json byte-diff-stable across runs
+	// and easy to substring-match in tests.
+	manifestJSON, err := json.Marshal(extracted)
+	if err != nil {
+		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: fmt.Errorf("marshal manifest: %w", err)}
 	}
 
 	// ---- Phase 6: assemble --------------------------------------------
@@ -265,7 +311,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	particle := assembleParticleFS(particleFiles{
-		Manifest:  ir.Manifest,
+		Manifest:  manifestJSON,
 		Bundle:    bundleResult.JS,
 		Sourcemap: bundleResult.Sourcemap,
 		BuildInfo: buildInfo,
@@ -278,152 +324,92 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}, nil
 }
 
-// knownCapabilities is the set of capability category names the
-// runtime recognizes. Any other key under `capabilities`
-// indicates a typo or a stale schema and fails the build —
-// silently ignoring would let a manifest declare permissions the
-// runtime never actually enforces. Update this list when a new
-// capability lands in types/particle.d.ts.
-var knownCapabilities = map[string]struct{}{
-	"http": {},
-}
-
-// knownMethodTypes is the set of credential method `type:`
-// strings the runtime understands. A manifest that names anything
-// else is either a typo or a stale schema; the build rejects it
-// so a particle can't carry a credential the runtime will never
-// be able to substitute.
-var knownMethodTypes = map[string]struct{}{
-	"basic":       {},
-	"oauth2":      {},
-	"apikey":      {},
-	"signing-key": {},
-	"raw":         {},
-}
-
-// validateExtractedManifest runs the Go-side gates on the JSON
-// the introspect WASM produced:
+// validateExtractedManifest runs the Go-side cross-field gates on
+// the typed manifest returned by the runtime. Two checks:
 //
-//  1. Strict SemVer 2.0.0 on `version` (shared with the registry
-//     via `internal/semver`, so a tarball that bypasses the build
-//     path still can't slip a bad version past `registry.Put`).
+//  1. SemVer 2.0.0 on `version` — shared with the registry via
+//     `internal/semver`, so a tarball that bypasses the build can't
+//     slip a bad version past `registry.Put` either.
+//  2. Every host listed under `credentials.<name>.hosts` must also
+//     appear in `capabilities.http.allowedHosts` — a credential
+//     bound to a host the particle can't reach is a layering bug.
 //
-//  2. Every key under `capabilities` must be a recognized
-//     category. `credentials` was a capability in pre-1.0 and
-//     this is the migration-aware error users hit when they
-//     update particle but not their manifest.
-//
-//  3. Every credential method's `type` must be a recognized
-//     variant. An unknown type would slip through introspect
-//     (it only enforces shape, not enumeration) and then
-//     surface as a runtime substitution error far away from the
-//     manifest typo that caused it.
-//
-//  4. Every host listed under `credentials.<name>.hosts` must
-//     also appear in `capabilities.http.allowedHosts`. A
-//     credential bound to a host the particle can't actually
-//     reach is either a typo or a layering bug — fail loud at
-//     build time rather than at substitution time.
-//
-// Other shape checks — name non-empty, tools well-formed —
-// already happen inside introspect.ts; this layer is the
-// host-side gate that doesn't depend on guest-language code
-// being correct.
-func validateExtractedManifest(manifestJSON []byte) error {
-	var mf struct {
-		Version      string                     `json:"version"`
-		Capabilities map[string]json.RawMessage `json:"capabilities"`
-		Credentials  map[string]struct {
-			Hosts   []string `json:"hosts"`
-			Methods map[string]struct {
-				Type string `json:"type"`
-			} `json:"methods"`
-		} `json:"credentials"`
+// Enumeration shape (recognized runtimes / capability categories /
+// credential-method types) is enforced by the WIT contract itself:
+// the runtime's get-manifest can only return records that match the
+// typed shape, so anything out of band fails inside the runtime with
+// `invalid-manifest` before reaching this layer.
+func validateExtractedManifest(m *runtime.Manifest) error {
+	if !semver.IsValid(m.Version) {
+		return fmt.Errorf("particle.version %q is not a valid semver string (e.g. \"1.2.3\", \"0.1.0-rc.1\", \"1.0.0+build.7\")", m.Version)
 	}
-	if err := json.Unmarshal(manifestJSON, &mf); err != nil {
-		return fmt.Errorf("parse extracted manifest: %w", err)
+	allowed := make(map[string]struct{}, len(m.Capabilities.HTTP.AllowedHosts))
+	for _, h := range m.Capabilities.HTTP.AllowedHosts {
+		allowed[strings.ToLower(h)] = struct{}{}
 	}
-	if !semver.IsValid(mf.Version) {
-		return fmt.Errorf("particle.version %q is not a valid semver string (e.g. \"1.2.3\", \"0.1.0-rc.1\", \"1.0.0+build.7\")", mf.Version)
-	}
-	for cap := range mf.Capabilities {
-		if _, ok := knownCapabilities[cap]; !ok {
-			return fmt.Errorf("capabilities.%s is not a recognized capability (known: %s)", cap, knownCapabilitiesList())
-		}
-	}
-	var allowed map[string]struct{}
-	if rawHTTP, ok := mf.Capabilities["http"]; ok {
-		var v struct {
-			AllowedHosts []string `json:"allowedHosts"`
-		}
-		if err := json.Unmarshal(rawHTTP, &v); err != nil {
-			return fmt.Errorf("parse capabilities.http: %w", err)
-		}
-		allowed = make(map[string]struct{}, len(v.AllowedHosts))
-		for _, h := range v.AllowedHosts {
-			allowed[strings.ToLower(h)] = struct{}{}
-		}
-	}
-	for credName, cred := range mf.Credentials {
+	for credName, cred := range m.Credentials {
 		for _, h := range cred.Hosts {
 			if _, ok := allowed[strings.ToLower(h)]; !ok {
 				return fmt.Errorf("credentials.%s.hosts: %q is not in capabilities.http.allowedHosts — add it there or remove it from this credential", credName, h)
-			}
-		}
-		for methodName, method := range cred.Methods {
-			if method.Type == "" {
-				return fmt.Errorf("credentials.%s.methods.%s: missing required `type`", credName, methodName)
-			}
-			if _, ok := knownMethodTypes[method.Type]; !ok {
-				return fmt.Errorf("credentials.%s.methods.%s: type %q is not a recognized credential type (known: %s)", credName, methodName, method.Type, knownMethodTypesList())
 			}
 		}
 	}
 	return nil
 }
 
-// knownCapabilitiesList returns the recognized capability names
-// in sorted order, comma-joined — used to build error messages
-// that show the author what's actually accepted.
-func knownCapabilitiesList() string {
-	return sortedKeys(knownCapabilities)
-}
+// entryKind names the source language of a particle's entry point.
+// Determines which set of pipeline phases the build runs (JS vs
+// Python). RuntimeKind on the emitted manifest is the same value
+// rendered as a string.
+type entryKind int
 
-// knownMethodTypesList is the sibling helper for the credential
-// method type set.
-func knownMethodTypesList() string {
-	return sortedKeys(knownMethodTypes)
-}
+const (
+	entryKindJS entryKind = iota + 1
+	entryKindPython
+)
 
-// sortedKeys joins a set's keys into a comma-separated string in
-// deterministic order — used in error messages so the same input
-// always produces the same diagnostic.
-func sortedKeys(set map[string]struct{}) string {
-	names := make([]string, 0, len(set))
-	for n := range set {
-		names = append(names, n)
+func (k entryKind) String() string {
+	switch k {
+	case entryKindJS:
+		return "js"
+	case entryKindPython:
+		return "python"
+	default:
+		return "unknown"
 	}
-	sort.Strings(names)
-	return strings.Join(names, ", ")
 }
 
-// resolveEntryPoint picks the conventional entry point. Spec §4: the
-// conventional entry is `Particlefile.{js,ts}`; the user can override.
-func resolveEntryPoint(fsys fs.FS, override string) (string, error) {
+// resolveEntryPoint picks the conventional entry point and classifies
+// the source language. Spec §4: conventional entry is
+// `Particlefile.{js,ts}`; the Python addition extends that with
+// `Particlefile.py`. The user can override via opts.EntryPoint.
+func resolveEntryPoint(fsys fs.FS, override string) (string, entryKind, error) {
 	if override != "" {
 		if _, err := fs.Stat(fsys, override); err != nil {
-			return "", fmt.Errorf("entry point %q: %w", override, err)
+			return "", 0, fmt.Errorf("entry point %q: %w", override, err)
 		}
-		return override, nil
+		return override, kindFromExt(override), nil
 	}
-	for _, candidate := range []string{"Particlefile.ts", "Particlefile.js"} {
+	// Try in priority order. TS first (richer DX), then JS, then PY.
+	// Listing JS before PY keeps existing JS particles unchanged.
+	for _, candidate := range []string{"Particlefile.ts", "Particlefile.js", "Particlefile.py"} {
 		if _, err := fs.Stat(fsys, candidate); err == nil {
-			return candidate, nil
+			return candidate, kindFromExt(candidate), nil
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", err
+			return "", 0, err
 		}
 	}
-	return "", errors.New("no Particlefile.{ts,js} found at the source root")
+	return "", 0, errors.New("no Particlefile.{ts,js,py} found at the source root")
+}
+
+// kindFromExt classifies an entry path by extension. The default
+// (.ts/.js/anything else) is JS so existing particles with unusual
+// extensions don't fail unexpectedly.
+func kindFromExt(path string) entryKind {
+	if strings.HasSuffix(path, ".py") {
+		return entryKindPython
+	}
+	return entryKindJS
 }
 
 // scanErrorsAsBuildError wraps importscan errors as a Phase 1 *Error.
@@ -476,10 +462,6 @@ func appendLog(logs []Log, phase Phase, carrier any) []Log {
 	}
 	var b []byte
 	switch v := carrier.(type) {
-	case *wacogo.IntrospectResult:
-		if v != nil {
-			b = v.Stderr
-		}
 	case *wacogo.CheckResult:
 		if v != nil {
 			b = v.Stderr

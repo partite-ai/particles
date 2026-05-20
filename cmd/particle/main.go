@@ -52,7 +52,16 @@ func main() {
 	// repeated Ctrl+C.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := newRootCmd().ExecuteContext(ctx); err != nil {
+
+	root, profileStop := newRootCmd()
+	err := root.ExecuteContext(ctx)
+	// Flush the pprof profile even when the command errored —
+	// cobra's PersistentPostRunE only fires on success, so a
+	// half-broken command otherwise leaves an empty .cpu file.
+	if fn := profileStop(); fn != nil {
+		fn()
+	}
+	if err != nil {
 		// Cobra has already printed the error; just exit non-zero.
 		os.Exit(1)
 	}
@@ -62,13 +71,41 @@ func main() {
 // attached. Constructing it as a function (rather than a global)
 // keeps tests able to stand up a fresh command tree without state
 // from a previous run leaking through cobra's package globals.
-func newRootCmd() *cobra.Command {
+//
+// The returned `profileStop` closure is called after the command
+// returns (success or error). It yields the profile-flush function
+// if --profile was set on this invocation, or nil otherwise.
+func newRootCmd() (*cobra.Command, func() func()) {
 	root := &cobra.Command{
 		Use:           "particle",
 		Short:         "Build and run particles",
 		SilenceUsage:  true, // we already print usage ourselves where it helps
 		SilenceErrors: false,
 	}
+
+	// --profile is a global, hidden flag that writes CPU + heap
+	// pprof profiles with the given prefix for the lifetime of the
+	// command. Started in PersistentPreRunE so every subcommand
+	// gets profiled by the same code path; stopped by the caller
+	// (main) so error paths still flush their data.
+	var (
+		profile     string
+		profileFlush func()
+	)
+	root.PersistentFlags().StringVar(&profile, "profile", "", "Write CPU + heap pprof profiles with this prefix")
+	_ = root.PersistentFlags().MarkHidden("profile")
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		if profile == "" {
+			return nil
+		}
+		stop, err := startProfile(profile, cmd.ErrOrStderr())
+		if err != nil {
+			return err
+		}
+		profileFlush = stop
+		return nil
+	}
+
 	root.AddCommand(
 		newBuildCmd(),
 		newDeleteCmd(),
@@ -79,7 +116,7 @@ func newRootCmd() *cobra.Command {
 		newRunCmd(),
 		newServeMCPCmd(),
 	)
-	return root
+	return root, func() func() { return profileFlush }
 }
 
 // defaultDBPath returns the platform's user config directory with

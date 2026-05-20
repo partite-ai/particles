@@ -50,3 +50,10 @@ default:
         # Rust toolchain (rustup installer + dist server for additional targets)
         - sh.rustup.rs
         - static.rust-lang.org
+
+        # Python tooling (uv installer + PyPI for `pip install componentize-py`).
+        # uv downloads CPython builds from GitHub release-assets, already
+        # allowed above.
+        - astral.sh
+        - pypi.org
+        - files.pythonhosted.org

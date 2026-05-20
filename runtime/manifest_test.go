@@ -234,6 +234,54 @@ func TestLoadManifest_MissingFile(t *testing.T) {
 	}
 }
 
+// Runtime parsing: empty / unset defaults to JS via
+// ResolvedRuntime, explicit "js" and "python" pass through, anything
+// else is rejected at parse time so a typo can't silently land in
+// the registry and confuse the host's dispatch.
+func TestParseManifest_Runtime(t *testing.T) {
+	base := `{"name":"p","version":"0.1.0","capabilities":{},"tools":[]`
+
+	t.Run("default (omitted) → js", func(t *testing.T) {
+		m, err := ParseManifest(strings.NewReader(base + "}"))
+		if err != nil {
+			t.Fatalf("ParseManifest: %v", err)
+		}
+		if m.Runtime != "" {
+			t.Errorf("Runtime = %q, want empty", m.Runtime)
+		}
+		if got := m.ResolvedRuntime(); got != RuntimeJS {
+			t.Errorf("ResolvedRuntime() = %q, want %q", got, RuntimeJS)
+		}
+	})
+
+	t.Run("explicit js", func(t *testing.T) {
+		m, err := ParseManifest(strings.NewReader(base + `,"runtime":"js"}`))
+		if err != nil {
+			t.Fatalf("ParseManifest: %v", err)
+		}
+		if got := m.ResolvedRuntime(); got != RuntimeJS {
+			t.Errorf("ResolvedRuntime() = %q, want %q", got, RuntimeJS)
+		}
+	})
+
+	t.Run("python", func(t *testing.T) {
+		m, err := ParseManifest(strings.NewReader(base + `,"runtime":"python"}`))
+		if err != nil {
+			t.Fatalf("ParseManifest: %v", err)
+		}
+		if got := m.ResolvedRuntime(); got != RuntimePython {
+			t.Errorf("ResolvedRuntime() = %q, want %q", got, RuntimePython)
+		}
+	})
+
+	t.Run("unknown rejected", func(t *testing.T) {
+		_, err := ParseManifest(strings.NewReader(base + `,"runtime":"ruby"}`))
+		if err == nil || !strings.Contains(err.Error(), "unknown runtime") {
+			t.Errorf("err = %v, want unknown-runtime", err)
+		}
+	})
+}
+
 // credentialHostBindings returns only credentials that have
 // hosts set — non-HTTP credentials (signing-key, raw) sit at
 // the top-level credentials map without `hosts` and shouldn't
