@@ -86,15 +86,6 @@ interface manifest {
     invalid-manifest(string),
   }
 
-  /// Which guest engine the host should instantiate for this
-  /// particle. Optional in the manifest itself: when omitted the
-  /// host applies its default (currently "js").
-  enum runtime-kind {
-    js,
-    python,
-    wasm,
-  }
-
   /// Top-level capability declarations. Structured as a record so
   /// future categories (sockets, env, ...) can be added without
   /// breaking older readers.
@@ -183,12 +174,17 @@ interface manifest {
   /// Field order chosen so that a json.Marshal of the Go struct
   /// produced from this record yields stable, human-readable diffs
   /// against the on-disk manifest.json.
+  ///
+  /// Note: there is no `runtime` field here. Which engine the host
+  /// instantiates is the build pipeline's decision (entry-point
+  /// extension for JS/Python, `--component` for native wasm), and
+  /// the builder writes that into manifest.json directly — the
+  /// particle doesn't get to declare its own engine via this
+  /// record.
   record particle-manifest {
     name: string,
     description: string,
     version: string,
-    /// `none` = host default (currently js).
-    runtime: option<runtime-kind>,
     capabilities: capability-set,
     credentials: list<credential-entry>,
     tools: list<tool-entry>,

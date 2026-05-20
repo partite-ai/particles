@@ -1,10 +1,11 @@
-"""OAuth refresh (mirrors @partite-ai/particle-oauth).
+"""OAuth refresh for Python particles.
 
-User code rarely needs to call this directly — `particle.http.fetcher`
-substitutes the current access token transparently, and the host
-refreshes on its own when the cached token is expired. Use `refresh`
-only when an upstream returns 401/403 on a token we *thought* was
-still valid (i.e., revocation or unsynced expiry).
+User code rarely needs to call this directly — `particle.http.fetch`
+with `credential_name=...` substitutes the current access token
+transparently, and the host refreshes on its own when the cached
+token is expired. Use `refresh` only when an upstream returns 401/403
+on a token we *thought* was still valid (i.e., revocation or
+unsynced expiry).
 """
 
 from wit_world.imports import oauth as _oauth

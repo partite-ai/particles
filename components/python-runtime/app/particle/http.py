@@ -1,23 +1,24 @@
-"""Outbound HTTP for Python particles (mirrors @partite-ai/particle-http).
+"""Outbound HTTP for Python particles.
 
 Every outbound HTTP request a particle makes must go through this
-module — directly via `fetch()` / `fetcher()`, or transparently via
-the urllib monkey-patch installed at module load. Going through
-wasi:http (rather than wasi:sockets) is what gives the host:
+module — directly via `fetch()`, or transparently via the urllib /
+urllib3 / httpx hooks (see `_urllib_compat`, `_urllib3_compat`,
+`_httpx_compat`). Going through wasi:http (rather than wasi:sockets)
+is what gives the host:
 
   - the chance to enforce the manifest's HTTP allowlist,
   - credential placeholder substitution at the wire boundary,
   - audit visibility into where particles connect.
 
 Raw socket access is intentionally not provided. wasi:sockets is not
-imported by the runtime's world, so even a user trying to use the
-`socket` module gets an unbound import error.
+imported by the runtime's world, and `particle._socket_guard`
+replaces `socket.socket` with an OSError-raising stub so libraries
+that probe for socket support at import time fail catchably.
 """
 
 import asyncio
 import json as _json
 import urllib.parse
-import urllib.request as _urllib_request
 
 from componentize_py_types import Err, Ok
 from wit_world.imports import types as _http_types
@@ -42,7 +43,7 @@ from particle import credentials as _credentials
 from poll_loop import PollLoop as _PollLoop, Sink as _Sink, Stream as _Stream
 from poll_loop import send as _send
 
-__all__ = ["Response", "fetch", "fetcher", "install_urllib_patch"]
+__all__ = ["Response", "fetch"]
 
 
 # -- Response ------------------------------------------------------------
@@ -90,6 +91,7 @@ def fetch(
     method: str = "GET",
     headers: dict | None = None,
     body: bytes | str | None = None,
+    credential_name: str | None = None,
 ) -> Response:
     """Synchronously issue an HTTP request through wasi:http.
 
@@ -98,137 +100,21 @@ def fetch(
     backed by wasi:io/poll. Particles run one tool call at a time
     inside an instance (design doc §6 concurrency), so the sync
     surface is what handler authors actually want.
+
+    `credential_name`, when set, attaches the named credential's
+    placeholder to the request at the location its `apply-spec`
+    dictates (Authorization header, custom header, query param,
+    ...). The host substitutes the real secret at the wire boundary
+    on the way out — the placeholder string never leaves the
+    sandbox unsubstituted, and the secret never enters Python
+    memory.
     """
+    if credential_name is not None:
+        info = _credentials.get_placeholder(credential_name)
+        url, headers = _apply_placeholder(
+            url, headers or {}, info.placeholder, info.apply,
+        )
     return _run_sync(_fetch_async(url, method=method, headers=headers, body=body))
-
-
-def fetcher(credential_name: str):
-    """Return a `fetch`-like callable that applies the named
-    credential's placeholder to every outgoing request — the Python
-    analog of `credentials.fetcher(name)` in the JS DSL.
-    """
-    info = _credentials.get_placeholder(credential_name)
-    apply = info.apply
-
-    def call(url: str, *, method: str = "GET", headers: dict | None = None,
-             body: bytes | str | None = None) -> Response:
-        url2, headers2 = _apply_placeholder(url, headers or {}, info.placeholder, apply)
-        return fetch(url2, method=method, headers=headers2, body=body)
-
-    return call
-
-
-# -- urllib monkey-patch -------------------------------------------------
-
-
-def install_urllib_patch() -> None:
-    """Route `urllib.request.urlopen` through wasi:http.
-
-    Most third-party Python packages (requests, httpx in sync mode,
-    raw urllib, etc.) end up at urllib.request.urlopen or
-    http.client.HTTP(S)Connection.request. Patching urlopen catches
-    the common case; we can extend to http.client if needed.
-
-    Called at module import time so the patch is in place before user
-    code's first `urllib.request.urlopen(...)`.
-    """
-    if getattr(_urllib_request, "_particle_patched", False):
-        return
-
-    _original_urlopen = _urllib_request.urlopen
-
-    def _patched_urlopen(url, data=None, timeout=None, *args, **kwargs):
-        # urllib accepts either a string URL or a Request object.
-        if isinstance(url, _urllib_request.Request):
-            req = url
-            target = req.full_url
-            method = req.get_method()
-            req_headers = {k: v for k, v in req.header_items()}
-            req_body = req.data if data is None else data
-        else:
-            target = url
-            method = "POST" if data is not None else "GET"
-            req_headers = {}
-            req_body = data
-
-        resp = fetch(target, method=method, headers=req_headers, body=req_body)
-        return _UrllibResponseAdapter(resp, target)
-
-    _urllib_request.urlopen = _patched_urlopen
-    _urllib_request._particle_patched = True
-    _urllib_request._particle_original_urlopen = _original_urlopen
-
-
-class _UrllibResponseAdapter:
-    """Looks like the file-like object urllib.request.urlopen returns.
-
-    Real urllib responses are `http.client.HTTPResponse` instances;
-    we expose the subset that's actually used in the wild —
-    .read(), .getcode(), .geturl(), .headers (with .get()), context
-    manager protocol. Good enough for requests, httpx-sync, etc.
-    """
-
-    def __init__(self, resp: Response, url: str):
-        self._resp = resp
-        self._url = url
-        self._consumed = False
-
-    def read(self, amt: int | None = None) -> bytes:
-        if self._consumed:
-            return b""
-        self._consumed = True
-        return self._resp.body if amt is None else self._resp.body[:amt]
-
-    def getcode(self) -> int:
-        return self._resp.status_code
-
-    @property
-    def status(self) -> int:
-        return self._resp.status_code
-
-    def geturl(self) -> str:
-        return self._url
-
-    @property
-    def headers(self):
-        return _UrllibHeaders(self._resp.headers)
-
-    def info(self):
-        return self.headers
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        return False
-
-    def close(self):
-        return None
-
-
-class _UrllibHeaders:
-    """Tiny shim mimicking `email.message.Message`-style header access
-    so caller `.get("content-type", default)` keeps working.
-    """
-
-    def __init__(self, entries: list[tuple[str, bytes]]):
-        self._entries = entries
-        self._lookup = {k.lower(): v.decode("latin-1") for k, v in entries}
-
-    def get(self, name: str, default=None):
-        return self._lookup.get(name.lower(), default)
-
-    def __getitem__(self, name: str):
-        v = self._lookup.get(name.lower())
-        if v is None:
-            raise KeyError(name)
-        return v
-
-    def __contains__(self, name: str):
-        return name.lower() in self._lookup
-
-    def items(self):
-        return [(k, v.decode("latin-1")) for k, v in self._entries]
 
 
 # -- Internals -----------------------------------------------------------
@@ -370,8 +256,13 @@ def _apply_placeholder(
     apply: "_credentials.ApplySpec",
 ) -> tuple[str, dict]:
     """Place the credential placeholder at the location the host
-    expects. Matches the JS-side applyPlaceholder in
-    components/js-runtime/src/host-shim.ts.
+    expects.
+
+    The ApplyKind enum is set host-side from the credential's
+    configured method (Basic / Bearer / custom header / arbitrary
+    auth-scheme / query param); this function only re-shapes the
+    URL or headers accordingly. The host then substitutes the real
+    secret for the placeholder at the wasi:http boundary.
     """
     kind = apply.kind
     new_headers = dict(headers)
@@ -394,9 +285,3 @@ def _apply_placeholder(
         rebuilt = parsed._replace(query=urllib.parse.urlencode(query))
         return urllib.parse.urlunsplit(rebuilt), new_headers
     raise ValueError(f"unknown apply kind: {kind!r}")
-
-
-# Install the monkey-patch at import time so it's in place before any
-# user code runs (the bootstrap imports `particle.http` before loading
-# the user bundle).
-install_urllib_patch()

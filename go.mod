@@ -6,8 +6,9 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/evanw/esbuild v0.28.0
 	github.com/google/jsonschema-go v0.4.3
+	github.com/klauspost/compress v1.18.6
 	github.com/modelcontextprotocol/go-sdk v1.6.0
-	github.com/partite-ai/wacogo v0.0.0-20260518102611-1bbfd2696bf6
+	github.com/partite-ai/wacogo v0.0.0-20260520145545-56263c9eea9a
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	github.com/tetratelabs/wazero v1.11.1-0.20260511190115-a3374cf27a3a
@@ -25,7 +26,6 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

@@ -83,15 +83,15 @@ export default {
 func TestExtractManifest_TrapStores_Python_BlockModuleScopeHostCalls(t *testing.T) {
 	bundlePy := []byte(`
 from particle import credentials
+from particle.manifest import Particle, Http
 # Module-scope host call — illegal during get-manifest.
 _trap = credentials.get_placeholder("x")
-particle = {
-    "name": "trap-test-py",
-    "description": "module-scope credential call should trip the introspect trap",
-    "version": "0.0.1",
-    "capabilities": {"http": {"allowedHosts": ["api.example.com"]}},
-    "tools": {},
-}
+particle = Particle(
+    name="trap-test-py",
+    description="module-scope credential call should trip the introspect trap",
+    version="0.0.1",
+    http=Http(allowed_hosts=["api.example.com"]),
+)
 `)
 
 	ctx := context.Background()

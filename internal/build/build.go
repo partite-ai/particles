@@ -294,6 +294,10 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
 	}
+	// Builder is the source of truth for `runtime` — the WIT record
+	// returned by get-manifest doesn't carry it. Entry-point extension
+	// drove the dispatch into buildJS, so the value is fixed here.
+	extracted.Runtime = runtime.RuntimeJS
 	if err := validateExtractedManifest(extracted); err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
 	}

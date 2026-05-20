@@ -1,8 +1,8 @@
-"""Host-side signing (mirrors @partite-ai/particle-signing).
+"""Host-side signing for Python particles.
 
 The signing key never enters Python memory — the host performs the
-HMAC/HMAC-verify operation and returns only the result. Use for HMAC
-webhook signing, AWS SigV4 string-to-sign, JWT signing, etc.
+HMAC / HMAC-verify operation and returns only the result. Use for
+HMAC webhook signing, AWS SigV4 string-to-sign, JWT signing, etc.
 """
 
 from wit_world.imports import signing as _signing

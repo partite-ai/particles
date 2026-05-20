@@ -25,11 +25,9 @@ func decodeManifestRecord(rec *wc.ValRecord) (*Manifest, error) {
 	m.Description = stringField(rec, "description")
 	m.Version = stringField(rec, "version")
 
-	if v, ok := rec.Field("runtime").(*wc.ValOption); ok && !v.IsNone() {
-		if e, ok := v.Val().(*wc.ValEnum); ok {
-			m.Runtime = decodeRuntimeKind(e)
-		}
-	}
+	// `runtime` is intentionally absent from the WIT record — the
+	// build pipeline owns that field and writes it into manifest.json
+	// after this decode runs (see internal/build).
 
 	if caps, ok := rec.Field("capabilities").(*wc.ValRecord); ok {
 		m.Capabilities = decodeCapabilitySet(caps)
@@ -52,18 +50,6 @@ func decodeManifestRecord(rec *wc.ValRecord) (*Manifest, error) {
 	}
 
 	return m, nil
-}
-
-func decodeRuntimeKind(e *wc.ValEnum) RuntimeKind {
-	switch e.Discriminant() {
-	case 0:
-		return RuntimeJS
-	case 1:
-		return RuntimePython
-	case 2:
-		return RuntimeWasm
-	}
-	return ""
 }
 
 func decodeCapabilitySet(rec *wc.ValRecord) Capabilities {

@@ -1,4 +1,4 @@
-"""Per-particle key/value store (mirrors @partite-ai/particle-kv).
+"""Per-particle key/value store.
 
 Wraps `wit_world.imports.kv`. Names follow the WIT (`get`, `set`,
 `delete`, `list`) — `list` shadows the builtin in user code, so users

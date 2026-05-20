@@ -96,6 +96,10 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
 	}
+	// Builder is the source of truth for `runtime` — the WIT record
+	// doesn't carry it. We dispatched into buildPython off the .py
+	// extension, so the value is fixed here.
+	extracted.Runtime = runtime.RuntimePython
 	if err := validateExtractedManifest(extracted); err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
 	}

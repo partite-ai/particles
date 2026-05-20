@@ -84,7 +84,6 @@ type UserParticle = {
   name: string;
   description: string;
   version: string;
-  runtime?: "js" | "python";
   capabilities: Record<string, unknown>;
   credentials?: Record<string, unknown>;
   tools: Record<string, UserToolDef>;
@@ -286,8 +285,6 @@ export const manifest = {
 // catch shape drift if the WIT changes underneath us.
 // -----------------------------------------------------------------------------
 
-type RuntimeKind = "js" | "python";
-
 type HttpCapability = { allowedHosts: string[] };
 type CapabilitySet = { http: HttpCapability | undefined };
 
@@ -340,7 +337,6 @@ type ParticleManifestRecord = {
   name: string;
   description: string;
   version: string;
-  runtime: RuntimeKind | undefined;
   capabilities: CapabilitySet;
   credentials: CredentialEntry[];
   tools: ToolEntry[];
@@ -360,9 +356,6 @@ function buildManifestRecord(p: UserParticle): ParticleManifestRecord {
   if (typeof p.version !== "string" || !p.version) {
     throw new Error("particle.version must be a non-empty string");
   }
-  if (p.runtime !== undefined && p.runtime !== "js" && p.runtime !== "python") {
-    throw new Error(`particle.runtime must be "js" or "python", got ${JSON.stringify(p.runtime)}`);
-  }
   if (p.capabilities && typeof p.capabilities !== "object") {
     throw new Error("particle.capabilities must be an object");
   }
@@ -377,7 +370,6 @@ function buildManifestRecord(p: UserParticle): ParticleManifestRecord {
     name: p.name,
     description: p.description,
     version: p.version,
-    runtime: p.runtime,
     capabilities: buildCapabilitySet(p.capabilities ?? {}),
     credentials: buildCredentials((p.credentials ?? {}) as Record<string, RawObject>),
     tools: buildTools(p.tools),

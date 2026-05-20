@@ -15,7 +15,7 @@ wit_bindgen::generate!({
 use exports::particle::runtime::tools::{Guest as ToolsGuest, ToolDef, ToolError};
 use exports::particle::runtime::health::{Guest as HealthGuest, HealthError, PingResult, Status};
 use exports::particle::runtime::manifest::{
-    Guest as ManifestGuest, ManifestError, ParticleManifest, RuntimeKind,
+    Guest as ManifestGuest, ManifestError, ParticleManifest,
     CapabilitySet, ToolEntry,
 };
 
@@ -75,7 +75,6 @@ impl ManifestGuest for Component {
             name: "wasm-example".into(),
             description: "Native-WASM particle fixture — echo + add.".into(),
             version: "0.1.0".into(),
-            runtime: Some(RuntimeKind::Wasm),
             capabilities: CapabilitySet { http: None },
             credentials: vec![],
             tools: vec![

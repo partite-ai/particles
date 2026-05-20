@@ -1,12 +1,13 @@
-"""Credentials access (mirrors @partite-ai/particle-credentials).
+"""Credentials access for Python particles.
 
 The substitution-based credential types (basic, oauth2, apikey) never
 hand their actual value to Python — `get_placeholder(name)` returns
 an opaque placeholder string + an apply-spec describing where the
 host expects to substitute it. User code typically goes through
-`particle.http.fetcher(name)` instead of calling `get_placeholder`
-directly; the fetcher applies the placeholder to the right location
-and the host substitutes when the request leaves wasm.
+`particle.http.fetch(..., credential_name=name)` instead of calling
+`get_placeholder` directly; fetch applies the placeholder to the
+right location and the host substitutes when the request leaves
+wasm.
 
 `get_raw(name)` returns the actual value — only valid for type-`raw`
 credentials, where the manifest explicitly opted into raw access.

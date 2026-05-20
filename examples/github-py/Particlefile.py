@@ -19,25 +19,35 @@ which method is active.
 
 import json
 from particle import http, credentials
+from particle.manifest import (
+    Particle, Tool, Http,
+    Credential, OAuth2, ApiKey, ApiKeyLocation,
+)
 
 
 def _gh(path: str, *, method: str = "GET", body=None):
-    """Convenience wrapper: every tool reuses the same fetcher, sets
-    the recommended Accept header, and bubbles non-2xx as a thrown
-    error so the runtime returns a HandlerError with the API's
-    message.
+    """Convenience wrapper: every tool sets the recommended Accept
+    header and tags the request with the `github` credential so the
+    host substitutes the bearer token at the wire boundary. Non-2xx
+    responses bubble as a thrown error so the runtime returns a
+    HandlerError with the API's message.
 
     `body` is JSON-encoded here (instead of in the caller) so handlers
     can pass a dict and get the right Content-Type without thinking
     about it.
     """
-    fetcher = http.fetcher("github")
     headers = {"Accept": "application/vnd.github+json"}
     payload = None
     if body is not None:
         headers["Content-Type"] = "application/json"
         payload = json.dumps(body).encode("utf-8")
-    res = fetcher(f"https://api.github.com{path}", method=method, headers=headers, body=payload)
+    res = http.fetch(
+        f"https://api.github.com{path}",
+        method=method,
+        headers=headers,
+        body=payload,
+        credential_name="github",
+    )
     if not res.ok:
         raise RuntimeError(f"GitHub API {res.status_code}: {res.text}")
     return res.json()
@@ -99,62 +109,57 @@ def _ping():
     method = credentials.get_configured_method("github")
     if method is None:
         return {"status": "unhealthy", "message": "no credential configured"}
-    fetcher = http.fetcher("github")
-    res = fetcher("https://api.github.com/user")
+    res = http.fetch("https://api.github.com/user", credential_name="github")
     if res.ok:
         login = res.json().get("login", "unknown")
         return {"status": "ok", "message": f"authenticated as {login} via {method}"}
     return {"status": "unhealthy", "message": f"GitHub /user returned {res.status_code}"}
 
 
-particle = {
-    "name": "github-tools-py",
-    "description": "Read repos and issues; open new issues. (Python edition.)",
-    "version": "0.1.0",
+particle = Particle(
+    name="github-tools-py",
+    description="Read repos and issues; open new issues. (Python edition.)",
+    version="0.1.0",
 
-    "capabilities": {
-        "http": {"allowedHosts": ["api.github.com"]},
-    },
+    http=Http(allowed_hosts=["api.github.com"]),
 
-    "credentials": {
-        "github": {
+    credentials={
+        "github": Credential(
             # Substitution only fires on requests to api.github.com —
-            # mapping defense-in-depth: if the script ever planted the
+            # defense-in-depth: if the script ever planted the
             # placeholder in a non-GitHub request, it'd transmit
             # literally and the upstream would 401.
-            "hosts": ["api.github.com"],
-            "required": True,
-            "methods": {
+            hosts=["api.github.com"],
+            required=True,
+            methods={
                 # OAuth: full account-level access. Best for
                 # interactive users; the device-code flow makes it
                 # work even without a local browser. The endpoints
                 # are pinned in the manifest so setup never prompts
                 # for them.
-                "oauth": {
-                    "type": "oauth2",
-                    "description": "Sign in to GitHub via OAuth",
-                    "flows": ["authorization-code", "device-code"],
-                    "scopes": ["repo", "read:user"],
-                    "authorizationUrl": "https://github.com/login/oauth/authorize",
-                    "tokenUrl":         "https://github.com/login/oauth/access_token",
-                    "deviceAuthUrl":    "https://github.com/login/device/code",
-                },
+                "oauth": OAuth2(
+                    description="Sign in to GitHub via OAuth",
+                    flows=["authorization-code", "device-code"],
+                    scopes=["repo", "read:user"],
+                    authorization_url="https://github.com/login/oauth/authorize",
+                    token_url="https://github.com/login/oauth/access_token",
+                    device_auth_url="https://github.com/login/device/code",
+                ),
                 # PAT: a fine-grained or classic personal access
                 # token. Best for CI / headless setups where a
                 # browser-based OAuth round-trip is awkward.
-                "pat": {
-                    "type": "apikey",
-                    "description": "Use a personal access token",
-                    "location": {"kind": "auth-scheme", "scheme": "Bearer"},
-                },
+                "pat": ApiKey(
+                    description="Use a personal access token",
+                    location=ApiKeyLocation(kind="auth-scheme", scheme="Bearer"),
+                ),
             },
-        },
+        ),
     },
 
-    "tools": {
-        "get_repo": {
-            "description": "Fetch a repository's metadata.",
-            "inputSchema": {
+    tools={
+        "get_repo": Tool(
+            description="Fetch a repository's metadata.",
+            input_schema={
                 "type": "object",
                 "properties": {
                     "owner": {"type": "string", "description": "Owning user or organization."},
@@ -162,12 +167,12 @@ particle = {
                 },
                 "required": ["owner", "repo"],
             },
-            "handler": _get_repo,
-        },
+            handler=_get_repo,
+        ),
 
-        "list_issues": {
-            "description": "List issues for a repository.",
-            "inputSchema": {
+        "list_issues": Tool(
+            description="List issues for a repository.",
+            input_schema={
                 "type": "object",
                 "properties": {
                     "owner":    {"type": "string"},
@@ -186,12 +191,12 @@ particle = {
                 },
                 "required": ["owner", "repo"],
             },
-            "handler": _list_issues,
-        },
+            handler=_list_issues,
+        ),
 
-        "create_issue": {
-            "description": "Open a new issue on a repository.",
-            "inputSchema": {
+        "create_issue": Tool(
+            description="Open a new issue on a repository.",
+            input_schema={
                 "type": "object",
                 "properties": {
                     "owner": {"type": "string"},
@@ -201,9 +206,9 @@ particle = {
                 },
                 "required": ["owner", "repo", "title"],
             },
-            "handler": _create_issue,
-        },
+            handler=_create_issue,
+        ),
     },
 
-    "ping": _ping,
-}
+    ping=_ping,
+)

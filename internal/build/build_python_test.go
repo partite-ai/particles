@@ -21,22 +21,23 @@ import (
 // path).
 func TestBuild_Python_NoDeps(t *testing.T) {
 	source := `# A minimal Particlefile.py — no deps, no PEP 723 block.
+from particle.manifest import Particle, Tool
+
 def _echo(args):
     return {"result": args["input"]}
 
-particle = {
-    "name": "py-no-deps",
-    "description": "minimal Python particle",
-    "version": "0.1.0",
-    "capabilities": {},
-    "tools": {
-        "echo": {
-            "description": "echo back the input",
-            "inputSchema": {"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]},
-            "handler": _echo,
-        },
+particle = Particle(
+    name="py-no-deps",
+    description="minimal Python particle",
+    version="0.1.0",
+    tools={
+        "echo": Tool(
+            description="echo back the input",
+            input_schema={"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]},
+            handler=_echo,
+        ),
     },
-}
+)
 `
 	src := fstest.MapFS{
 		"Particlefile.py": &fstest.MapFile{Data: []byte(source)},
@@ -105,23 +106,23 @@ func TestBuild_Python_WithDeps(t *testing.T) {
 # ///
 
 import idna  # noqa: F401  (resolved at runtime via _deps/site-packages)
+from particle.manifest import Particle, Tool
 
 def _check(args):
     return {"ok": True}
 
-particle = {
-    "name": "py-with-deps",
-    "description": "Python particle with one pure-Python dep",
-    "version": "0.1.0",
-    "capabilities": {},
-    "tools": {
-        "check": {
-            "description": "smoke check",
-            "inputSchema": {"type": "object"},
-            "handler": _check,
-        },
+particle = Particle(
+    name="py-with-deps",
+    description="Python particle with one pure-Python dep",
+    version="0.1.0",
+    tools={
+        "check": Tool(
+            description="smoke check",
+            input_schema={"type": "object"},
+            handler=_check,
+        ),
     },
-}
+)
 `
 	src := fstest.MapFS{
 		"Particlefile.py": &fstest.MapFile{Data: []byte(source)},
@@ -175,7 +176,8 @@ func TestBuild_Python_InvalidPEP723(t *testing.T) {
 # ]
 # ///
 
-particle = {"name": "x", "description": "", "version": "0.1.0", "capabilities": {}, "tools": {}}
+from particle.manifest import Particle
+particle = Particle(name="x", description="", version="0.1.0")
 `
 	src := fstest.MapFS{"Particlefile.py": &fstest.MapFile{Data: []byte(source)}}
 	_, err := build.Build(context.Background(), build.Options{Source: src, NoTypeCheck: true})

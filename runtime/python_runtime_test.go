@@ -66,6 +66,7 @@ func TestPythonRuntime_EndToEnd(t *testing.T) {
 	}`
 
 	bundle := `import hashlib
+from particle.manifest import Particle, Tool
 
 def _echo(args):
     return {"result": args["input"].upper()}
@@ -73,24 +74,24 @@ def _echo(args):
 def _hash(args):
     return {"sha256": hashlib.sha256(args["input"].encode()).hexdigest()}
 
-particle = {
-    "name": "py-echo",
-    "description": "Python smoke test",
-    "version": "0.1.0",
-    "tools": {
-        "echo": {
-            "description": "echo upper",
-            "inputSchema": {"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]},
-            "handler": _echo,
-        },
-        "hash": {
-            "description": "sha256 hex",
-            "inputSchema": {"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]},
-            "handler": _hash,
-        },
+particle = Particle(
+    name="py-echo",
+    description="Python smoke test",
+    version="0.1.0",
+    tools={
+        "echo": Tool(
+            description="echo upper",
+            input_schema={"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]},
+            handler=_echo,
+        ),
+        "hash": Tool(
+            description="sha256 hex",
+            input_schema={"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]},
+            handler=_hash,
+        ),
     },
-    "ping": lambda: {"status": "ok", "message": "alive"},
-}
+    ping=lambda: {"status": "ok", "message": "alive"},
+)
 `
 
 	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
@@ -182,6 +183,7 @@ func TestPythonRuntime_WithDep_EndToEnd(t *testing.T) {
 # ///
 
 import idna
+from particle.manifest import Particle, Tool
 
 def _idna_info(args):
     # Proves three things at once:
@@ -197,19 +199,18 @@ def _idna_info(args):
         "has_check_hostname": callable(getattr(idna, "check_hostname_label", None)),
     }
 
-particle = {
-    "name": "py-with-idna",
-    "description": "uses a third-party pure-Python dep",
-    "version": "0.1.0",
-    "capabilities": {},
-    "tools": {
-        "idna_info": {
-            "description": "report idna package info from a third-party wheel",
-            "inputSchema": {"type": "object"},
-            "handler": _idna_info,
-        },
+particle = Particle(
+    name="py-with-idna",
+    description="uses a third-party pure-Python dep",
+    version="0.1.0",
+    tools={
+        "idna_info": Tool(
+            description="report idna package info from a third-party wheel",
+            input_schema={"type": "object"},
+            handler=_idna_info,
+        ),
     },
-}
+)
 `
 
 	res := buildPythonParticle(t, source)

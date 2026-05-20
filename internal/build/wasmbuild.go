@@ -41,6 +41,10 @@ func buildWasm(ctx context.Context, opts Options, comps *wacogo.Components) (*Re
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Cause: err}
 	}
+	// Builder is the source of truth for `runtime` — the WIT record
+	// doesn't carry it. The caller asked for a wasm build via
+	// Options.Component, so the value is fixed here.
+	extracted.Runtime = runtime.RuntimeWasm
 	if err := validateExtractedManifest(extracted); err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Cause: err}
 	}
