@@ -48,12 +48,12 @@ particle = Particle(
 		t.Fatalf("Build: %v", err)
 	}
 
-	// Artifact has bundle.py (not bundle.js).
+	// Artifact has bundle.py (not bundle.mjs).
 	if _, err := fs.Stat(res.Particle, "bundle.py"); err != nil {
 		t.Errorf("bundle.py missing: %v", err)
 	}
-	if _, err := fs.Stat(res.Particle, "bundle.js"); err == nil {
-		t.Error("bundle.js present on a Python build — should be Python-only")
+	if _, err := fs.Stat(res.Particle, "bundle.mjs"); err == nil {
+		t.Error("bundle.mjs present on a Python build — should be Python-only")
 	}
 
 	// Particlefile.py round-trips byte-for-byte (no minification).

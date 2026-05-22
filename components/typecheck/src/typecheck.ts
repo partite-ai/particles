@@ -17,13 +17,19 @@
 // follows source order: polyfill runs, then typescript loads.
 import "./polyfill";
 import ts from "typescript";
-import { TS_LIB_FILES, PARTICLE_GLOBALS_DTS } from "./lib-bundle";
+import { TS_LIB_FILES, TYPES_NODE_FILES, PARTICLE_GLOBALS_DTS } from "./lib-bundle";
 
 // Synthetic path the libBundleHost serves the @partite-ai/particle-* module
 // declarations from. The leading "/" keeps it absolute (TS
 // canonicalizes paths and a relative one would resolve against
 // CWD, which doesn't exist in the wasm sandbox).
 const PARTICLE_GLOBALS_PATH = "/__particle_globals__.d.ts";
+
+// Synthetic namespace under which the filtered @types/node files are
+// served. References from inside @types/node resolve relative to
+// the file they appear in, so the whole tree is kept self-consistent
+// under one root.
+const TYPES_NODE_ROOT = "/__types_node/";
 
 type Severity = "error" | "warning" | "info";
 
@@ -131,11 +137,20 @@ export const typecheck = {
     try {
       const host = libBundleHost(compilerOptions);
       program = ts.createProgram({
-        // Inject @partite-ai/particle-* module declarations as a synthetic
-        // root so users get type-checking on `import { credentials
-        // } from "@partite-ai/particle-credentials"` without an external
-        // types package. libBundleHost serves the file's contents.
-        rootNames: [...opts.rootFiles, PARTICLE_GLOBALS_PATH],
+        // Synthetic roots:
+        //   PARTICLE_GLOBALS_PATH — @partite-ai/particle-* module
+        //     declarations (credentials, kv, oauth, signing). Served
+        //     by libBundleHost from PARTICLE_GLOBALS_DTS.
+        //   TYPES_NODE_ROOT+index.d.ts — filtered @types/node entry.
+        //     Triple-slash references inside the entry pull in the
+        //     per-module .d.ts files we ship; libBundleHost serves
+        //     them from TYPES_NODE_FILES. Restricts type-checking
+        //     to the Node built-ins wasm-rquickjs actually provides.
+        rootNames: [
+          ...opts.rootFiles,
+          PARTICLE_GLOBALS_PATH,
+          `${TYPES_NODE_ROOT}index.d.ts`,
+        ],
         options: compilerOptions,
         host,
       });
@@ -218,6 +233,10 @@ function libBundleHost(opts: ts.CompilerOptions): ts.CompilerHost {
   const base = ts.createCompilerHost(opts);
   const lookup = (p: string): string | undefined => {
     if (p === PARTICLE_GLOBALS_PATH) return PARTICLE_GLOBALS_DTS;
+    if (p.startsWith(TYPES_NODE_ROOT)) {
+      const rel = p.slice(TYPES_NODE_ROOT.length);
+      return TYPES_NODE_FILES[rel];
+    }
     const slash = p.lastIndexOf("/");
     const basename = slash >= 0 ? p.slice(slash + 1) : p;
     return TS_LIB_FILES[basename];

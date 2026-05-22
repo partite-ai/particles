@@ -1,7 +1,7 @@
 // Package build is the particle build orchestrator.
 //
 // Build turns a particle source tree into a particle artifact: an
-// in-memory fs.FS holding `manifest.json`, `bundle.js`, `bundle.js.map`,
+// in-memory fs.FS holding `manifest.json`, `bundle.mjs`, `bundle.mjs.map`,
 // and `build-info.json`. Callers can pack the FS into a tarball, upload
 // it as files, or feed it directly into the runtime.
 //
@@ -34,9 +34,34 @@ import (
 	"github.com/partite-ai/particles/internal/build/wacogo"
 	"github.com/partite-ai/particles/internal/bundle"
 	"github.com/partite-ai/particles/internal/importscan"
+	"github.com/partite-ai/particles/internal/nodebuiltins"
 	"github.com/partite-ai/particles/internal/semver"
 	"github.com/partite-ai/particles/runtime"
 )
+
+// withShadowDeps appends every entry in `nodebuiltins.ShadowNpmDeps`
+// to a copy of `deps`. If a user already declared one explicitly
+// (via `npm:<name>@<range>`), their declaration wins — the shadow
+// gets skipped. The returned slice is fresh; the input is not
+// mutated.
+func withShadowDeps(deps []importscan.NpmSpec) []importscan.NpmSpec {
+	declared := make(map[string]bool, len(deps))
+	for _, d := range deps {
+		declared[d.Name] = true
+	}
+	out := append([]importscan.NpmSpec(nil), deps...)
+	for name, version := range nodebuiltins.ShadowNpmDeps {
+		if declared[name] {
+			continue
+		}
+		out = append(out, importscan.NpmSpec{
+			Name:         name,
+			VersionRange: version,
+			Importer:     "<shadow>",
+		})
+	}
+	return out
+}
 
 // Options configure a single build invocation.
 type Options struct {
@@ -69,8 +94,8 @@ type Result struct {
 	// Particle is the in-memory artifact: a virtual fs.FS containing
 	//
 	//   manifest.json       — output of Phase 5
-	//   bundle.js           — output of Phase 4
-	//   bundle.js.map       — sourcemap (always emitted)
+	//   bundle.mjs          — output of Phase 4
+	//   bundle.mjs.map      — sourcemap (always emitted)
 	//   build-info.json     — runtime version, capabilities, npm deps
 	//
 	// Callers can range it directly (e.g., write to disk, stream to
@@ -231,10 +256,18 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 	}
 
 	// ---- Phase 2: resolve-and-fetch (only when needed) ----------------
+	//
+	// `withShadowDeps` injects any `nodebuiltins.ShadowNpmDeps` (e.g.
+	// `punycode`) into the resolver input so transitive
+	// `require(...)` calls in bundled packages find a real npm
+	// package in node_modules rather than failing against a
+	// runtime-builtin gap. The shadow deps go through the regular
+	// fetch path; this isn't a fast-path or a stub.
+	npmDeps := withShadowDeps(scan.NpmDeps)
 	var nodeModules fs.FS
 	var resolvedPkgs []wacogo.ResolvedPackage
-	if len(scan.NpmDeps) > 0 {
-		rr, err := comps.ResolveAndFetch(ctx, scan.NpmDeps)
+	if len(npmDeps) > 0 {
+		rr, err := comps.ResolveAndFetch(ctx, npmDeps)
 		logs = appendLog(logs, PhaseResolveAndFetch, rr)
 		if err != nil {
 			return nil, &Error{Phase: PhaseResolveAndFetch, Logs: logs, Cause: err}
@@ -289,7 +322,7 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 	// The runtime's particle:runtime/manifest export is the uniform
 	// way every particle answers "describe yourself" — current
 	// bundle-loading runtimes and future fully-WASM particles alike.
-	sourceFS := fstest.MapFS{"bundle.js": &fstest.MapFile{Data: bundleResult.JS}}
+	sourceFS := fstest.MapFS{"bundle.mjs": &fstest.MapFile{Data: bundleResult.JS}}
 	extracted, err := comps.ExtractManifest(ctx, runtime.RuntimeJS, sourceFS)
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
@@ -502,11 +535,11 @@ type particleFiles struct {
 func assembleParticleFS(in particleFiles) fs.FS {
 	mfs := fstest.MapFS{
 		"manifest.json":   &fstest.MapFile{Data: in.Manifest, Mode: 0o644},
-		"bundle.js":       &fstest.MapFile{Data: in.Bundle, Mode: 0o644},
+		"bundle.mjs":      &fstest.MapFile{Data: in.Bundle, Mode: 0o644},
 		"build-info.json": &fstest.MapFile{Data: in.BuildInfo, Mode: 0o644},
 	}
 	if len(in.Sourcemap) > 0 {
-		mfs["bundle.js.map"] = &fstest.MapFile{Data: in.Sourcemap, Mode: 0o644}
+		mfs["bundle.mjs.map"] = &fstest.MapFile{Data: in.Sourcemap, Mode: 0o644}
 	}
 	return mfs
 }

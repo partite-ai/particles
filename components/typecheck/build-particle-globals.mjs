@@ -53,5 +53,11 @@ for (const [name, relPath] of modules) {
   out += `\ndeclare module "${name}" {\n${indented}\n}\n`;
 }
 
+// Note: Node-built-in modules ARE NOT stubbed here. Their types come
+// from a filtered copy of `@types/node` that the build-lib-bundle
+// generator pulls in alongside this file. See
+// components/typecheck/build-lib-bundle.mjs and the matching server
+// logic in components/typecheck/src/typecheck.ts.
+
 writeFileSync(join(here, "src", "particle-globals.d.ts"), out);
-console.log(`wrote src/particle-globals.d.ts: ${modules.length} modules`);
+console.log(`wrote src/particle-globals.d.ts: ${modules.length} particle modules`);

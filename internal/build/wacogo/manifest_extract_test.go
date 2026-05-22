@@ -56,7 +56,7 @@ export default {
 	}
 	defer c.Close(ctx)
 
-	src := fstest.MapFS{"bundle.js": &fstest.MapFile{Data: bundleJS}}
+	src := fstest.MapFS{"bundle.mjs": &fstest.MapFile{Data: bundleJS}}
 	_, err = c.ExtractManifest(ctx, runtime.RuntimeJS, src)
 	if err == nil {
 		t.Fatal("expected ExtractManifest to fail with introspect-mode trap")
@@ -140,7 +140,7 @@ func TestExtractManifest_WellBehavedParticle_Succeeds(t *testing.T) {
 	}
 	defer c.Close(ctx)
 
-	src := fstest.MapFS{"bundle.js": &fstest.MapFile{Data: bundleJS}}
+	src := fstest.MapFS{"bundle.mjs": &fstest.MapFile{Data: bundleJS}}
 	mf, err := c.ExtractManifest(ctx, runtime.RuntimeJS, src)
 	if err != nil {
 		t.Fatalf("ExtractManifest: %v", err)

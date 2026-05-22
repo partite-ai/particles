@@ -12,12 +12,16 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-use exports::particle::runtime::tools::{Guest as ToolsGuest, ToolDef, ToolError};
+use exports::particle::runtime::tools::{Guest as ToolsGuest, ToolDef, ToolError, ErrorDetail as ToolErrorDetail};
 use exports::particle::runtime::health::{Guest as HealthGuest, HealthError, PingResult, Status};
 use exports::particle::runtime::manifest::{
     Guest as ManifestGuest, ManifestError, ParticleManifest,
     CapabilitySet, ToolEntry,
 };
+
+fn handler_error(msg: &str) -> ToolError {
+    ToolError::HandlerError(ToolErrorDetail { message: msg.into(), stack: None })
+}
 
 struct Component;
 
@@ -44,14 +48,14 @@ impl ToolsGuest for Component {
         match name.as_str() {
             "echo" => {
                 let input = extract_string(&arguments_json, "input")
-                    .ok_or_else(|| ToolError::HandlerError("missing input".into()))?;
+                    .ok_or_else(|| handler_error("missing input"))?;
                 Ok(format!(r#"{{"result":"{}"}}"#, input))
             }
             "add" => {
                 let a = extract_number(&arguments_json, "a")
-                    .ok_or_else(|| ToolError::HandlerError("missing a".into()))?;
+                    .ok_or_else(|| handler_error("missing a"))?;
                 let b = extract_number(&arguments_json, "b")
-                    .ok_or_else(|| ToolError::HandlerError("missing b".into()))?;
+                    .ok_or_else(|| handler_error("missing b"))?;
                 Ok(format!(r#"{{"sum":{}}}"#, a + b))
             }
             _ => Err(ToolError::NotFound),

@@ -53,6 +53,27 @@ declare module "@partite-ai/particle-credentials" {
     getRaw(name: string): Promise<string>;
   
     /**
+     * Lower-level escape hatch: returns an opaque placeholder string
+     * + apply-spec for the named credential. Use this when handing a
+     * bearer token (or API key) to an SDK that owns its own HTTP
+     * client — the SDK can plant the placeholder anywhere it would
+     * normally plant the secret, and the host substitutes the real
+     * value at the wasi:http boundary as long as the request goes
+     * through the global `fetch`.
+     *
+     * Prefer `fetcher` for the common case (one fetch call, one
+     * credential). Reach for `getPlaceholder` when integrating with
+     * googleapis, axios, etc.
+     *
+     * Synchronous — the placeholder is fixed for the particle
+     * instance's lifetime.
+     */
+    getPlaceholder(name: string): {
+      placeholder: string;
+      apply: { kind: string; name?: string; scheme?: string };
+    };
+  
+    /**
      * Returns the method name the user configured for the named
      * credential at setup, or `null` when no method is set.
      * Particles whose manifest declares multiple alternative

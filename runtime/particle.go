@@ -43,7 +43,7 @@ const (
 func runtimeBundleLayout(rt RuntimeKind) (artifact, mountPath string, err error) {
 	switch rt {
 	case RuntimeJS:
-		return "bundle.js", "particle/bundle.js", nil
+		return "bundle.mjs", "particle/bundle.mjs", nil
 	case RuntimePython:
 		return "bundle.py", "particle/bundle.py", nil
 	case RuntimeWasm:
@@ -71,9 +71,18 @@ type ToolDef struct {
 type ToolError struct {
 	// Kind classifies the error. Mirrors the WIT variant.
 	Kind ToolErrorKind
-	// Message is the human-readable description. Empty for
-	// kinds that don't carry a payload (NotFound).
+	// Message is the one-line summary the guest constructed.
+	// Empty for kinds that don't carry a payload (NotFound).
 	Message string
+	// Stack is the guest's stack trace at the throw site, when
+	// available. Empty when the guest had no stack to share
+	// (string throws, WIT-variant throws, primitive throws).
+	Stack string
+	// Stderr is whatever the guest wrote to wasi:cli/stderr
+	// between particle instantiation and the error return —
+	// captured host-side, filled in by the runtime when
+	// decoding the error.
+	Stderr string
 }
 
 // ToolErrorKind is the variant case discriminator.
@@ -87,17 +96,20 @@ const (
 )
 
 func (e *ToolError) Error() string {
+	var head string
 	switch e.Kind {
 	case ToolErrorKindNotFound:
 		return "tool not found"
 	case ToolErrorKindInvalidArguments:
-		return "invalid arguments: " + e.Message
+		head = "invalid arguments: " + e.Message
 	case ToolErrorKindHandlerError:
-		return "handler error: " + e.Message
+		head = "handler error: " + e.Message
 	case ToolErrorKindCapabilityDenied:
-		return "capability denied: " + e.Message
+		head = "capability denied: " + e.Message
+	default:
+		head = fmt.Sprintf("tool error (kind=%d): %s", e.Kind, e.Message)
 	}
-	return fmt.Sprintf("tool error (kind=%d): %s", e.Kind, e.Message)
+	return appendDiagnostics(head, e.Stack, e.Stderr)
 }
 
 // PingStatus mirrors the WIT enum.
@@ -121,13 +133,15 @@ type PingResult struct {
 type HealthError struct {
 	NotImplemented bool
 	Message        string
+	Stack          string // guest stack at the throw site, when available
+	Stderr         string // captured wasi:cli/stderr, filled by the runtime
 }
 
 func (e *HealthError) Error() string {
 	if e.NotImplemented {
 		return "ping: not implemented"
 	}
-	return "ping: handler error: " + e.Message
+	return appendDiagnostics("ping: handler error: "+e.Message, e.Stack, e.Stderr)
 }
 
 // Particle is one running instance of a particle, scoped to a
@@ -176,7 +190,7 @@ type Particle struct {
 // Failure modes:
 //
 //   - missing or invalid manifest.json
-//   - missing bundle.js
+//   - missing bundle.mjs
 //   - particle declares a capability the [Runtime] wasn't
 //     configured with (the runtime requires every declared
 //     capability to be backed by a real Manager, never a stub)
@@ -237,7 +251,7 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	// For Python particles we mount the entire artifact FS (not
 	// just bundle.py) so `_deps/site-packages` comes along for the
 	// ride and `import httpx` finds the wheels resolved at build
-	// time. For JS particles the FS only contains bundle.js + the
+	// time. For JS particles the FS only contains bundle.mjs + the
 	// metadata files; the extra paths are harmless.
 	bundleFS, err := mountParticleFS(particleFS, bundleFilename, selectedRuntime)
 	if err != nil {
@@ -305,9 +319,23 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	// declare wasi:logging in its world and doesn't need an instance
 	// wired up here. Going engine-agnostic on the rest keeps the
 	// host wire-up flat — no big switch on selectedRuntime.
+	//
+	// We wrap the user-supplied log callback so every log line ALSO
+	// lands in the per-particle stderr buffer. That keeps
+	// `ToolError.Stderr` (and the other error-type Stderr fields)
+	// honest across JS and Python: both engines' diagnostics end up
+	// in the same buffer regardless of which sink they targeted on
+	// the guest side.
 	var loggingInst *host.ComponentInstance
 	if selectedRuntime == RuntimeJS {
-		loggingInst, err = newLoggingHost(ctx, r.cfg.Engine, cfg.log, host.WithCallListener(listener))
+		userLog := cfg.log
+		mirrorLog := func(c context.Context, level LogLevel, scope, message string) {
+			if userLog != nil {
+				userLog(c, level, scope, message)
+			}
+			fmt.Fprintf(stderr, "[%s] %s\n", level, message)
+		}
+		loggingInst, err = newLoggingHost(ctx, r.cfg.Engine, mirrorLog, host.WithCallListener(listener))
 		if err != nil {
 			closeAll()
 			return nil, fmt.Errorf("runtime: build wasi:logging host: %w", err)
@@ -552,7 +580,9 @@ func (p *Particle) CallTool(ctx context.Context, name string, argumentsJSON []by
 		}
 		return []byte(s), nil
 	}
-	return nil, decodeToolError(res.Err())
+	te := decodeToolError(res.Err())
+	te.Stderr = stderrSinkBytes(p.stderr)
+	return nil, te
 }
 
 // ManifestError is the typed error variant returned by
@@ -563,6 +593,8 @@ func (p *Particle) CallTool(ctx context.Context, name string, argumentsJSON []by
 type ManifestError struct {
 	Kind    ManifestErrorKind
 	Message string
+	Stack   string // guest stack at the throw site, when available
+	Stderr  string // captured wasi:cli/stderr, filled by the runtime
 }
 
 // ManifestErrorKind names the variant case.
@@ -577,13 +609,38 @@ func (e *ManifestError) Error() string {
 	// Hyphenated to match the WIT variant case names — keeps the
 	// error substring stable for callers grep-ing for
 	// "bundle-load-error" / "invalid-manifest".
+	var head string
 	switch e.Kind {
 	case ManifestErrorKindBundleLoadError:
-		return "bundle-load-error: " + e.Message
+		head = "bundle-load-error: " + e.Message
 	case ManifestErrorKindInvalidManifest:
-		return "invalid-manifest: " + e.Message
+		head = "invalid-manifest: " + e.Message
+	default:
+		head = fmt.Sprintf("manifest error (kind=%d): %s", e.Kind, e.Message)
 	}
-	return fmt.Sprintf("manifest error (kind=%d): %s", e.Kind, e.Message)
+	return appendDiagnostics(head, e.Stack, e.Stderr)
+}
+
+// appendDiagnostics joins the user-visible summary with the
+// operator-visible stack and stderr, when present. Format is
+// stable: stack and stderr are each prefixed with a header line
+// so callers can grep / split deterministically. Empty values
+// are omitted.
+func appendDiagnostics(head, stack, stderr string) string {
+	if stack == "" && stderr == "" {
+		return head
+	}
+	var b strings.Builder
+	b.WriteString(head)
+	if stack != "" {
+		b.WriteString("\nstack:\n")
+		b.WriteString(stack)
+	}
+	if stderr != "" {
+		b.WriteString("\nstderr:\n")
+		b.WriteString(stderr)
+	}
+	return b.String()
 }
 
 // GetManifest invokes the particle's `manifest.get-manifest` export
@@ -627,11 +684,14 @@ func (p *Particle) GetManifest(ctx context.Context, opts ...CallOption) (*Manife
 		}
 		return decodeManifestRecord(rec)
 	}
-	return nil, decodeManifestError(res.Err())
+	me := decodeManifestError(res.Err())
+	me.Stderr = stderrSinkBytes(p.stderr)
+	return nil, me
 }
 
 // decodeManifestError lifts the WIT `variant manifest-error` into
-// *ManifestError.
+// *ManifestError. Every payload case carries an `error-detail`
+// record { message, stack }; we decode both fields.
 func decodeManifestError(v wc.Val) *ManifestError {
 	variant, ok := v.(*wc.ValVariant)
 	if !ok {
@@ -644,19 +704,31 @@ func decodeManifestError(v wc.Val) *ManifestError {
 	switch variant.Discriminant() {
 	case 0:
 		me.Kind = ManifestErrorKindBundleLoadError
-		if s, ok := variant.Val().(wc.ValString); ok {
-			me.Message = string(s)
-		}
+		me.Message, me.Stack = decodeErrorDetail(variant.Val())
 	case 1:
 		me.Kind = ManifestErrorKindInvalidManifest
-		if s, ok := variant.Val().(wc.ValString); ok {
-			me.Message = string(s)
-		}
+		me.Message, me.Stack = decodeErrorDetail(variant.Val())
 	default:
 		me.Kind = ManifestErrorKindInvalidManifest
 		me.Message = fmt.Sprintf("unknown manifest-error discriminant %d", variant.Discriminant())
 	}
 	return me
+}
+
+// decodeErrorDetail lifts the shared WIT `error-detail` record into
+// (message, stack). Stack is "" when the WIT option<string> was none.
+func decodeErrorDetail(v wc.Val) (message, stack string) {
+	rec, ok := v.(*wc.ValRecord)
+	if !ok {
+		return fmt.Sprintf("non-record error-detail payload %T", v), ""
+	}
+	message = stringField(rec, "message")
+	if opt, ok := rec.Field("stack").(*wc.ValOption); ok && !opt.IsNone() {
+		if s, ok := opt.Val().(wc.ValString); ok {
+			stack = string(s)
+		}
+	}
+	return message, stack
 }
 
 // Ping invokes the particle's optional `ping` health-check. Returns
@@ -694,7 +766,9 @@ func (p *Particle) Ping(ctx context.Context, opts ...CallOption) (*PingResult, e
 		}
 		return decodePingResult(rec), nil
 	}
-	return nil, decodeHealthError(res.Err())
+	he := decodeHealthError(res.Err())
+	he.Stderr = stderrSinkBytes(p.stderr)
+	return nil, he
 }
 
 // -----------------------------------------------------------------------------
@@ -702,6 +776,7 @@ func (p *Particle) Ping(ctx context.Context, opts ...CallOption) (*PingResult, e
 // -----------------------------------------------------------------------------
 
 // decodeToolError lifts the WIT `variant tool-error` into *ToolError.
+// Payload-carrying cases carry an `error-detail { message, stack }`.
 func decodeToolError(v wc.Val) *ToolError {
 	variant, ok := v.(*wc.ValVariant)
 	if !ok {
@@ -713,19 +788,13 @@ func decodeToolError(v wc.Val) *ToolError {
 		te.Kind = ToolErrorKindNotFound
 	case 1:
 		te.Kind = ToolErrorKindInvalidArguments
-		if s, ok := variant.Val().(wc.ValString); ok {
-			te.Message = string(s)
-		}
+		te.Message, te.Stack = decodeErrorDetail(variant.Val())
 	case 2:
 		te.Kind = ToolErrorKindHandlerError
-		if s, ok := variant.Val().(wc.ValString); ok {
-			te.Message = string(s)
-		}
+		te.Message, te.Stack = decodeErrorDetail(variant.Val())
 	case 3:
 		te.Kind = ToolErrorKindCapabilityDenied
-		if s, ok := variant.Val().(wc.ValString); ok {
-			te.Message = string(s)
-		}
+		te.Message, te.Stack = decodeErrorDetail(variant.Val())
 	default:
 		te.Kind = ToolErrorKindHandlerError
 		te.Message = fmt.Sprintf("unknown tool-error discriminant %d", variant.Discriminant())
@@ -743,9 +812,7 @@ func decodeHealthError(v wc.Val) *HealthError {
 	case 0:
 		he.NotImplemented = true
 	case 1:
-		if s, ok := variant.Val().(wc.ValString); ok {
-			he.Message = string(s)
-		}
+		he.Message, he.Stack = decodeErrorDetail(variant.Val())
 	default:
 		he.Message = fmt.Sprintf("unknown health-error discriminant %d", variant.Discriminant())
 	}
@@ -790,14 +857,14 @@ func (p *Particle) wrapTrap(err error, op string) error {
 
 // mountParticleFS walks the particle artifact FS and re-rooots every
 // file under `particle/`. For JS / Python particles, requires that
-// `requiredBundle` (bundle.js / bundle.py) exists at the root —
+// `requiredBundle` (bundle.mjs / bundle.py) exists at the root —
 // that's the entry point the runtime's bootstrap loads. For Wasm
 // particles requiredBundle is empty and the check is skipped.
 //
 // Python particles ship a `_deps/site-packages/` tree alongside
 // bundle.py; mounting the whole artifact means `import httpx` etc.
 // just works at runtime via the bootstrap's sys.path setup. JS
-// particles ship only bundle.js + a couple metadata files; the extra
+// particles ship only bundle.mjs + a couple metadata files; the extra
 // mounted paths are harmless (the JS runtime doesn't read them).
 // Wasm particles may ship arbitrary data files alongside
 // particle.wasm.
@@ -823,7 +890,7 @@ func mountParticleFS(particleFS fs.FS, requiredBundle string, rt RuntimeKind) (f
 		// loaded as the runtime image and re-mounting it would be
 		// pointless. bundle.{js,py} and the _deps tree get through.
 		switch path {
-		case "manifest.json", "build-info.json", "bundle.js.map", "Particle.lock":
+		case "manifest.json", "build-info.json", "bundle.mjs.map", "Particle.lock":
 			return nil
 		}
 		if rt == RuntimeWasm && path == "particle.wasm" {

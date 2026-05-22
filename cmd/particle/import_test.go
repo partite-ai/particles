@@ -18,7 +18,7 @@ import (
 func TestReadZip_RoundTripsRegularFiles(t *testing.T) {
 	files := map[string][]byte{
 		"manifest.json": []byte(`{"name":"p","version":"0.1.0"}`),
-		"bundle.js":     []byte(`export default {};`),
+		"bundle.mjs":     []byte(`export default {};`),
 	}
 
 	got, err := readZipBytes(t, zipBytes(t, files))
@@ -173,7 +173,7 @@ func readZipBytes(t *testing.T, raw []byte) (fs.FS, error) {
 func TestLoadParticleFromHTTP_Success(t *testing.T) {
 	files := map[string][]byte{
 		"manifest.json": []byte(`{"name":"p","version":"0.1.0"}`),
-		"bundle.js":     []byte(`export default {};`),
+		"bundle.mjs":     []byte(`export default {};`),
 	}
 	body := zipBytes(t, files)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -29,6 +29,8 @@ import (
 	"strings"
 
 	"github.com/evanw/esbuild/pkg/api"
+
+	"github.com/partite-ai/particles/internal/nodebuiltins"
 )
 
 // Options describe a single bundle invocation.
@@ -139,11 +141,16 @@ func Bundle(opts Options) (*Result, error) {
 		Bundle:            true,
 		Write:             false,
 		Format:            api.FormatESModule,
-		Platform:          api.PlatformNeutral,
+		Platform:          api.PlatformBrowser,
 		Sourcemap:         sourcemap,
 		Metafile:          true,
 		LogLevel:          api.LogLevelSilent,
-		Outfile:           "bundle.js",
+		// `.mjs` is the official ESM extension. The JS runtime's
+		// `ImportMetaLoader` accepts `.mjs` paths unconditionally as
+		// ESM, sidestepping `CjsCompatLoader`'s content-based CJS
+		// detection (which mis-classifies bundles that embed CJS
+		// modules verbatim inside ESM wrappers).
+		Outfile:           "bundle.mjs",
 		MinifyWhitespace:  opts.Minify,
 		MinifyIdentifiers: opts.Minify,
 		MinifySyntax:      opts.Minify,
@@ -160,9 +167,9 @@ func Bundle(opts Options) (*Result, error) {
 	}
 	for _, f := range build.OutputFiles {
 		switch {
-		case strings.HasSuffix(f.Path, ".js"):
+		case strings.HasSuffix(f.Path, ".mjs"):
 			r.JS = f.Contents
-		case strings.HasSuffix(f.Path, ".js.map"):
+		case strings.HasSuffix(f.Path, ".mjs.map"):
 			r.Sourcemap = f.Contents
 		}
 	}
@@ -250,10 +257,37 @@ func (r *fsResolver) onResolve(args api.OnResolveArgs) (api.OnResolveResult, err
 	default:
 		// Bare specifier (e.g. "lodash", "@scope/pkg", "lodash/get").
 		resolved := r.resolveBare(spec)
-		if resolved == "" {
-			return api.OnResolveResult{}, fmt.Errorf("cannot resolve %q from %q", args.Path, args.Importer)
+		if resolved != "" {
+			return api.OnResolveResult{Path: resolved, Namespace: sourceNamespace}, nil
 		}
-		return api.OnResolveResult{Path: resolved, Namespace: sourceNamespace}, nil
+		// Couldn't find it in node_modules. Behavior splits on the
+		// language semantics of the call site:
+		//
+		//   - ESM `import x from "..."` is a static declaration:
+		//     ECMAScript requires it to resolve at module load.
+		//     There's no try/catch around an import statement, so
+		//     a missing target means the program can't start —
+		//     hard-fail at build time, the principled place to
+		//     surface it.
+		//
+		//   - CJS `require(...)`, `require.resolve(...)`, and
+		//     dynamic `import(...)` are function calls. Callers may
+		//     legitimately wrap them in try/catch to handle a
+		//     missing module (the canonical optional-dep pattern:
+		//     `debug` → `supports-color`, `node-fetch` → `encoding`).
+		//     Mark external + emit a warning; let the runtime
+		//     throw ModuleNotFound at call time so the surrounding
+		//     try/catch can run.
+		if args.Kind == api.ResolveJSImportStatement {
+			return api.OnResolveResult{}, fmt.Errorf("cannot resolve %q from %q", spec, args.Importer)
+		}
+		return api.OnResolveResult{
+			External: true,
+			Warnings: []api.Message{{
+				Text:       fmt.Sprintf("unresolved bare specifier %q — left for runtime resolve from %q (will throw if reached)", spec, args.Importer),
+				PluginName: "particle-fs-resolver",
+			}},
+		}, nil
 	}
 }
 
@@ -484,6 +518,9 @@ func (r *fsResolver) readPackageJSON(pkgDir string) (*packageJSON, bool) {
 
 func (r *fsResolver) matchesExternal(spec string) bool {
 	if strings.HasPrefix(spec, "@partite-ai/particle-") {
+		return true
+	}
+	if nodebuiltins.Is(spec) {
 		return true
 	}
 	for _, ext := range r.externals {

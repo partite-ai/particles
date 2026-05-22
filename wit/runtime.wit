@@ -25,7 +25,28 @@ package particle:runtime@0.1.0;
 // Outward interfaces — the runtime implements these; the host calls them.
 // -----------------------------------------------------------------------------
 
+/// `error-detail` is the diagnostic payload every error variant case
+/// in this package carries. It splits the user-visible summary from
+/// the operator-visible stack so the host can render them separately
+/// (short message in the WIT error, full stack in a log line).
+///
+/// `stack` is `none` when the guest had no stack to share — e.g.,
+/// the error wasn't constructed from a caught exception. Hosts also
+/// surface any captured `wasi:cli/stderr` alongside; that's owned by
+/// the host side, not the guest, so it isn't on this record.
+///
+/// Defined verbatim in each interface that uses it (rather than a
+/// shared `diagnostics` interface that the world has to import/export)
+/// because cross-interface `use` requires the source interface to be
+/// present in the world's signature — adding a types-only export is
+/// noise on the contract surface.
+
 interface tools {
+  record error-detail {
+    message: string,
+    stack: option<string>,
+  }
+
   record tool-def {
     name: string,
     description: string,
@@ -35,9 +56,9 @@ interface tools {
 
   variant tool-error {
     not-found,
-    invalid-arguments(string),
-    handler-error(string),
-    capability-denied(string),
+    invalid-arguments(error-detail),
+    handler-error(error-detail),
+    capability-denied(error-detail),
   }
 
   list-tools: func() -> list<tool-def>;
@@ -48,6 +69,11 @@ interface tools {
 }
 
 interface health {
+  record error-detail {
+    message: string,
+    stack: option<string>,
+  }
+
   enum status { ok, degraded, unhealthy }
 
   record ping-result {
@@ -60,7 +86,7 @@ interface health {
   variant health-error {
     /// Particle did not declare `ping`.
     not-implemented,
-    handler-error(string),
+    handler-error(error-detail),
   }
 
   ping: func() -> result<ping-result, health-error>;
@@ -78,12 +104,17 @@ interface health {
 /// host already runs schema validation as a JSON Schema operation.
 /// Everything else is strongly typed.
 interface manifest {
+  record error-detail {
+    message: string,
+    stack: option<string>,
+  }
+
   variant manifest-error {
     /// Could not load the particle's bundle / handler module.
-    bundle-load-error(string),
+    bundle-load-error(error-detail),
     /// Bundle loaded but its self-description doesn't match the
     /// expected shape (missing name, malformed tools entry, etc.).
-    invalid-manifest(string),
+    invalid-manifest(error-detail),
   }
 
   /// Top-level capability declarations. Structured as a record so

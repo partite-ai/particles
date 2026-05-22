@@ -15,7 +15,7 @@
 // Put walks the FS inside a transaction so a partial replacement
 // is never observable. Get rebuilds an fs.FS from rows via
 // testing/fstest.MapFS, which is fine for the registry's payload
-// shape (small handful of files: bundle.js, manifest.json,
+// shape (small handful of files: bundle.mjs, manifest.json,
 // build-info.json, sourcemap).
 //
 // All state is persistent — restarting the host preserves every

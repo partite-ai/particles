@@ -56,12 +56,12 @@ func TestBuild_HappyPath(t *testing.T) {
 		}
 	}
 
-	bundle := readFile(t, res.Particle, "bundle.js")
+	bundle := readFile(t, res.Particle, "bundle.mjs")
 	if len(bundle) == 0 {
-		t.Error("bundle.js is empty")
+		t.Error("bundle.mjs is empty")
 	}
-	if _, err := fs.Stat(res.Particle, "bundle.js.map"); err != nil {
-		t.Errorf("bundle.js.map missing: %v", err)
+	if _, err := fs.Stat(res.Particle, "bundle.mjs.map"); err != nil {
+		t.Errorf("bundle.mjs.map missing: %v", err)
 	}
 
 	buildInfo := readFile(t, res.Particle, "build-info.json")

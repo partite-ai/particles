@@ -24,6 +24,8 @@ import (
 	"strings"
 
 	"github.com/evanw/esbuild/pkg/api"
+
+	"github.com/partite-ai/particles/internal/nodebuiltins"
 )
 
 // NpmSpec is one resolved-and-validated npm: import found in the source.
@@ -268,6 +270,12 @@ func classifyImport(
 ) {
 	p := imp.Path
 	switch {
+	case nodebuiltins.Is(p):
+		// Node-shaped modules the runtime provides at execution
+		// time. No fetch, no capability declaration — the import
+		// passes through to Phase 4 where the bundler leaves it
+		// external for the runtime to satisfy.
+
 	case strings.HasPrefix(p, "npm:"):
 		key := importer + "\x00" + p
 		if _, ok := seenNpm[key]; ok {

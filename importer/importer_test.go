@@ -102,7 +102,7 @@ func mkParticleFS(name, version, capabilitiesJSON, credentialsJSON string) fstes
 		name, version, capabilitiesJSON, credentialsJSON)
 	return fstest.MapFS{
 		"manifest.json": &fstest.MapFile{Data: []byte(manifest)},
-		"bundle.js":     &fstest.MapFile{Data: []byte("export default {};")},
+		"bundle.mjs":     &fstest.MapFile{Data: []byte("export default {};")},
 	}
 }
 

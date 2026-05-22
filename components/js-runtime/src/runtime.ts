@@ -33,18 +33,28 @@ type ToolDef = {
   inputSchemaJson: string;
 };
 
+// Shared diagnostic payload — mirrors WIT `diagnostics.error-detail`.
+// wasm-rquickjs lifts JS records into the canonical ABI via camelCased
+// fields; `stack` is `undefined` on the JS side ↔ `none` on the WIT
+// side.
+type ErrorDetail = { message: string; stack: string | undefined };
+
+function detailFromThrown(e: unknown): ErrorDetail {
+  return { message: messageOf(e), stack: stackOf(e) };
+}
+
 type ToolError =
   | { tag: "not-found" }
-  | { tag: "invalid-arguments"; val: string }
-  | { tag: "handler-error"; val: string }
-  | { tag: "capability-denied"; val: string };
+  | { tag: "invalid-arguments"; val: ErrorDetail }
+  | { tag: "handler-error"; val: ErrorDetail }
+  | { tag: "capability-denied"; val: ErrorDetail };
 
 function notFoundError(): ToolError {
   return { tag: "not-found" };
 }
 
-function handlerError(message: string): ToolError {
-  return { tag: "handler-error", val: message };
+function handlerError(detail: ErrorDetail): ToolError {
+  return { tag: "handler-error", val: detail };
 }
 
 type PingStatus = "ok" | "degraded" | "unhealthy";
@@ -57,18 +67,18 @@ type PingResult = {
 
 type HealthError =
   | { tag: "not-implemented" }
-  | { tag: "handler-error"; val: string };
+  | { tag: "handler-error"; val: ErrorDetail };
 
 function notImplementedError(): HealthError {
   return { tag: "not-implemented" };
 }
 
-function healthHandlerError(message: string): HealthError {
-  return { tag: "handler-error", val: message };
+function healthHandlerError(detail: ErrorDetail): HealthError {
+  return { tag: "handler-error", val: detail };
 }
 
 // -----------------------------------------------------------------------------
-// Particle module shape — what the user's bundle.js default-exports.
+// Particle module shape — what the user's bundle.mjs default-exports.
 // Mirrors the type definitions in docs/initial-design.md §4.
 // -----------------------------------------------------------------------------
 
@@ -91,23 +101,28 @@ type UserParticle = {
 };
 
 type ManifestError =
-  | { tag: "bundle-load-error"; val: string }
-  | { tag: "invalid-manifest"; val: string };
+  | { tag: "bundle-load-error"; val: ErrorDetail }
+  | { tag: "invalid-manifest"; val: ErrorDetail };
 
-function bundleLoadError(message: string): ManifestError {
-  return { tag: "bundle-load-error", val: message };
+function bundleLoadError(detail: ErrorDetail): ManifestError {
+  return { tag: "bundle-load-error", val: detail };
 }
 
-function invalidManifest(message: string): ManifestError {
-  return { tag: "invalid-manifest", val: message };
+function invalidManifest(detail: ErrorDetail): ManifestError {
+  return { tag: "invalid-manifest", val: detail };
 }
 
 // -----------------------------------------------------------------------------
-// Bundle loader — reads /particle/bundle.js via dynamic import (which
+// Bundle loader — reads /particle/bundle.mjs via dynamic import (which
 // wasm-rquickjs routes through the wasi:filesystem preopens the host
 // mounted before instantiation) and captures its default export.
 // Cached for the instance lifetime: the bundle is immutable and a hot-
 // path tool call shouldn't pay re-evaluation cost.
+//
+// The `.mjs` extension is load-bearing: wasm-rquickjs's
+// `ImportMetaLoader` accepts it unconditionally as ESM, sidestepping
+// `CjsCompatLoader`'s content-based CJS detection (which mis-fires on
+// bundles that embed CJS modules verbatim inside ESM wrappers).
 // -----------------------------------------------------------------------------
 
 let cachedParticle: UserParticle | null = null;
@@ -119,37 +134,37 @@ async function loadParticle(): Promise<UserParticle> {
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mod = await (import("/particle/bundle.js") as Promise<any>);
+    const mod = await (import("/particle/bundle.mjs") as Promise<any>);
     if (!mod || typeof mod.default === "undefined") {
       throw new Error("bundle has no default export");
     }
     cachedParticle = mod.default as UserParticle;
     return cachedParticle;
   } catch (e) {
-    // describeThrown handles the common JS surface forms — Error,
-    // WIT-variant `{ tag, val }`, primitives — so the original
-    // diagnostic isn't reduced to "[object Object]" when a
-    // particle:host call throws during module evaluation (which
-    // is exactly what the introspect-mode trap stores produce).
-    loadError = e instanceof Error ? e : new Error(describeThrown(e));
+    // Preserve the original Error so its stack survives all the way
+    // to the host (via stackOf). For non-Error throws (strings,
+    // primitives, WIT variants from particle:* host calls), wrap in
+    // a fresh Error using the synthesized message — we don't have
+    // a stack for those.
+    loadError = e instanceof Error ? e : new Error(messageOf(e));
     throw loadError;
   }
 }
 
-// describeThrown turns whatever a handler threw into a useful
-// string. JS's default `String(x)` on a plain object yields the
-// notorious "[object Object]" — fine for `new Error("...")` but
-// the typical particle-side throw is one of:
+// messageOf turns whatever a handler threw into a one-line summary
+// — what the WIT error variant's `message` field carries. JS's
+// default `String(x)` on a plain object yields the notorious
+// "[object Object]"; the typical particle-side throw is one of:
 //   - an Error (use .message)
 //   - a WIT variant like `{ tag: "not-configured" }` thrown by a
 //     particle:* host call when the runtime maps the error back
 //     into JS
 //   - a string, number, boolean, null
 //   - some other plain object
-// Each branch produces something a human reading the log can
-// act on. JSON.stringify is the catch-all so even unusual
-// payloads stay debuggable.
-function describeThrown(e: unknown): string {
+// Each branch produces something a human reading the log can act
+// on. JSON.stringify is the catch-all so even unusual payloads
+// stay debuggable.
+function messageOf(e: unknown): string {
   if (e instanceof Error) return e.message;
   if (e === null || e === undefined) return String(e);
   const t = typeof e;
@@ -170,6 +185,17 @@ function describeThrown(e: unknown): string {
   return String(e);
 }
 
+// stackOf returns the operator-visible stack for the WIT error
+// variant's `stack` field, or undefined when no stack is available
+// (the throw was a string / WIT variant / primitive with no
+// .stack property). Hosts surface this separately from the
+// summary — typically dropped in a log line, not the user-visible
+// error.
+function stackOf(e: unknown): string | undefined {
+  if (e instanceof Error && typeof e.stack === "string") return e.stack;
+  return undefined;
+}
+
 function safeStringify(v: unknown): string {
   try {
     return JSON.stringify(v);
@@ -181,17 +207,19 @@ function safeStringify(v: unknown): string {
   }
 }
 
-function errMessage(e: unknown): string {
-  return describeThrown(e);
-}
-
 function logStack(e: unknown): void {
-  // Stack traces go to stderr (wasi:logging at error level), never out via WIT.
-  if (e instanceof Error && e.stack) {
-    console.error(e.stack);
+  // Operator-visible diagnostic on wasi:cli/stderr. The host captures
+  // this buffer and surfaces it on the Stderr field of the Go error
+  // struct; the WIT error variant's `stack` carries the same info
+  // structured, so callers have it either way. We still write it here
+  // because some throw sites (module-evaluation traps) never reach a
+  // WIT return — only stderr makes it across.
+  const stack = stackOf(e);
+  if (stack !== undefined) {
+    console.error(stack);
     return;
   }
-  console.error(describeThrown(e));
+  console.error(messageOf(e));
 }
 
 // -----------------------------------------------------------------------------
@@ -214,7 +242,7 @@ export const tools = {
     try {
       particle = await loadParticle();
     } catch (e) {
-      throw handlerError(errMessage(e));
+      throw handlerError(detailFromThrown(e));
     }
 
     const tool = particle.tools[name];
@@ -229,7 +257,7 @@ export const tools = {
       // Should not happen — host serialized it. Treat as handler
       // error rather than invalid-arguments (which is the host's
       // domain).
-      throw handlerError(`argument JSON parse: ${errMessage(e)}`);
+      throw handlerError({ message: `argument JSON parse: ${messageOf(e)}`, stack: stackOf(e) });
     }
 
     try {
@@ -241,7 +269,7 @@ export const tools = {
       // (HTTP policy, missing credential) and remap to
       // capability-denied. For now bare throws surface as
       // handler-error.
-      throw handlerError(errMessage(e));
+      throw handlerError(detailFromThrown(e));
     }
   },
 };
@@ -261,12 +289,12 @@ export const manifest = {
     try {
       particle = await loadParticle();
     } catch (e) {
-      throw bundleLoadError(errMessage(e));
+      throw bundleLoadError(detailFromThrown(e));
     }
     try {
       return buildManifestRecord(particle);
     } catch (e) {
-      throw invalidManifest(errMessage(e));
+      throw invalidManifest(detailFromThrown(e));
     }
   },
 };
@@ -502,7 +530,7 @@ export const health = {
     try {
       particle = await loadParticle();
     } catch (e) {
-      throw healthHandlerError(errMessage(e));
+      throw healthHandlerError(detailFromThrown(e));
     }
 
     if (typeof particle.ping !== "function") {
@@ -513,7 +541,7 @@ export const health = {
       return await particle.ping();
     } catch (e) {
       logStack(e);
-      throw healthHandlerError(errMessage(e));
+      throw healthHandlerError(detailFromThrown(e));
     }
   },
 };

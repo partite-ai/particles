@@ -87,6 +87,21 @@ const credentials = {
   },
 
   /**
+   * Lower-level: return the opaque placeholder string + apply-spec
+   * for a named credential. Use this when an SDK (axios, googleapis,
+   * etc.) manages its own request flow and you need to hand it a
+   * bearer/header value directly — the placeholder is safe to log,
+   * embed in URLs, or stash in SDK config, since the real secret is
+   * substituted at the wasi:http boundary.
+   *
+   * Prefer `fetcher` for the common case where a single fetch call
+   * is what you want; this exists for SDK integration.
+   */
+  getPlaceholder(name: string): { placeholder: string; apply: { kind: string; name?: string; scheme?: string } } {
+    return witGetPlaceholder(name) as ApplyInfo;
+  },
+
+  /**
    * Returns the raw value of a `raw`-typed credential.
    */
   async getRaw(name: string): Promise<string> {

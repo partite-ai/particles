@@ -56,9 +56,9 @@ export default {
 		t.Fatalf("Build: %v", err)
 	}
 
-	bundle, err := fs.ReadFile(res.Particle, "bundle.js")
+	bundle, err := fs.ReadFile(res.Particle, "bundle.mjs")
 	if err != nil {
-		t.Fatalf("read bundle.js: %v", err)
+		t.Fatalf("read bundle.mjs: %v", err)
 	}
 	// `is-buffer`'s impl is short and stable — the bundled output
 	// should mention Buffer detection somewhere. We're only sanity-

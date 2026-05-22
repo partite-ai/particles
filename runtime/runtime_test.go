@@ -457,7 +457,7 @@ func TestRuntime_NewParticle_RejectsBadFS(t *testing.T) {
 		t.Error("expected error for nil FS")
 	}
 	// FS without manifest.json
-	if _, err := rt.NewParticle(ctx, fstest.MapFS{"bundle.js": &fstest.MapFile{Data: []byte("export default {};")}}, credStore, kvStore); err == nil {
+	if _, err := rt.NewParticle(ctx, fstest.MapFS{"bundle.mjs": &fstest.MapFile{Data: []byte("export default {};")}}, credStore, kvStore); err == nil {
 		t.Error("expected error for FS without manifest.json")
 	}
 }

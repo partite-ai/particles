@@ -200,8 +200,12 @@ func TestScanStringLiteralDynamicImport_OK(t *testing.T) {
 }
 
 func TestScanUnknownPrefix(t *testing.T) {
+	// `weird:thing` isn't one of the recognized schemes (npm:,
+	// @partite-ai/particle-, ./, /, or a Node built-in / node:*) — it
+	// must be flagged so a typo (`nmp:foo`) or unsupported scheme
+	// surfaces at scan time.
 	fsys := mapfs(map[string]string{
-		"Particlefile.ts": `import fs from "node:fs";`,
+		"Particlefile.ts": `import x from "weird:thing";`,
 	})
 	r, err := Scan(fsys)
 	if err != nil {
@@ -209,6 +213,29 @@ func TestScanUnknownPrefix(t *testing.T) {
 	}
 	if len(r.Errors) != 1 || r.Errors[0].Kind != ErrUnknownPrefix {
 		t.Fatalf("want one ErrUnknownPrefix, got %#v", r.Errors)
+	}
+}
+
+func TestScanAllowsNodeBuiltins(t *testing.T) {
+	// Bare and `node:`-prefixed forms of runtime-provided modules
+	// are first-class — no error, and they don't show up as npm
+	// deps (the runtime resolves them, not the resolver).
+	fsys := mapfs(map[string]string{
+		"Particlefile.ts": `
+import fs from "fs";
+import https from "node:https";
+import { Readable } from "node:stream";
+`,
+	})
+	r, err := Scan(fsys)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(r.Errors) != 0 {
+		t.Fatalf("expected no errors, got %#v", r.Errors)
+	}
+	if len(r.NpmDeps) != 0 {
+		t.Fatalf("Node built-ins must not be reported as npm deps, got %#v", r.NpmDeps)
 	}
 }
 

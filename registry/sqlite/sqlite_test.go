@@ -37,8 +37,8 @@ func newStore(t *testing.T) *sqlite.Store {
 func sampleParticle() fs.FS {
 	return fstest.MapFS{
 		"manifest.json":   {Data: []byte(`{"name":"yaml-tools","version":"0.1.0"}`)},
-		"bundle.js":       {Data: []byte(`export default {};`)},
-		"bundle.js.map":   {Data: []byte(`{"version":3}`)},
+		"bundle.mjs":       {Data: []byte(`export default {};`)},
+		"bundle.mjs.map":   {Data: []byte(`{"version":3}`)},
 		"build-info.json": {Data: []byte(`{"runtime":"0.1.0"}`)},
 	}
 }
@@ -113,12 +113,12 @@ func TestPut_ReplacesAndDoesNotLeaveOrphans(t *testing.T) {
 
 	first := fstest.MapFS{
 		"manifest.json": {Data: []byte(`{"v":1}`)},
-		"bundle.js":     {Data: []byte("v1")},
+		"bundle.mjs":     {Data: []byte("v1")},
 		"extra.json":    {Data: []byte(`{}`)},
 	}
 	second := fstest.MapFS{
 		"manifest.json": {Data: []byte(`{"v":2}`)},
-		"bundle.js":     {Data: []byte("v2")},
+		"bundle.mjs":     {Data: []byte("v2")},
 	}
 
 	if err := s.Put(ctx, "p", "1.0.0", first); err != nil {
@@ -135,8 +135,8 @@ func TestPut_ReplacesAndDoesNotLeaveOrphans(t *testing.T) {
 	if string(have["manifest.json"]) != `{"v":2}` {
 		t.Errorf("manifest = %q, want v:2", have["manifest.json"])
 	}
-	if string(have["bundle.js"]) != "v2" {
-		t.Errorf("bundle = %q, want v2", have["bundle.js"])
+	if string(have["bundle.mjs"]) != "v2" {
+		t.Errorf("bundle = %q, want v2", have["bundle.mjs"])
 	}
 	if _, present := have["extra.json"]; present {
 		t.Error("extra.json from the prior Put was not cleared")

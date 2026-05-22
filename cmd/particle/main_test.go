@@ -125,7 +125,7 @@ func TestParticleBuild_Pack_WritesArchive(t *testing.T) {
 	}
 
 	got := zipEntries(t, data)
-	want4 := []string{"build-info.json", "bundle.js", "bundle.js.map", "manifest.json"}
+	want4 := []string{"build-info.json", "bundle.mjs", "bundle.mjs.map", "manifest.json"}
 	if !equal(got, want4) {
 		t.Errorf("archive entries = %v, want %v", got, want4)
 	}

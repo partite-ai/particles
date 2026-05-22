@@ -92,16 +92,22 @@ import wit_world  # noqa: F401
 from wit_world.exports import Tools as ToolsProtocol
 from wit_world.exports import Health as HealthProtocol
 from wit_world.exports import Manifest as ManifestProtocol
+# Each interface gets its own `ErrorDetail` (inlined per-interface in
+# the WIT so types-only `use` doesn't require a separately-imported
+# `diagnostics` interface on the world). The structure is identical
+# across all three; only the Python class identity differs.
 from wit_world.exports.tools import (
     ToolDef,
     ToolError_NotFound,
     ToolError_HandlerError,
+    ErrorDetail as ToolErrorDetail,
 )
 from wit_world.exports.health import (
     PingResult,
     Status,
     HealthError_NotImplemented,
     HealthError_HandlerError,
+    ErrorDetail as HealthErrorDetail,
 )
 from wit_world.exports.manifest import (
     ManifestError_BundleLoadError,
@@ -124,6 +130,7 @@ from wit_world.exports.manifest import (
     SigningKeyMethod,
     SigningAlgorithm,
     ToolEntry,
+    ErrorDetail as ManifestErrorDetail,
 )
 from componentize_py_types import Err
 
@@ -212,20 +219,36 @@ def _get_particle() -> user_manifest.Particle:
 
 
 def _describe(e: BaseException) -> str:
-    """Render an exception for the handler-error WIT variant.
-
-    Full stack goes to stderr (see `_log_traceback`); only this
-    one-line summary lands in the WIT error payload, matching the
-    design doc §6 split between operator-visible diagnostics and
-    user-visible error messages.
-    """
+    """One-line summary for the WIT `error-detail.message` field —
+    user-visible, deliberately short."""
     msg = str(e) or repr(e)
     return f"{type(e).__name__}: {msg}"
 
 
+def _format_stack(e: BaseException) -> str:
+    """Full Python traceback for the WIT `error-detail.stack` field —
+    operator-visible; the host typically routes it to a log line
+    rather than the user-facing error."""
+    return "".join(traceback.format_exception(type(e), e, e.__traceback__))
+
+
+def _tool_detail(e: BaseException) -> ToolErrorDetail:
+    return ToolErrorDetail(message=_describe(e), stack=_format_stack(e))
+
+
+def _health_detail(e: BaseException) -> HealthErrorDetail:
+    return HealthErrorDetail(message=_describe(e), stack=_format_stack(e))
+
+
+def _manifest_detail(e: BaseException) -> ManifestErrorDetail:
+    return ManifestErrorDetail(message=_describe(e), stack=_format_stack(e))
+
+
 def _log_traceback(e: BaseException) -> None:
-    """Send the traceback to wasi:cli/stderr (design doc §6: full
-    stack on stderr, message only in the WIT result).
+    """Mirror the stack to wasi:cli/stderr in addition to attaching
+    it to the WIT error. Belt-and-suspenders: some throw paths (e.g.,
+    module-evaluation traps) never reach a WIT return, only stderr
+    survives those.
     """
     traceback.print_exception(type(e), e, e.__traceback__, file=sys.stderr)
 
@@ -264,16 +287,17 @@ class Tools(ToolsProtocol):
             p = _get_particle()
         except BaseException as e:
             _log_traceback(e)
-            raise Err(ToolError_HandlerError(_describe(e)))
+            raise Err(ToolError_HandlerError(_tool_detail(e)))
 
         tool = p.tools.get(name)
         if tool is None:
             raise Err(ToolError_NotFound())
 
         if not callable(tool.handler):
-            raise Err(ToolError_HandlerError(
-                f"tool {name!r} has no callable handler"
-            ))
+            raise Err(ToolError_HandlerError(ToolErrorDetail(
+                message=f"tool {name!r} has no callable handler",
+                stack=None,
+            )))
 
         # Args are pre-validated host-side against the tool's input
         # schema (design doc §6 "Argument validation: host-side
@@ -281,9 +305,10 @@ class Tools(ToolsProtocol):
         try:
             args = json.loads(arguments_json)
         except Exception as e:
-            raise Err(ToolError_HandlerError(
-                f"argument JSON parse: {_describe(e)}"
-            ))
+            raise Err(ToolError_HandlerError(ToolErrorDetail(
+                message=f"argument JSON parse: {_describe(e)}",
+                stack=_format_stack(e),
+            )))
 
         try:
             result = tool.handler(args)
@@ -291,14 +316,15 @@ class Tools(ToolsProtocol):
                 result = asyncio.run(result)
         except BaseException as e:
             _log_traceback(e)
-            raise Err(ToolError_HandlerError(_describe(e)))
+            raise Err(ToolError_HandlerError(_tool_detail(e)))
 
         try:
             return json.dumps(result)
         except Exception as e:
-            raise Err(ToolError_HandlerError(
-                f"result is not JSON-serializable: {_describe(e)}"
-            ))
+            raise Err(ToolError_HandlerError(ToolErrorDetail(
+                message=f"result is not JSON-serializable: {_describe(e)}",
+                stack=_format_stack(e),
+            )))
 
 
 class Manifest(ManifestProtocol):
@@ -316,13 +342,13 @@ class Manifest(ManifestProtocol):
             p = _get_particle()
         except BaseException as e:
             _log_traceback(e)
-            raise Err(ManifestError_BundleLoadError(_describe(e)))
+            raise Err(ManifestError_BundleLoadError(_manifest_detail(e)))
 
         try:
             return _build_manifest_record(p)
         except BaseException as e:
             _log_traceback(e)
-            raise Err(ManifestError_InvalidManifest(_describe(e)))
+            raise Err(ManifestError_InvalidManifest(_manifest_detail(e)))
 
 
 # Lookup tables mapping the user-facing string-literal values to the
@@ -455,7 +481,7 @@ class Health(HealthProtocol):
             p = _get_particle()
         except BaseException as e:
             _log_traceback(e)
-            raise Err(HealthError_HandlerError(_describe(e)))
+            raise Err(HealthError_HandlerError(_health_detail(e)))
 
         ping_fn = p.ping
         if not callable(ping_fn):
@@ -467,7 +493,7 @@ class Health(HealthProtocol):
                 result = asyncio.run(result)
         except BaseException as e:
             _log_traceback(e)
-            raise Err(HealthError_HandlerError(_describe(e)))
+            raise Err(HealthError_HandlerError(_health_detail(e)))
 
         return _to_ping_result(result)
 
