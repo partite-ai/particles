@@ -85,7 +85,7 @@ func TestParticleBuild_RegistersByDefault(t *testing.T) {
 	writeSource(t, dir, sourceNoCredentials)
 	dbPath := filepath.Join(t.TempDir(), "state.db")
 
-	stdout, stderr, code := runIn(t, bin, dir, "build", "--db", dbPath)
+	stdout, stderr, code := runIn(t, bin, dir, "build", "--yes", "--db", dbPath)
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr:\n%s", code, stderr)
 	}
@@ -97,7 +97,7 @@ func TestParticleBuild_RegistersByDefault(t *testing.T) {
 		t.Errorf("register path should not produce .particle file: %v", matches)
 	}
 	// Re-running registration is idempotent — same (name, version) replaces.
-	if _, _, code := runIn(t, bin, dir, "build", "--db", dbPath); code != 0 {
+	if _, _, code := runIn(t, bin, dir, "build", "--yes", "--db", dbPath); code != 0 {
 		t.Errorf("second build exit = %d (re-register should succeed)", code)
 	}
 }
@@ -270,7 +270,7 @@ func TestParticleBuild_StateDBIs0600(t *testing.T) {
 	writeSource(t, dir, sourceNoCredentials)
 	dbPath := filepath.Join(t.TempDir(), "state.db")
 
-	if _, _, code := runIn(t, bin, dir, "build", "--db", dbPath); code != 0 {
+	if _, _, code := runIn(t, bin, dir, "build", "--yes", "--db", dbPath); code != 0 {
 		t.Fatalf("build exited %d", code)
 	}
 	info, err := os.Stat(dbPath)
@@ -300,7 +300,7 @@ func TestParticleBuild_StateDB_TightensExistingLoosePerms(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, code := runIn(t, bin, dir, "build", "--db", dbPath); code != 0 {
+	if _, _, code := runIn(t, bin, dir, "build", "--yes", "--db", dbPath); code != 0 {
 		t.Fatalf("build exited %d", code)
 	}
 	info, _ := os.Stat(dbPath)
