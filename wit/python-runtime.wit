@@ -21,6 +21,7 @@ world python-runtime {
   import particle:host/oauth@0.1.0;
   import particle:host/signing@0.1.0;
   import particle:host/kv@0.1.0;
+  import particle:host/dyld@0.1.0;
 
   // wasi:http — only way out to the network from a Python particle.
   // Goes through the host's HTTPPolicy (allowlist + credential

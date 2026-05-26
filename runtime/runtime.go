@@ -28,12 +28,14 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+	"sync"
 
 	"github.com/partite-ai/wacogo"
 	wasihttp "github.com/partite-ai/wacogo/wasi/http/types"
 
 	"github.com/partite-ai/particles/credentials"
 	"github.com/partite-ai/particles/internal/embedzstd"
+	wcdyld "github.com/partite-ai/particles/internal/host/gen/particle/host/dyld"
 	"github.com/partite-ai/particles/kv"
 )
 
@@ -97,6 +99,22 @@ type Runtime struct {
 	cfg    Config
 	jsComp *embedzstd.LazyComponent
 	pyComp *embedzstd.LazyComponent
+
+	// dyldFactory builds particle:host/dyld@0.1.0 instance handles —
+	// one per python-runtime particle. Created lazily on first use so
+	// JS-only / Wasm-only programs don't pay the binding-setup cost.
+	dyldFactory     *wcdyld.Factory
+	dyldFactoryOnce sync.Once
+	dyldFactoryErr  error
+}
+
+// dyldFactoryFor returns the shared dyld factory, initializing it on
+// first call. Safe for concurrent use.
+func (r *Runtime) dyldFactoryFor(ctx context.Context) (*wcdyld.Factory, error) {
+	r.dyldFactoryOnce.Do(func() {
+		r.dyldFactory, r.dyldFactoryErr = wcdyld.NewFactory(ctx, r.cfg.Engine)
+	})
+	return r.dyldFactory, r.dyldFactoryErr
 }
 
 // preloadedComponentFor returns the shared engine image for the JS

@@ -18,7 +18,9 @@ import (
 	"github.com/partite-ai/wacogo/wasi/filesystem/preopens"
 
 	"github.com/partite-ai/particles/credentials"
+	wcdyld "github.com/partite-ai/particles/internal/host/gen/particle/host/dyld"
 	"github.com/partite-ai/particles/internal/hostmeter"
+	"github.com/partite-ai/particles/internal/runtime/dyld"
 	"github.com/partite-ai/particles/kv"
 )
 
@@ -258,6 +260,38 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
 	}
 
+	// Python particles need the embedded CPython stdlib (loaded at
+	// import time by /usr/local/lib/python3.14/encodings, etc.) and
+	// the runtime-side bootstrap (bootstrap.py + the particle/
+	// helper package) on top of the bundle. Both ride as zip-backed
+	// fs.FSs mounted into a single wasi preopen alongside the
+	// particle bundle. JS / Wasm particles keep their original
+	// single-mount layout — no overlay needed.
+	rootFS := fs.FS(bundleFS)
+	wasiEnv := [][2]string(nil)
+	if selectedRuntime == RuntimePython {
+		stdlibFS, err := pythonStdlibFS()
+		if err != nil {
+			return nil, fmt.Errorf("runtime: load embedded python stdlib: %w", err)
+		}
+		bootstrapFS, err := pythonBootstrapFS()
+		if err != nil {
+			return nil, fmt.Errorf("runtime: load embedded python bootstrap: %w", err)
+		}
+		// bundleFS is already prefixed with "particle/" by
+		// mountParticleFS, so mount it at root rather than under a
+		// "particle" key (avoid double-prefix).
+		rootFS = newMountedFS(map[string]fs.FS{
+			"usr/local/lib/python3.14": stdlibFS,
+			"runtime":                  bootstrapFS,
+			"":                         bundleFS,
+		})
+		wasiEnv = [][2]string{
+			{"PYTHONHOME", "/usr/local"},
+			{"PYTHONNOUSERSITE", "1"},
+		}
+	}
+
 	allowedHosts := manifest.Capabilities.HTTP.AllowedHosts
 
 	listener := hostmeter.Listener{}
@@ -289,7 +323,8 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	stderr := &bytes.Buffer{}
 	w, err := wasi.NewWorld(ctx, r.cfg.Engine, &wasi.Config{
 		Args:         []string{"particle-runtime"},
-		Preopens:     preopens.NewFSPreopens(preopens.ImmutableFS{FS: bundleFS}),
+		Env:          wasiEnv,
+		Preopens:     preopens.NewFSPreopens(preopens.ImmutableFS{FS: rootFS}),
 		Stdin:        strings.NewReader(""),
 		Stdout:       io.Discard,
 		Stderr:       stderr,
@@ -384,6 +419,35 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	)
 	if loggingInst != nil {
 		imports = append(imports, wc.WithInstanceImport(loggingInterfaceName, loggingInst.Core()))
+	}
+
+	// Python runtime imports particle:host/dyld@0.1.0 unconditionally
+	// (its libpython.so + .so extensions resolve through this host
+	// adapter). Build a per-particle dyld instance; the FS argument is
+	// the particle bundle's _deps directory if/when extension wheels
+	// get bundled — empty for now since our pure-Python smoke tests
+	// don't dlopen anything user-supplied.
+	if selectedRuntime == RuntimePython {
+		dyldAdapter, err := dyld.NewAdapter(dyld.AdapterConfig{
+			Engine: r.cfg.Engine,
+			FS:     bundleFS, // .so's, if any, ride alongside bundle.py
+		})
+		if err != nil {
+			closeAll()
+			return nil, fmt.Errorf("runtime: build dyld adapter: %w", err)
+		}
+		dyldFac, err := r.dyldFactoryFor(ctx)
+		if err != nil {
+			closeAll()
+			return nil, fmt.Errorf("runtime: init dyld factory: %w", err)
+		}
+		dyldInst, err := dyldFac.NewInstance(ctx, dyldAdapter, nil)
+		if err != nil {
+			closeAll()
+			return nil, fmt.Errorf("runtime: build dyld host instance: %w", err)
+		}
+		hostInsts = append(hostInsts, dyldInst)
+		imports = append(imports, wc.WithInstanceImport(wcdyld.InterfaceName, dyldInst.Core()))
 	}
 
 	inst, err := comp.Instantiate(ctx, imports...)

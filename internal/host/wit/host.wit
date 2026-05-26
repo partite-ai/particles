@@ -83,7 +83,99 @@ interface kv {
   %list: func(prefix: string) -> result<list<string>, kv-error>;
 }
 
-// `env` lives in WASI. Particles read env vars via `process.env` (which
-// the QuickJS engine routes through `wasi:cli/environment`), and the host
-// filters what gets exposed based on the manifest's `capabilities.env`
-// declaration. No custom particle:host interface is needed.
+// Dynamic loader interface. The host implements `dyld` by reading
+// .so files from a host-provided fs.FS, allocating memory in the
+// caller's heap, growing the caller's __indirect_function_table,
+// building an env shim module, and instantiating the .so via
+// wazero's ImportResolver. See `internal/runtime/dyld` for the Go
+// implementation.
+//
+// Two layers of users:
+//   - User Python (or whatever guest) calls `load` + `library.symbol`
+//     to dlopen-style load extension .so's at runtime.
+//   - The runtime's main.wasm calls `set-libraries` and `initialize`
+//     once at component instantiation to hand the loader the
+//     toolchain-composed LIBRARIES table and to give the host a
+//     stable handle to the inject-capture-injected core module.
+//     These two are plumbing for the wasm-tools component-link
+//     build pipeline; user code doesn't touch them.
+interface dyld {
+  // Opaque handle to a loaded dynamic library. Dropping it tears
+  // down the .so's instance + frees its heap-allocated memory
+  // region in the caller's linear memory.
+  resource library {
+    // Look up a function symbol by name. Returns the function's
+    // table index in the caller's __indirect_function_table. Index
+    // is stable for the lifetime of the library handle (loaded at
+    // dyld.load time from the .so's elem section).
+    symbol: func(name: string) -> result<u32, string>;
+  }
+
+  variant dyld-error {
+    not-configured,
+    load-failed(string),
+  }
+
+  // One symbol exported by a pre-loaded library — see
+  // `preloaded-library` and `set-libraries`.
+  //
+  // `address` is the kind-agnostic value matching wasm-tools' libdl
+  // convention (wit-component/src/linking.rs:91-110): for function
+  // symbols it's the absolute index in main's
+  // __indirect_function_table; for data symbols it's the absolute
+  // memory address. The kind is never recorded on the symbol —
+  // it's inferred by the lookup context (env.GOT.func.X reads it
+  // as a table index; env.GOT.mem.X reads it as a memory address).
+  // The layout matches wasm-tools' Symbol struct exactly, so the
+  // Rust shim can deserialize the in-memory LIBRARIES table via
+  // straight reads before marshalling into canon-ABI records.
+  record preloaded-symbol {
+    name: string,
+    address: u32,
+  }
+
+  // One pre-loaded library — a side module already composed into
+  // the component at build time (e.g., via `wasm-tools component
+  // link`), whose function references are already placed in main's
+  // table and whose data lives at known addresses inside main's
+  // memory. `set-libraries` hands these to the loader so the env
+  // shim built for runtime-loaded .so files can resolve their
+  // GOT.func.X / GOT.mem.X / NEEDED entries against pre-loaded
+  // libraries' contributions, not just main's own exports.
+  record preloaded-library {
+    name: string,
+    symbols: list<preloaded-symbol>,
+  }
+
+  // Hand the loader the full set of libraries already composed
+  // into the component at build time. Toolchain-generated init
+  // modules drive this indirectly: wasm-tools' Linker::encode
+  // emits an init module whose start function calls
+  // `__wasm_set_libraries(ptr)`. Main's Rust shim provides
+  // `__wasm_set_libraries`; it reads the LIBRARIES struct from its
+  // own linear memory and calls into this WIT method with
+  // canon-ABI-marshalled records.
+  //
+  // "Set" rather than "register": this replaces any prior
+  // registration, matching the C-level
+  // `__wasm_set_libraries(ptr)` semantics. Called once during
+  // component instantiation, before any runtime dyld.load fires.
+  set-libraries: func(libraries: list<preloaded-library>) -> result<_, string>;
+
+  // Load a .so by name. Name resolution is host-specific (current
+  // implementation: lookup in the fs.FS handed to the dyld adapter
+  // at construction).
+  load: func(name: string) -> result<library, dyld-error>;
+
+  // One-time component-init hook. A post-link injected core module
+  // (see tools/inject-capture) imports the union of every composed
+  // library's exports, re-exports them, imports this WIT function,
+  // and calls it from its start function. When the handler runs,
+  // `host.CallerCoreModule(ctx)` returns the injected module — a
+  // single Module that exports every symbol the env shim needs
+  // (memory, __indirect_function_table, __stack_pointer, every
+  // libc/libpython/etc. function + main-side stubs). The host
+  // stashes that reference; subsequent .so loads route env-shim
+  // imports against it without probing wazero's namespace.
+  initialize: func();
+}

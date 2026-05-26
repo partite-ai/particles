@@ -1,0 +1,28 @@
+[package]
+name = "dyld-libdl"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Side module that supplies a libdl.so replacement — dlopen/dlsym/dlclose/dlerror routed through the WIT dyld interface, plus the __grow_table helper. Composed in place of wasi-sdk's stock libdl.so by the python-runtime build."
+
+[lib]
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[features]
+# Retained as a no-op for backward compatibility with the Makefile flag
+# that previously selected the canonical dyld package over the now-
+# removed dynlink-spike path. Always builds against
+# particle:host/dyld@0.1.0 now; selection lives in src/lib.rs.
+default = []
+canonical-dyld = []
+
+[dependencies]
+wit-bindgen = { version = "0.57", default-features = false, features = ["macros", "realloc"] }
+
+[profile.release]
+opt-level = "s"
+lto = false
+codegen-units = 1
+strip = false
+panic = "abort"

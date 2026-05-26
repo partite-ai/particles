@@ -1,0 +1,10 @@
+// dyld-libdl is built with --features canonical-dyld, which selects
+// this world. The crate imports particle:host/dyld@0.1.0 and exports
+// dlopen/dlsym/dlclose/dlerror — its src/lib.rs forwards each call
+// to the host bindings wit_bindgen generates from this world.
+
+package particle:dyld-libdl-canonical@0.1.0;
+
+world dyld-gen {
+  import particle:host/dyld@0.1.0;
+}

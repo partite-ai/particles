@@ -1,0 +1,50 @@
+[package]
+name = "python-runtime"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Particle Python runtime — Rust shim that dynamically links libpython3.14.so via the canonical particle:host/dyld interface, dispatches WIT exports (tools/health/manifest) into bootstrap.py through the CPython C API."
+
+[lib]
+# `staticlib` makes cargo emit a single `.a` of Rust object code (incl.
+# libstd's bundled wasi-libc) with no wasm-component-ld invocation; the
+# Makefile then hand-links it into a PIC side module via wasi-sdk clang
+# and feeds the result into `wasm-tools component link` alongside
+# libpython3.14.so / libc.so / libdl.so / wasi-emulated-* / init_dyld.so.
+crate-type = ["staticlib"]
+
+[dependencies]
+# 0.57 matches the wit-bindgen-rt that Rust's libstd vendors on
+# wasm32-wasip2 for its wasi-pal cabi_realloc references. `async`
+# default feature off: we have no async fns, and async_support emits a
+# [task-yield] import that the canon ABI rejects unless the world
+# declares it.
+wit-bindgen = { version = "0.57", default-features = false, features = ["macros", "realloc"] }
+
+# PyO3 declares the host extension module `_runtime_host` (#[pymodule])
+# whose Rust functions wrap the wit-bindgen-generated particle:host/*
+# and wasi:http calls. Cross-compiles to wasm32-wasip2 against
+# CPython 3.14 via PYO3_CONFIG_FILE (see pyo3-wasm-cpython314.txt).
+#
+# Features:
+#   - macros: enable #[pymodule]/#[pyfunction]/#[pyclass] codegen.
+#   - extension-module: tell pyo3 we're building an embedded extension,
+#     not a Python-launched binary — skips the symbol-exporting
+#     scaffolding that only matters for the latter.
+# default-features = false drops `auto-initialize` (the macros feature
+# also implicitly drops it). We initialize the interpreter manually
+# in ensure_python_initialized() so we can register the inittab first.
+pyo3 = { version = "0.27", default-features = false, features = ["macros", "extension-module"] }
+pyo3-ffi = { version = "0.27", default-features = false, features = ["extension-module"] }
+
+[profile.release]
+opt-level = "s"
+# LTO off: we --whole-archive ~20 MB of C archives (libpython, HACL,
+# mpdec, expat, zlib, sqlite, wasi-emulated-*) and rely on
+# --export-dynamic for the cross-.so symbol surface. LTO has shown to
+# silently strip "unused" definitions even when wasm-ld has been told
+# to export them.
+lto = false
+codegen-units = 1
+strip = false
+panic = "abort"

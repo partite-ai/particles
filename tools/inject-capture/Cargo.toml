@@ -1,0 +1,18 @@
+[package]
+name = "inject-capture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "inject-capture"
+path = "src/main.rs"
+
+[dependencies]
+wasmparser = "0.250"
+wasm-encoder = { version = "0.250", features = ["wasmparser"] }
+anyhow = "1"
+
+[profile.release]
+opt-level = 1
+debug = false

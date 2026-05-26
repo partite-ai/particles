@@ -18,7 +18,6 @@ func TestPythonRuntime_HTTPClients(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipped under -short (live HTTP)")
 	}
-
 	cases := []struct {
 		name string
 		src  string

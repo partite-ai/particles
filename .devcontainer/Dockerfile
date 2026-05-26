@@ -4,7 +4,7 @@ ARG TZ
 ENV TZ="$TZ"
 
 ARG CLAUDE_CODE_VERSION=latest
-ARG GOVERSION=1.26.2
+ARG GOVERSION=1.26.3
 ARG RUST_VERSION=stable
 
 # Egress for this container is forced through the smokescreen proxy at runtime
@@ -33,6 +33,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   pkg-config \
   clang \
   libclang-dev \
+  autoconf \
+  automake \
+  libtool \
+  m4 \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install go
@@ -59,6 +63,26 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 
 # Install wasm-tools (uses the rustup toolchain installed above)
 RUN cargo install --locked --root /usr/local wasm-tools
+
+# Install wasi-sdk for cross-compiling C/C++ to wasm32-wasip2. Used by the
+# python-runtime build to produce libpython3.14.so + its dependencies (zlib,
+# sqlite, libc++, wasi-emulated-* shims). Version is pinned to match what
+# componentize-py 0.23.0 uses — dicej's CPython patches (commit 0e13686)
+# were validated against this clang/sysroot pair. Releases:
+#   https://github.com/WebAssembly/wasi-sdk/releases
+ARG WASI_SDK_VERSION=30
+RUN ARCH=$(dpkg --print-architecture) && \
+  case "$ARCH" in \
+    arm64) WASI_ARCH=arm64 ;; \
+    amd64) WASI_ARCH=x86_64 ;; \
+    *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
+  esac && \
+  curl -fsSL -o /tmp/wasi-sdk.tar.gz \
+    "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}/wasi-sdk-${WASI_SDK_VERSION}.0-${WASI_ARCH}-linux.tar.gz" && \
+  tar -xzf /tmp/wasi-sdk.tar.gz -C /opt && \
+  mv "/opt/wasi-sdk-${WASI_SDK_VERSION}.0-${WASI_ARCH}-linux" /opt/wasi-sdk && \
+  rm /tmp/wasi-sdk.tar.gz
+ENV WASI_SDK_PATH=/opt/wasi-sdk
 
 # Install wasm-rquickjs-cli — generates the QuickJS-hosted wrapper crate
 # for the particle runtime component. `-j 1` keeps the linker peak RAM

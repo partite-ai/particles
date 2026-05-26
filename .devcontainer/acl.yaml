@@ -57,3 +57,9 @@ default:
         - astral.sh
         - pypi.org
         - files.pythonhosted.org
+
+        # SQLite amalgamation source (python-runtime-v2 libpython build —
+        # the _sqlite3 C extension links against a static libsqlite3.a we
+        # cross-compile from this tarball).
+        - sqlite.org
+        - www.sqlite.org

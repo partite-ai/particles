@@ -1,0 +1,9 @@
+package particle:host@0.1.0;
+
+/// `dyld-gen` is the synthetic world wacogo-witgen generates the
+/// dyld capability bindings from. It imports just the dyld interface
+/// so the produced binding tree is scoped to dyld and doesn't drag
+/// in credentials/oauth/signing/kv types.
+world dyld-gen {
+  import dyld;
+}
