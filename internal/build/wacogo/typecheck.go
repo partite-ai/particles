@@ -8,12 +8,13 @@ import (
 	"io/fs"
 	"strings"
 	"sync"
-	"testing/fstest"
 	"time"
 
 	wc "github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/wasi"
 	"github.com/partite-ai/wacogo/wasi/filesystem/preopens"
+
+	"github.com/partite-ai/particles/internal/memfs"
 )
 
 // typecheckInterface is the canonical id of the exported instance the
@@ -311,7 +312,7 @@ type emptyFS struct{}
 
 func (emptyFS) Open(name string) (fs.File, error) {
 	if name == "." {
-		return openRoot(fstest.MapFS{}), nil
+		return openRoot(memfs.FS{}), nil
 	}
 	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 }

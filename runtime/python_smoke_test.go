@@ -187,9 +187,9 @@ particle = Particle(
 		"bundle.py": &fstest.MapFile{Data: []byte(bundleSource)},
 	}
 	rootFS := newMountedFS(map[string]fs.FS{
-		"usr/local/lib/python3.14": stdlibFS,
-		"runtime":                  bootstrapFS,
-		"particle":                 bundleFS,
+		pythonStdlibMountPath: stdlibFS,
+		"runtime":             bootstrapFS,
+		"particle":            bundleFS,
 	})
 
 	stderr := &bytes.Buffer{}

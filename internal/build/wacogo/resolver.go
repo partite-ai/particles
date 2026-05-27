@@ -10,13 +10,13 @@ import (
 	"io"
 	"io/fs"
 	"strings"
-	"testing/fstest"
 	"time"
 
 	wc "github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/wasi"
 
 	"github.com/partite-ai/particles/internal/importscan"
+	"github.com/partite-ai/particles/internal/memfs"
 )
 
 // installerInterface is the canonical id of the exported instance the
@@ -144,7 +144,7 @@ func decodeInstallerError(v wc.Val) error {
 
 func assembleResolved(list *wc.ValList) ([]ResolvedPackage, fs.FS, error) {
 	pkgs := make([]ResolvedPackage, 0, list.Len())
-	mfs := fstest.MapFS{}
+	mfs := memfs.FS{}
 
 	for i := 0; i < list.Len(); i++ {
 		rec, ok := list.Get(i).(*wc.ValRecord)
@@ -223,7 +223,7 @@ func uintList(rec *wc.ValRecord, name string) ([]int, error) {
 // unpackNpmTarball decompresses the gzipped tarball bytes and writes
 // regular files under mountPrefix in mfs. npm tarballs always wrap
 // their contents in a "package/" top-level dir which we strip.
-func unpackNpmTarball(mountPrefix string, gzbytes []byte, mfs fstest.MapFS) error {
+func unpackNpmTarball(mountPrefix string, gzbytes []byte, mfs memfs.FS) error {
 	gz, err := gzip.NewReader(bytes.NewReader(gzbytes))
 	if err != nil {
 		return fmt.Errorf("gzip: %w", err)
@@ -250,7 +250,7 @@ func unpackNpmTarball(mountPrefix string, gzbytes []byte, mfs fstest.MapFS) erro
 		if err != nil {
 			return fmt.Errorf("read %q: %w", hdr.Name, err)
 		}
-		mfs[mountPrefix+name] = &fstest.MapFile{
+		mfs[mountPrefix+name] = &memfs.File{
 			Data:    data,
 			Mode:    0o644,
 			ModTime: time.Time{},

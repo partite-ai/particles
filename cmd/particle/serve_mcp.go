@@ -70,7 +70,7 @@ func runServeMCP(cmd *cobra.Command, target, dbPath string, includes, excludes [
 		return err
 	}
 
-	p, teardown, err := bootParticle(ctx, db, entry)
+	p, teardown, err := bootParticle(ctx, db, entry, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}

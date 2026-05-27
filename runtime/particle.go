@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"strings"
 	"sync"
-	"testing/fstest"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	wc "github.com/partite-ai/wacogo"
@@ -247,29 +246,31 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 
 	// Build the in-memory FS the runtime sees through
 	// wasi:filesystem. JS / Python read their bundle from
-	// `/particle/bundle.{js,py}` (mounted from particleFS). Wasm
+	// `/particle/bundle.{js,py}`; the artifact FS is mounted at
+	// `particle` so the wasi guest sees those paths. Wasm
 	// particles don't read any bundle from the FS — the component
 	// is fully self-contained — but we still mount the artifact so
 	// authors can ship per-particle data files alongside.
 	//
-	// For Python particles we mount the entire artifact FS (not
-	// just bundle.py) so `_deps/site-packages` comes along for the
-	// ride and `import httpx` finds the wheels resolved at build
-	// time. For JS particles the FS only contains bundle.mjs + the
-	// metadata files; the extra paths are harmless.
-	bundleFS, err := mountParticleFS(particleFS, bundleFilename, selectedRuntime)
-	if err != nil {
+	// For Python particles we mount the entire artifact (not just
+	// bundle.py) so `_deps/site-packages` comes along for the ride
+	// and `import httpx` finds the wheels resolved at build time.
+	// For JS particles the artifact also contains manifest.json /
+	// build-info.json — visible at /particle/manifest.json inside
+	// the sandbox but never read by the runtime; harmless.
+	if err := validateParticleBundle(particleFS, bundleFilename); err != nil {
 		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
 	}
 
 	// Python particles need the embedded CPython stdlib (loaded at
-	// import time by /usr/local/lib/python3.14/encodings, etc.) and
-	// the runtime-side bootstrap (bootstrap.py + the particle/
-	// helper package) on top of the bundle. Both ride as zip-backed
-	// fs.FSs mounted into a single wasi preopen alongside the
-	// particle bundle. JS / Wasm particles keep their original
-	// single-mount layout — no overlay needed.
-	rootFS := fs.FS(bundleFS)
+	// import time by /usr/local/lib/python3.14/..., etc.) and the
+	// runtime-side bootstrap (bootstrap.py + the particle/ helper
+	// package) on top of the bundle. Both ride as zip-backed fs.FSs
+	// mounted into the same wasi preopen tree alongside the
+	// particle bundle. The artifact FS itself is mounted in-place
+	// at "particle/" — no byte copy, mountedFS rewrites paths on
+	// the fly.
+	mounts := map[string]fs.FS{"particle": particleFS}
 	wasiEnv := [][2]string(nil)
 	if selectedRuntime == RuntimePython {
 		stdlibFS, err := pythonStdlibFS()
@@ -280,19 +281,14 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 		if err != nil {
 			return nil, fmt.Errorf("runtime: load embedded python bootstrap: %w", err)
 		}
-		// bundleFS is already prefixed with "particle/" by
-		// mountParticleFS, so mount it at root rather than under a
-		// "particle" key (avoid double-prefix).
-		rootFS = newMountedFS(map[string]fs.FS{
-			"usr/local/lib/python3.14": stdlibFS,
-			"runtime":                  bootstrapFS,
-			"":                         bundleFS,
-		})
+		mounts[pythonStdlibMountPath] = stdlibFS
+		mounts["runtime"] = bootstrapFS
 		wasiEnv = [][2]string{
 			{"PYTHONHOME", "/usr/local"},
 			{"PYTHONNOUSERSITE", "1"},
 		}
 	}
+	rootFS := fs.FS(newMountedFS(mounts))
 
 	allowedHosts := manifest.Capabilities.HTTP.AllowedHosts
 
@@ -425,14 +421,15 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 
 	// Python runtime imports particle:host/dyld@0.1.0 unconditionally
 	// (its libpython.so + .so extensions resolve through this host
-	// adapter). Build a per-particle dyld instance; the FS argument is
-	// the particle bundle's _deps directory if/when extension wheels
-	// get bundled — empty for now since our pure-Python smoke tests
-	// don't dlopen anything user-supplied.
+	// adapter). Build a per-particle dyld instance; the FS argument
+	// is the same wasi-namespace view CPython sees — so dlopen("/
+	// particle/_deps/site-packages/foo.abi3.so") strips the leading
+	// "/" and resolves against the same mountedFS layout that
+	// wasi:filesystem serves.
 	if selectedRuntime == RuntimePython {
 		dyldAdapter, err := dyld.NewAdapter(dyld.AdapterConfig{
 			Engine: r.cfg.Engine,
-			FS:     bundleFS, // .so's, if any, ride alongside bundle.py
+			FS:     rootFS,
 		})
 		if err != nil {
 			closeAll()
@@ -939,56 +936,25 @@ func (p *Particle) wrapTrap(err error, op string) error {
 	return fmt.Errorf("runtime: %s: %w\nstderr:\n%s", op, err, msg)
 }
 
-// mountParticleFS walks the particle artifact FS and re-rooots every
-// file under `particle/`. For JS / Python particles, requires that
-// `requiredBundle` (bundle.mjs / bundle.py) exists at the root —
-// that's the entry point the runtime's bootstrap loads. For Wasm
-// particles requiredBundle is empty and the check is skipped.
+// validateParticleBundle confirms `requiredBundle` exists at the
+// root of `particleFS` — the entry point the language runtime's
+// bootstrap will try to load. Wasm particles pass an empty
+// requiredBundle (the component IS the runtime — no host-visible
+// bundle file to check) and this is a no-op for them.
 //
-// Python particles ship a `_deps/site-packages/` tree alongside
-// bundle.py; mounting the whole artifact means `import httpx` etc.
-// just works at runtime via the bootstrap's sys.path setup. JS
-// particles ship only bundle.mjs + a couple metadata files; the extra
-// mounted paths are harmless (the JS runtime doesn't read them).
-// Wasm particles may ship arbitrary data files alongside
-// particle.wasm.
-func mountParticleFS(particleFS fs.FS, requiredBundle string, rt RuntimeKind) (fs.FS, error) {
-	if requiredBundle != "" {
-		if _, err := fs.Stat(particleFS, requiredBundle); err != nil {
-			return nil, fmt.Errorf("read %s: %w", requiredBundle, err)
-		}
-	}
-	out := fstest.MapFS{}
-	err := fs.WalkDir(particleFS, ".", func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			return nil
-		}
-		// manifest.json / build-info.json / Particle.lock don't
-		// need to be in the runtime's view (the host already read
-		// the manifest before instantiating; the others are
-		// build-pipeline bookkeeping). For wasm particles also
-		// filter particle.wasm itself — the component is already
-		// loaded as the runtime image and re-mounting it would be
-		// pointless. bundle.{js,py} and the _deps tree get through.
-		switch path {
-		case "manifest.json", "build-info.json", "bundle.mjs.map", "Particle.lock":
-			return nil
-		}
-		if rt == RuntimeWasm && path == "particle.wasm" {
-			return nil
-		}
-		data, err := fs.ReadFile(particleFS, path)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", path, err)
-		}
-		out["particle/"+path] = &fstest.MapFile{Data: data}
+// The artifact FS itself is later mounted under "particle/" by the
+// caller via mountedFS — a zero-copy view, not a memfs duplicate.
+// Build-pipeline bookkeeping files (manifest.json / build-info.json
+// / Particle.lock / for-wasm-particles particle.wasm) end up visible
+// at /particle/<file> inside the wasi sandbox but are never read by
+// any language runtime — harmless presence, worth zero special-case
+// filter code.
+func validateParticleBundle(particleFS fs.FS, requiredBundle string) error {
+	if requiredBundle == "" {
 		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
-	return out, nil
+	if _, err := fs.Stat(particleFS, requiredBundle); err != nil {
+		return fmt.Errorf("read %s: %w", requiredBundle, err)
+	}
+	return nil
 }

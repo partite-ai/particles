@@ -33,14 +33,8 @@ github.com/modelcontextprotocol/go-sdk v1.6.0 h1:PPLS3kn7WtOEnR+Af4X5H96SG0qSab8
 github.com/modelcontextprotocol/go-sdk v1.6.0/go.mod h1:kzm3kzFL1/+AziGOE0nUs3gvPoNxMCvkxokMkuFapXQ=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
-github.com/partite-ai/wacogo v0.0.0-20260522101317-5af3abf3b9fb h1:3/bsTZFdr8Kn1mx1dLoy/NOqGFPBEanoUGGLhPY2zKg=
-github.com/partite-ai/wacogo v0.0.0-20260522101317-5af3abf3b9fb/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
-github.com/partite-ai/wacogo v0.0.0-20260523075233-42754c62fc96 h1:DgXpoLdkmcnO15GpSW4C0unAiHXHvALBiYb7B9PWt0w=
-github.com/partite-ai/wacogo v0.0.0-20260523075233-42754c62fc96/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
-github.com/partite-ai/wacogo v0.0.0-20260523214409-9d15115ff9f4 h1:XGQLK9yPk+FkzRqK7CpusqyZaO6LyuyilHnTm3NTKQY=
-github.com/partite-ai/wacogo v0.0.0-20260523214409-9d15115ff9f4/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
-github.com/partite-ai/wacogo v0.0.0-20260524005658-61ca0f852e36 h1:gGdl6tbyW6JyWbjCcWRWVqEyCmKq6nu+su2TLYXT9Is=
-github.com/partite-ai/wacogo v0.0.0-20260524005658-61ca0f852e36/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
+github.com/partite-ai/wacogo v0.0.0-20260527203917-55ff87190af3 h1:Mb2GSftlpLclJA/hd6RaWY5WPP2PxbMAsw6yT+uV6m0=
+github.com/partite-ai/wacogo v0.0.0-20260527203917-55ff87190af3/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=

@@ -25,19 +25,47 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"strings"
-	"testing/fstest"
 	"time"
+
+	"github.com/tetratelabs/wazero"
 
 	"github.com/partite-ai/particles/internal/build/wacogo"
 	"github.com/partite-ai/particles/internal/bundle"
 	"github.com/partite-ai/particles/internal/importscan"
+	"github.com/partite-ai/particles/internal/memfs"
 	"github.com/partite-ai/particles/internal/nodebuiltins"
 	"github.com/partite-ai/particles/internal/semver"
 	"github.com/partite-ai/particles/runtime"
 )
+
+// reportPhaseStart writes a "phase starting" line to the configured
+// progress writer. No-op when Options.Progress is nil — library
+// callers expect silent builds. The line is intentionally short:
+// just the phase name + a colon, so the more interesting details
+// (number of deps fetched, etc.) can land on a subsequent indented
+// `reportPhaseDetail` line once known.
+func reportPhaseStart(opts Options, phase Phase) {
+	if opts.Progress == nil {
+		return
+	}
+	fmt.Fprintf(opts.Progress, "%s:\n", phase)
+}
+
+// reportPhaseDetail writes one indented detail line under the
+// already-printed phase header. Use after the phase completes
+// (or to report intermediate progress within a long phase) — the
+// phase header announces "we're working on X", the detail explains
+// "and the result is Y".
+func reportPhaseDetail(opts Options, format string, args ...any) {
+	if opts.Progress == nil {
+		return
+	}
+	fmt.Fprintf(opts.Progress, "  "+format+"\n", args...)
+}
 
 // withShadowDeps appends every entry in `nodebuiltins.ShadowNpmDeps`
 // to a copy of `deps`. If a user already declared one explicitly
@@ -87,6 +115,27 @@ type Options struct {
 	// toolchains (cargo, TinyGo, ...) name their outputs how they
 	// want; the build doesn't enforce a convention.
 	Component string
+
+	// Progress receives one line per pipeline phase entry and one
+	// indented summary line per phase exit, in real time as the
+	// build runs. Build is otherwise silent, so the CLI wires
+	// `os.Stderr` (or `cmd.ErrOrStderr()`) here to make builds
+	// visibly progress; library callers leave this nil to keep
+	// builds silent, or pass any `io.Writer` (an `io.MultiWriter`,
+	// a buffer, a structured logger's writer adapter, …) to capture.
+	// Lines are pre-formatted plain text; we don't expose a
+	// structured event API yet — keep this dumb until a user has a
+	// concrete need.
+	Progress io.Writer
+
+	// CompilationCache, when non-nil, persists compiled wasm
+	// modules across Build invocations. Pluggable on purpose: the
+	// CLI builds a disk-backed cache in the user cache dir;
+	// library callers either leave this nil (no caching — same
+	// behavior the build has always had) or supply their own
+	// `wazero.CompilationCache` (in-memory across long-lived host
+	// processes, custom storage, …).
+	CompilationCache wazero.CompilationCache
 }
 
 // Result is what Build returns on success.
@@ -212,7 +261,9 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		return nil, &Error{Cause: errors.New("Options.Source is required")}
 	}
 
-	comps, err := wacogo.New(ctx)
+	comps, err := wacogo.NewWithOptions(ctx, wacogo.Options{
+		CompilationCache: opts.CompilationCache,
+	})
 	if err != nil {
 		return nil, &Error{Cause: err}
 	}
@@ -247,6 +298,7 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 	)
 
 	// ---- Phase 1: import-scan -----------------------------------------
+	reportPhaseStart(opts, PhaseImportScan)
 	scan, err := importscan.Scan(opts.Source)
 	if err != nil {
 		return nil, &Error{Phase: PhaseImportScan, Logs: logs, Cause: err}
@@ -254,6 +306,9 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 	if len(scan.Errors) > 0 {
 		return nil, scanErrorsAsBuildError(scan.Errors, logs)
 	}
+	reportPhaseDetail(opts, "%d npm dep%s declared, %d capabilit%s",
+		len(scan.NpmDeps), plural(len(scan.NpmDeps), "", "s"),
+		len(scan.Capabilities), plural(len(scan.Capabilities), "y", "ies"))
 
 	// ---- Phase 2: resolve-and-fetch (only when needed) ----------------
 	//
@@ -267,6 +322,7 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 	var nodeModules fs.FS
 	var resolvedPkgs []wacogo.ResolvedPackage
 	if len(npmDeps) > 0 {
+		reportPhaseStart(opts, PhaseResolveAndFetch)
 		rr, err := comps.ResolveAndFetch(ctx, npmDeps)
 		logs = appendLog(logs, PhaseResolveAndFetch, rr)
 		if err != nil {
@@ -274,10 +330,13 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 		}
 		nodeModules = rr.NodeModules
 		resolvedPkgs = rr.Packages
+		reportPhaseDetail(opts, "%d package%s resolved",
+			len(resolvedPkgs), plural(len(resolvedPkgs), "", "s"))
 	}
 
 	// ---- Phase 3: typecheck (optional) --------------------------------
 	if !opts.NoTypeCheck {
+		reportPhaseStart(opts, PhaseTypecheck)
 		cr, err := comps.TypeCheck(ctx, opts.Source, nodeModules)
 		logs = appendLog(logs, PhaseTypecheck, cr)
 		if err != nil {
@@ -296,9 +355,12 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 		if len(fatal) > 0 {
 			return nil, &Error{Phase: PhaseTypecheck, Diagnostics: fatal, Logs: logs}
 		}
+		reportPhaseDetail(opts, "%d diagnostic%s",
+			len(cr.Diagnostics), plural(len(cr.Diagnostics), "", "s"))
 	}
 
 	// ---- Phase 4: bundle ----------------------------------------------
+	reportPhaseStart(opts, PhaseBundle)
 	bundleFS := opts.Source
 	if nodeModules != nil {
 		bundleFS = mountedSourceFS{base: opts.Source, overlayName: "node_modules", overlay: nodeModules}
@@ -317,12 +379,14 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 			Phase: PhaseBundle, File: w.File, Line: w.Line, Column: w.Column, Message: w.Message,
 		})
 	}
+	reportPhaseDetail(opts, "%s", humanBytes(len(bundleResult.JS)))
 
 	// ---- Phase 5: manifest-extract ------------------------------------
 	// The runtime's particle:runtime/manifest export is the uniform
 	// way every particle answers "describe yourself" — current
 	// bundle-loading runtimes and future fully-WASM particles alike.
-	sourceFS := fstest.MapFS{"bundle.mjs": &fstest.MapFile{Data: bundleResult.JS}}
+	reportPhaseStart(opts, PhaseManifestExtract)
+	sourceFS := memfs.FS{"bundle.mjs": &memfs.File{Data: bundleResult.JS}}
 	extracted, err := comps.ExtractManifest(ctx, runtime.RuntimeJS, sourceFS)
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
@@ -340,8 +404,13 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: fmt.Errorf("marshal manifest: %w", err)}
 	}
+	reportPhaseDetail(opts, "%s %s — %d tool%s, %d credential%s",
+		extracted.Name, extracted.Version,
+		len(extracted.Tools), plural(len(extracted.Tools), "", "s"),
+		len(extracted.Credentials), plural(len(extracted.Credentials), "", "s"))
 
 	// ---- Phase 6: assemble --------------------------------------------
+	reportPhaseStart(opts, PhaseAssemble)
 	buildInfo, err := encodeBuildInfo(scan, resolvedPkgs)
 	if err != nil {
 		return nil, &Error{Phase: PhaseAssemble, Logs: logs, Cause: fmt.Errorf("encode build-info: %w", err)}
@@ -353,6 +422,7 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 		Sourcemap: bundleResult.Sourcemap,
 		BuildInfo: buildInfo,
 	})
+	reportPhaseDetail(opts, "%s", artifactSummary(particle))
 
 	return &Result{
 		Particle: particle,
@@ -519,6 +589,56 @@ func appendLog(logs []Log, phase Phase, carrier any) []Log {
 }
 
 // -----------------------------------------------------------------------------
+// Progress / formatting helpers
+// -----------------------------------------------------------------------------
+
+// plural picks the right English suffix for `n` — `singular` when
+// n==1, otherwise `plural`. Used inline in Sprintf with the count.
+// We pass both forms because some words pluralize as `s` (`wheel`/
+// `wheels`) and others as `ies` (`dependency`/`dependencies`).
+func plural(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
+}
+
+// humanBytes formats a byte count as a short human-readable string.
+// Two significant digits, KB / MB cutoffs at 1024. Used by progress
+// summaries — we deliberately avoid an external dep for ~10 lines
+// of formatting.
+func humanBytes(n int) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%d B", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.1f KB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
+	}
+}
+
+// artifactSummary returns a one-line description of the artifact FS
+// — file count + total uncompressed size. Used in the Phase-6
+// progress line so the user sees what was built.
+func artifactSummary(particle fs.FS) string {
+	var files, bytes int
+	_ = fs.WalkDir(particle, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		files++
+		info, err := d.Info()
+		if err == nil {
+			bytes += int(info.Size())
+		}
+		return nil
+	})
+	return fmt.Sprintf("%d file%s, %s",
+		files, plural(files, "", "s"), humanBytes(bytes))
+}
+
+// -----------------------------------------------------------------------------
 // Phase 6 helpers
 // -----------------------------------------------------------------------------
 
@@ -533,13 +653,13 @@ type particleFiles struct {
 // in Result.Particle. Files at the root, no nested layout — matches
 // the design doc tarball convention.
 func assembleParticleFS(in particleFiles) fs.FS {
-	mfs := fstest.MapFS{
-		"manifest.json":   &fstest.MapFile{Data: in.Manifest, Mode: 0o644},
-		"bundle.mjs":      &fstest.MapFile{Data: in.Bundle, Mode: 0o644},
-		"build-info.json": &fstest.MapFile{Data: in.BuildInfo, Mode: 0o644},
+	mfs := memfs.FS{
+		"manifest.json":   &memfs.File{Data: in.Manifest, Mode: 0o644},
+		"bundle.mjs":      &memfs.File{Data: in.Bundle, Mode: 0o644},
+		"build-info.json": &memfs.File{Data: in.BuildInfo, Mode: 0o644},
 	}
 	if len(in.Sourcemap) > 0 {
-		mfs["bundle.mjs.map"] = &fstest.MapFile{Data: in.Sourcemap, Mode: 0o644}
+		mfs["bundle.mjs.map"] = &memfs.File{Data: in.Sourcemap, Mode: 0o644}
 	}
 	return mfs
 }

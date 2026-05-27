@@ -69,6 +69,80 @@ func readAll(t *testing.T, fsys fs.FS) map[string][]byte {
 // Put / Get
 // -----------------------------------------------------------------------------
 
+// TestGet_FS_StdlibCompliance runs Go's reference io/fs test suite
+// against the lazy dbFS returned from Get — the same suite memfs.FS
+// passes. Catches contract violations (path normalization, ReadDir
+// EOF semantics, ErrNotExist shapes, …) that hand-rolled
+// implementations are prone to miss.
+func TestGet_FS_StdlibCompliance(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	src := fstest.MapFS{
+		"manifest.json":                  {Data: []byte(`{"name":"x","version":"1.0.0"}`)},
+		"bundle.py":                      {Data: []byte("import sys\n")},
+		"_deps/site-packages/foo.py":     {Data: []byte("FOO = 1\n")},
+		"_deps/site-packages/sub/bar.py": {Data: []byte("BAR = 2\n")},
+	}
+	if err := s.Put(ctx, "x", "1.0.0", src); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	entry, err := s.Get(ctx, "x", "1.0.0")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if err := fstest.TestFS(entry.Particle,
+		"manifest.json",
+		"bundle.py",
+		"_deps/site-packages/foo.py",
+		"_deps/site-packages/sub/bar.py",
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestGet_FS_SnapshotsIndex verifies that Get does NOT pre-fetch
+// blob bytes (file data still streams from SQLite on read), but DOES
+// snapshot the path/size index — so a subsequent Put that removes
+// a file isn't observed by an already-handed-out Entry. This is the
+// trade-off documented on [Store.Get]: pay one small SELECT up front
+// to make Python's stat-storm import phase free.
+func TestGet_FS_SnapshotsIndex(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	if err := s.Put(ctx, "p", "1.0.0", fstest.MapFS{
+		"manifest.json": {Data: []byte("HELLO")},
+		"old.txt":       {Data: []byte("present at Get")},
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	entry, err := s.Get(ctx, "p", "1.0.0")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	// Re-Put the particle without old.txt. A snapshotted index
+	// still lists it; a lazy FS would say ErrNotExist.
+	if err := s.Put(ctx, "p", "1.0.0", fstest.MapFS{
+		"manifest.json": {Data: []byte("HELLO")},
+	}); err != nil {
+		t.Fatalf("Put #2: %v", err)
+	}
+
+	if _, err := fs.Stat(entry.Particle, "old.txt"); err != nil {
+		t.Errorf("Stat old.txt after re-Put: %v — snapshot should still see it", err)
+	}
+	// Blob bytes still come from SQLite at read time, so old.txt's
+	// data is gone even though the index entry remains. ReadFile
+	// surfaces this as ErrNotExist.
+	if _, err := fs.ReadFile(entry.Particle, "old.txt"); err == nil {
+		t.Errorf("ReadFile old.txt after re-Put: want error (blob deleted), got nil")
+	}
+}
+
 func TestPut_Get_RoundTrip(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

@@ -66,9 +66,20 @@ func runBuild(cmd *cobra.Command, pack bool, dbPath, component string, permMode 
 		return fmt.Errorf("getwd: %w", err)
 	}
 
+	cache, cacheErr := loadWasmCompilationCache(cmd.Context())
+	if cacheErr != nil {
+		// Non-fatal: builds still work without a cache.
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", cacheErr)
+	}
+	if cache != nil {
+		defer cache.Close(cmd.Context())
+	}
+
 	res, err := build.Build(cmd.Context(), build.Options{
-		Source:    os.DirFS(cwd),
-		Component: component,
+		Source:           os.DirFS(cwd),
+		Component:        component,
+		Progress:         cmd.ErrOrStderr(),
+		CompilationCache: cache,
 	})
 	if err != nil {
 		printLogs(cmd.ErrOrStderr(), errLogs(err))

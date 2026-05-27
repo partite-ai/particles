@@ -31,12 +31,31 @@ import (
 	"fmt"
 
 	wc "github.com/partite-ai/wacogo"
+	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/experimental"
 
 	"github.com/partite-ai/particles/credentials"
 	"github.com/partite-ai/particles/internal/embedzstd"
 	"github.com/partite-ai/particles/kv"
 	"github.com/partite-ai/particles/runtime"
 )
+
+// Options configure a Components value at construction time.
+type Options struct {
+	// CompilationCache, when non-nil, persists compiled wasm modules
+	// across Engine lifetimes. wazero hashes each module's bytes;
+	// re-loading the same module finds the prior compile in the
+	// cache and skips translation.
+	//
+	// Pluggable on purpose. The CLI builds a disk-backed cache in
+	// the user cache dir; library callers either leave this nil
+	// (no caching — the current default) or supply their own
+	// implementation (e.g. `wazero.NewCompilationCache()` for an
+	// in-memory cache shared across multiple Build calls in a long-
+	// lived host, or a custom storage backend).
+	CompilationCache wazero.CompilationCache
+}
 
 // embeddedWasm holds the three build-pipeline wasms baked into the
 // binary at compile time. The wasms are committed under embed/ so a
@@ -85,13 +104,32 @@ type Components struct {
 	runtime     *runtime.Runtime
 }
 
-// New constructs a Components value. Spins up the wasm engine,
-// records each per-phase wasm's lazy cell, and builds the
+// New constructs a Components value with default options (no
+// compilation cache). Equivalent to NewWithOptions(ctx, Options{}).
+func New(ctx context.Context) (*Components, error) {
+	return NewWithOptions(ctx, Options{})
+}
+
+// NewWithOptions constructs a Components value with the given options.
+// Spins up the wasm engine (configured with opts.CompilationCache if
+// set), records each per-phase wasm's lazy cell, and builds the
 // host-capability managers + runtime. No wasm load happens here —
 // the first call to TypeCheck / ResolveAndFetch / PipResolveAndFetch
-// / ExtractManifest pays the load cost for the wasms it touches.
-func New(ctx context.Context) (*Components, error) {
-	e := wc.NewEngine(ctx)
+// / ExtractManifest pays the load cost for the wasms it touches
+// (and writes their compiled forms to the cache, if configured).
+func NewWithOptions(ctx context.Context, opts Options) (*Components, error) {
+	var engineOpts []wc.EngineOption
+	if opts.CompilationCache != nil {
+		// Mirror wacogo's default core-features set; if we omit
+		// it, the cache-enabled config doesn't get the extended-
+		// const proposal and ends up subtly behavior-divergent
+		// from the no-cache path.
+		cfg := wazero.NewRuntimeConfig().
+			WithCoreFeatures(api.CoreFeaturesV2 | experimental.CoreFeaturesExtendedConst).
+			WithCompilationCache(opts.CompilationCache)
+		engineOpts = append(engineOpts, wc.WithRuntimeConfig(cfg))
+	}
+	e := wc.NewEngine(ctx, engineOpts...)
 	c := &Components{
 		engine:     e,
 		denoNpm:    embedzstd.NewLazyComponent(embeddedDenoNpm),

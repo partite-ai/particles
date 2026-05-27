@@ -55,7 +55,7 @@ func runPing(cmd *cobra.Command, target, dbPath string) error {
 		return err
 	}
 
-	p, teardown, err := bootParticle(ctx, db, entry)
+	p, teardown, err := bootParticle(ctx, db, entry, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}

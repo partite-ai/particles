@@ -34,6 +34,12 @@ func pythonStdlibFS() (fs.FS, error) {
 // `import bootstrap`.
 const embeddedPythonBootstrapPath = "embed/python-runtime-bootstrap.zip"
 
+// pythonStdlibMountPath is the wasi-side directory the host mounts
+// the stdlib FS at. Kept as a constant so the env var below stays
+// in lock-step with the mount layout in particle.go / the smoke
+// test if either ever changes.
+const pythonStdlibMountPath = "usr/local/lib/python3.14"
+
 // pythonBootstrapFS opens the runtime-side bootstrap zip as an
 // fs.FS rooted at the bootstrap dir's top (bootstrap.py +
 // particle/).

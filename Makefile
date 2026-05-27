@@ -684,13 +684,29 @@ python-stdlib-zip: $(PYTHON_STDLIB_ZIP)
 # Excluded subtrees aren't usable from a particle (no GUI, no test
 # harness, no pip bootstrap) — dropping them shrinks the embed from
 # ~95MB raw to ~21MB compressed.
+#
+# We ship bytecode-only (.pyc, no .py) to skip the parse/compile step
+# CPython would otherwise run for every stdlib module loaded at
+# startup. compileall -b writes legacy-format .pyc at <source>.pyc
+# (next to the .py) instead of the PEP 3147 __pycache__/ location;
+# combined with the *.py exclusion below, the resulting zip contains
+# only bytecode and CPython's FileFinder serves it as a "sourceless"
+# module load.
+#
+# Why the native build's python (not the host's system python): the
+# .pyc magic number is interpreter-version-specific, and using the
+# CPython we just built against this exact source tree guarantees
+# the magic byte the wasi cross-build expects. Bytecode format
+# itself is platform-independent — host-built bytecode runs on the
+# wasi interpreter verbatim.
 $(PYTHON_STDLIB_ZIP): $(PYTHON_LIB_SO) tools/zipdir/main.go
 	@mkdir -p $(@D)
+	$(CPYTHON_NATIVE_DIR)/python -m compileall -b -q -j 0 $(PYTHON_STDLIB_SRC)
 	go run ./tools/zipdir \
 	  -exclude 'test' -exclude 'idlelib' -exclude 'tkinter' \
 	  -exclude 'ensurepip' -exclude '__pycache__' -exclude 'lib2to3' \
 	  -exclude 'distutils' -exclude 'turtledemo' -exclude 'turtle.py' \
-	  -exclude 'wsgiref' -exclude '*.pyc' \
+	  -exclude 'wsgiref' -exclude '*.py' \
 	  $(PYTHON_STDLIB_SRC) $@
 	@printf '✓  stdlib zip: '; ls -lh $@ | awk '{print $$5"  "$$NF}'
 

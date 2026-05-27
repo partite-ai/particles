@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
-	"testing/fstest"
 
 	"github.com/partite-ai/particles/credentials"
+	"github.com/partite-ai/particles/internal/memfs"
 	"github.com/partite-ai/particles/kv"
 )
 
@@ -81,8 +81,8 @@ func synthesizeIntrospectFS(sourceFS fs.FS, kind RuntimeKind) (fs.FS, error) {
 		`{"name":"__introspect","version":"0.0.0","runtime":%q,"capabilities":{},"tools":[]}`,
 		kind,
 	)
-	out := fstest.MapFS{
-		"manifest.json": &fstest.MapFile{Data: []byte(stub)},
+	out := memfs.FS{
+		"manifest.json": &memfs.File{Data: []byte(stub)},
 	}
 	err := fs.WalkDir(sourceFS, ".", func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -95,7 +95,7 @@ func synthesizeIntrospectFS(sourceFS fs.FS, kind RuntimeKind) (fs.FS, error) {
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
-		out[path] = &fstest.MapFile{Data: data}
+		out[path] = &memfs.File{Data: data}
 		return nil
 	})
 	if err != nil {

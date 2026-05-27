@@ -13,10 +13,15 @@
 // share the database with their own tables.
 //
 // Put walks the FS inside a transaction so a partial replacement
-// is never observable. Get rebuilds an fs.FS from rows via
-// testing/fstest.MapFS, which is fine for the registry's payload
-// shape (small handful of files: bundle.mjs, manifest.json,
-// build-info.json, sourcemap).
+// is never observable. Get returns a `dbFS` that snapshots the
+// particle's path/size index up front (a single small SELECT) and
+// answers Stat/ReadDir entirely in memory. Blob bytes still stream
+// out of SQLite lazily — Open and ReadFile issue one SELECT per
+// call — so a 100MB Python particle's bytes never leave SQLite
+// until something inside the wasi sandbox actually reads them.
+// The snapshot turns Python's import-system stat storms (probing
+// `.py` / `__init__.py` / `.so` for every candidate path) into Go
+// map lookups instead of SQL round-trips.
 //
 // All state is persistent — restarting the host preserves every
 // entry.
@@ -27,8 +32,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
-	"testing/fstest"
+	"path"
+	"slices"
+	"strings"
+	"time"
 
 	"github.com/partite-ai/particles/internal/semver"
 	"github.com/partite-ai/particles/registry"
@@ -182,8 +191,17 @@ func (s *Store) Put(ctx context.Context, name, version string, particle fs.FS) e
 	return nil
 }
 
-// Get returns the registered entry for (name, version), with
-// the FS reconstructed from rows.
+// Get returns the registered entry for (name, version). The returned
+// Particle is a dbFS that has snapshotted the particle's path/size
+// index — a single small SELECT scans the row table, no blob bytes
+// are fetched. Subsequent Stat / ReadDir / dir Open calls answer
+// from the snapshot with zero SQL; only file Open / ReadFile issue
+// further queries (to fetch the blob).
+//
+// The snapshot is per-Get: a re-Put against the same (name, version)
+// is not observed by an existing dbFS. This matches how the runtime
+// uses the registry (load once at instantiation, never re-read), and
+// avoids the "stat storm" cost during Python interpreter startup.
 func (s *Store) Get(ctx context.Context, name, version string) (registry.Entry, error) {
 	var exists int
 	err := s.db.QueryRowContext(ctx,
@@ -195,32 +213,112 @@ func (s *Store) Get(ctx context.Context, name, version string) (registry.Entry, 
 	if err != nil {
 		return registry.Entry{}, fmt.Errorf("registry/sqlite: Get: %w", err)
 	}
-
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT path, data FROM particle_registry_files WHERE name = ? AND version = ?`,
-		name, version)
+	files, dirEntries, err := loadSnapshot(ctx, s.db, name, version)
 	if err != nil {
-		return registry.Entry{}, fmt.Errorf("registry/sqlite: Get: files: %w", err)
+		return registry.Entry{}, fmt.Errorf("registry/sqlite: Get: snapshot: %w", err)
+	}
+	return registry.Entry{
+		Name:    name,
+		Version: version,
+		Particle: &dbFS{
+			db: s.db, name: name, version: version,
+			files: files, dirEntries: dirEntries,
+		},
+	}, nil
+}
+
+// loadSnapshot fetches every file path + blob length for (name,
+// version) and materializes a Go-side path/dir index. Synthetic
+// intermediate directories are walked once here so that subsequent
+// Stat / ReadDir on a path like "a/b" hit a precomputed map even
+// though only leaf paths ("a/b/c.py") live in the table.
+//
+// Only path strings and int64 sizes are loaded — blob bytes stay
+// in SQLite. For a particle with 10k files at ~64-byte average path
+// length, the snapshot is well under a megabyte.
+func loadSnapshot(ctx context.Context, db *sql.DB, name, version string) (
+	map[string]int64, map[string][]fs.DirEntry, error,
+) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT path, length(data) FROM particle_registry_files
+		 WHERE name = ? AND version = ?`, name, version)
+	if err != nil {
+		return nil, nil, err
 	}
 	defer rows.Close()
 
-	mapFS := fstest.MapFS{}
-	for rows.Next() {
-		var path string
-		var data []byte
-		if err := rows.Scan(&path, &data); err != nil {
-			return registry.Entry{}, fmt.Errorf("registry/sqlite: Get: scan: %w", err)
+	files := map[string]int64{}
+	// children[parent][childName] = pointer into the eventual sorted
+	// slice. We mutate in place so a sub-directory marker can be
+	// "promoted" if we discover both `a/b` (file) and `a/b/c` (file
+	// implying b is a dir) — though the schema's primary key
+	// prevents that pathological case in practice.
+	children := map[string]map[string]*dirEntry{}
+	addChild := func(parent, leaf string, isDir bool, size int64) {
+		if children[parent] == nil {
+			children[parent] = map[string]*dirEntry{}
 		}
-		mapFS[path] = &fstest.MapFile{Data: data}
+		existing, ok := children[parent][leaf]
+		if !ok {
+			children[parent][leaf] = &dirEntry{
+				info: fileInfo{name: leaf, isDir: isDir, size: size},
+			}
+			return
+		}
+		if isDir && !existing.info.isDir {
+			existing.info.isDir = true
+			existing.info.size = 0
+		}
+	}
+
+	for rows.Next() {
+		var p string
+		var size int64
+		if err := rows.Scan(&p, &size); err != nil {
+			return nil, nil, err
+		}
+		files[p] = size
+
+		// Walk leaf → root, registering this row in its dir, then
+		// each ancestor as a sub-directory of the next ancestor up.
+		cur := p
+		curIsDir := false
+		curSize := size
+		for {
+			parent, leaf := path.Split(cur)
+			parent = strings.TrimSuffix(parent, "/")
+			if parent == "" {
+				parent = "."
+			}
+			addChild(parent, leaf, curIsDir, curSize)
+			if parent == "." {
+				break
+			}
+			cur = parent
+			curIsDir = true
+			curSize = 0
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return registry.Entry{}, fmt.Errorf("registry/sqlite: Get: rows: %w", err)
+		return nil, nil, err
 	}
-	return registry.Entry{
-		Name:     name,
-		Version:  version,
-		Particle: mapFS,
-	}, nil
+
+	dirEntries := map[string][]fs.DirEntry{}
+	for parent, kids := range children {
+		entries := make([]fs.DirEntry, 0, len(kids))
+		for _, e := range kids {
+			entries = append(entries, e)
+		}
+		slices.SortFunc(entries, func(a, b fs.DirEntry) int {
+			return strings.Compare(a.Name(), b.Name())
+		})
+		dirEntries[parent] = entries
+	}
+	// Empty particle still has a walkable root.
+	if _, ok := dirEntries["."]; !ok {
+		dirEntries["."] = nil
+	}
+	return files, dirEntries, nil
 }
 
 // List returns every (name, version) pair, sorted.
@@ -266,4 +364,225 @@ func (s *Store) Delete(ctx context.Context, name, version string) error {
 		return fmt.Errorf("registry/sqlite: Delete: index: %w", err)
 	}
 	return tx.Commit()
+}
+
+// -----------------------------------------------------------------------------
+// dbFS — lazy fs.FS over particle_registry_files
+// -----------------------------------------------------------------------------
+
+// dbFS is an fs.FS that serves files for a single (name, version)
+// out of particle_registry_files. Its path/size index is snapshotted
+// in memory at construction time (see [loadSnapshot]); blob bytes
+// stay in SQLite and stream out lazily on Open / ReadFile.
+//
+// fs.FS doesn't carry a context.Context (the interface predates ctx
+// in stdlib I/O), so internal queries use context.Background(). The
+// trade-off: a caller's cancellation won't propagate into a wasi
+// guest's mid-read SQL query. SQLite queries against a local file
+// finish in microseconds, so this is rarely visible — and the
+// alternative (stashing ctx on the struct) draws a sharper objection
+// from the Go community than the lost cancellation does in practice.
+type dbFS struct {
+	db      *sql.DB
+	name    string
+	version string
+
+	files      map[string]int64        // path → blob size
+	dirEntries map[string][]fs.DirEntry // dir path → sorted children
+}
+
+var (
+	_ fs.FS         = (*dbFS)(nil)
+	_ fs.StatFS     = (*dbFS)(nil)
+	_ fs.ReadFileFS = (*dbFS)(nil)
+	_ fs.ReadDirFS  = (*dbFS)(nil)
+)
+
+// Open implements fs.FS. Stat (snapshot lookup) is free; only file
+// opens hit the DB — one SELECT for the blob bytes.
+func (f *dbFS) Open(name string) (fs.File, error) {
+	if !fs.ValidPath(name) {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
+	}
+	if size, ok := f.files[name]; ok {
+		data, err := f.queryBlob(name)
+		if err != nil {
+			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
+		}
+		return &fileHandle{name: name, size: size, reader: bytesReader{data: data}}, nil
+	}
+	if entries, ok := f.dirEntries[name]; ok {
+		return &dirHandle{name: name, entries: entries}, nil
+	}
+	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+}
+
+// Stat implements fs.StatFS — pure in-memory snapshot lookup. The
+// hottest path in the runtime: Python's import system stats every
+// candidate it probes (most of which don't exist).
+func (f *dbFS) Stat(name string) (fs.FileInfo, error) {
+	if !fs.ValidPath(name) {
+		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrInvalid}
+	}
+	if size, ok := f.files[name]; ok {
+		return &fileInfo{name: path.Base(name), size: size}, nil
+	}
+	if _, ok := f.dirEntries[name]; ok {
+		return synthDirInfo(path.Base(name)), nil
+	}
+	return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
+}
+
+// ReadFile implements fs.ReadFileFS. Snapshot lookup for the
+// existence check, then one SELECT for the blob bytes.
+func (f *dbFS) ReadFile(name string) ([]byte, error) {
+	if !fs.ValidPath(name) {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
+	}
+	if _, ok := f.files[name]; !ok {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	data, err := f.queryBlob(name)
+	if err != nil {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: err}
+	}
+	return data, nil
+}
+
+// ReadDir implements fs.ReadDirFS — pure in-memory snapshot lookup.
+func (f *dbFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if !fs.ValidPath(name) {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
+	}
+	entries, ok := f.dirEntries[name]
+	if !ok {
+		if _, isFile := f.files[name]; isFile {
+			return nil, &fs.PathError{Op: "open", Path: name, Err: errNotDir}
+		}
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	return entries, nil
+}
+
+// queryBlob fetches a single row's data blob. Caller should have
+// already verified the path exists via the snapshot; a SQL miss
+// here would indicate the row was deleted out from under us
+// (treated as ErrNotExist).
+func (f *dbFS) queryBlob(name string) ([]byte, error) {
+	var data []byte
+	err := f.db.QueryRowContext(context.Background(),
+		`SELECT data FROM particle_registry_files
+		 WHERE name = ? AND version = ? AND path = ?`,
+		f.name, f.version, name).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fs.ErrNotExist
+	}
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// errNotDir is the sentinel returned when something asks for a
+// directory listing of a file path.
+var errNotDir = errors.New("not a directory")
+
+// fileInfo / dirEntry / dirHandle / fileHandle / bytesReader / synthDirInfo
+// are the io/fs adapter glue around the lazy-query primitives above.
+
+type fileInfo struct {
+	name  string
+	size  int64
+	isDir bool
+}
+
+func (i *fileInfo) Name() string { return i.name }
+func (i *fileInfo) Size() int64  { return i.size }
+func (i *fileInfo) Mode() fs.FileMode {
+	if i.isDir {
+		return fs.ModeDir | 0o555
+	}
+	return 0o444
+}
+func (i *fileInfo) ModTime() time.Time { return time.Time{} }
+func (i *fileInfo) IsDir() bool        { return i.isDir }
+func (i *fileInfo) Sys() any           { return nil }
+
+func synthDirInfo(name string) *fileInfo {
+	return &fileInfo{name: name, isDir: true}
+}
+
+type dirEntry struct {
+	info fileInfo
+}
+
+func (e *dirEntry) Name() string               { return e.info.name }
+func (e *dirEntry) IsDir() bool                { return e.info.isDir }
+func (e *dirEntry) Type() fs.FileMode          { return e.info.Mode().Type() }
+func (e *dirEntry) Info() (fs.FileInfo, error) { return &e.info, nil }
+
+type fileHandle struct {
+	name   string
+	size   int64
+	reader bytesReader
+}
+
+func (f *fileHandle) Stat() (fs.FileInfo, error) {
+	return &fileInfo{name: path.Base(f.name), size: f.size}, nil
+}
+
+func (f *fileHandle) Read(p []byte) (int, error) {
+	return f.reader.Read(p)
+}
+
+func (f *fileHandle) Close() error { return nil }
+
+// bytesReader is a tiny io.Reader over a byte slice. We don't use
+// bytes.Reader to keep the Particle FS allocation footprint down —
+// one extra allocation per Open isn't free when called thousands of
+// times during a Python interpreter init.
+type bytesReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *bytesReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+type dirHandle struct {
+	name    string
+	entries []fs.DirEntry
+	offset  int
+}
+
+func (d *dirHandle) Stat() (fs.FileInfo, error) {
+	return synthDirInfo(path.Base(d.name)), nil
+}
+
+func (d *dirHandle) Read([]byte) (int, error) {
+	return 0, &fs.PathError{Op: "read", Path: d.name, Err: fs.ErrInvalid}
+}
+
+func (d *dirHandle) Close() error { return nil }
+
+func (d *dirHandle) ReadDir(n int) ([]fs.DirEntry, error) {
+	remaining := d.entries[d.offset:]
+	// fs.ReadDir contract: at EOF, ReadDir(n>0) returns io.EOF;
+	// ReadDir(n<=0) returns the (possibly empty) remainder with
+	// a nil error.
+	if n > 0 && len(remaining) == 0 {
+		return nil, io.EOF
+	}
+	if n <= 0 || n > len(remaining) {
+		n = len(remaining)
+	}
+	out := append([]fs.DirEntry(nil), remaining[:n]...)
+	d.offset += n
+	return out, nil
 }

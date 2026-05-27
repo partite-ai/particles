@@ -5,8 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/partite-ai/wacogo"
+	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/experimental"
 
 	"github.com/partite-ai/particles/credentials"
 	credsqlite "github.com/partite-ai/particles/credentials/sqlite"
@@ -20,12 +24,16 @@ import (
 // particle: keyring sealer, credentials store, kv store, wacogo
 // engine, managers, runtime, and the particle instance itself.
 //
+// `warnW`, when non-nil, receives one-line warnings for non-fatal
+// setup issues (e.g. wasm-cache open failed → operation continues
+// without a cache). CLI commands pass `cmd.ErrOrStderr()`.
+//
 // Returns the live *runtime.Particle and a teardown function that
 // closes everything in reverse order. The teardown is a single
 // closure (not a chain of `defer`s) so the two callers — `ping` and
 // `serve-mcp` — can share the bring-up without each carrying eight
 // `defer` lines.
-func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry) (*runtime.Particle, func(), error) {
+func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry, warnW io.Writer) (*runtime.Particle, func(), error) {
 	sealer, err := credsqlite.NewKeyringSealer(keyringService, keyringName)
 	if err != nil {
 		return nil, nil, fmt.Errorf("keyring: %w", err)
@@ -39,7 +47,27 @@ func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry) (*runti
 		return nil, nil, fmt.Errorf("kv store: %w", err)
 	}
 
-	engine := wacogo.NewEngine(ctx)
+	// Persistent wasm compilation cache. Failure to open is non-
+	// fatal — a particle run that can't open the cache just pays
+	// the per-invocation compile cost. The cache is shared with
+	// `particle build` (same dir), so a runtime.wasm compiled
+	// during build is reused at run-time.
+	cache, cacheErr := loadWasmCompilationCache(ctx)
+	if cacheErr != nil && warnW != nil {
+		fmt.Fprintln(warnW, "warning:", cacheErr)
+	}
+
+	var engineOpts []wacogo.EngineOption
+	if cache != nil {
+		// Mirror wacogo's default core-features set (see
+		// internal/build/wacogo's NewWithOptions for context) so
+		// turning the cache on doesn't subtly diverge behavior.
+		cfg := wazero.NewRuntimeConfig().
+			WithCoreFeatures(api.CoreFeaturesV2 | experimental.CoreFeaturesExtendedConst).
+			WithCompilationCache(cache)
+		engineOpts = append(engineOpts, wacogo.WithRuntimeConfig(cfg))
+	}
+	engine := wacogo.NewEngine(ctx, engineOpts...)
 	credMgr, err := credentials.NewManager(ctx, credentials.ManagerConfig{Engine: engine})
 	if err != nil {
 		_ = engine.Close(ctx)
@@ -84,6 +112,9 @@ func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry) (*runti
 		_ = kvMgr.Close(ctx)
 		_ = credMgr.Close(ctx)
 		_ = engine.Close(ctx)
+		if cache != nil {
+			_ = cache.Close(ctx)
+		}
 	}
 	return p, teardown, nil
 }

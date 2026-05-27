@@ -65,7 +65,7 @@ func runRun(cmd *cobra.Command, args []string, dbPath string) error {
 		return err
 	}
 
-	p, teardown, err := bootParticle(ctx, db, entry)
+	p, teardown, err := bootParticle(ctx, db, entry, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}

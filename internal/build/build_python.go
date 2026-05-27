@@ -10,10 +10,10 @@ import (
 	"io/fs"
 	"sort"
 	"strings"
-	"testing/fstest"
 	"time"
 
 	"github.com/partite-ai/particles/internal/build/wacogo"
+	"github.com/partite-ai/particles/internal/memfs"
 	"github.com/partite-ai/particles/internal/pyscan"
 	"github.com/partite-ai/particles/runtime"
 )
@@ -40,10 +40,13 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	var logs []Log
 
 	// ---- Phase 1: import-scan (PEP 723) -------------------------------
+	reportPhaseStart(opts, PhaseImportScan)
 	py, err := pyscan.Scan(opts.Source, entry)
 	if err != nil {
 		return nil, &Error{Phase: PhaseImportScan, Logs: logs, Cause: err}
 	}
+	reportPhaseDetail(opts, "%d dep%s declared",
+		len(py.Dependencies), plural(len(py.Dependencies), "", "s"))
 
 	// ---- Phase 2: resolve-and-fetch (only when deps declared) ---------
 	//
@@ -56,12 +59,19 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	// passes the declared dep list.
 	var wheels []wacogo.PipResolvedWheel
 	if py.HasBlock && len(py.Dependencies) > 0 {
+		reportPhaseStart(opts, PhaseResolveAndFetch)
 		pr, err := comps.PipResolveAndFetch(ctx, py.Dependencies, pythonRuntimeVersion)
 		logs = appendLog(logs, PhaseResolveAndFetch, pr)
 		if err != nil {
 			return nil, &Error{Phase: PhaseResolveAndFetch, Logs: logs, Cause: err}
 		}
 		wheels = append(wheels, pr.Wheels...)
+		// Headline pinned versions inline — useful for spotting an
+		// unexpected resolution at a glance. Cap the list at a small
+		// number; full set lands in build-info.json + Particle.lock.
+		reportPhaseDetail(opts, "%d wheel%s: %s",
+			len(wheels), plural(len(wheels), "", "s"),
+			summarizeWheels(wheels, 6))
 	}
 
 	// ---- Phase 3: typecheck (skipped) ---------------------------------
@@ -69,10 +79,12 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	// v1. Note for callers: opts.NoTypeCheck has no effect here.
 
 	// ---- Phase 4: bundle (read source as bytes; no JS-style bundling) -
+	reportPhaseStart(opts, PhaseBundle)
 	bundlePy, err := fs.ReadFile(opts.Source, entry)
 	if err != nil {
 		return nil, &Error{Phase: PhaseBundle, Logs: logs, Cause: fmt.Errorf("read %s: %w", entry, err)}
 	}
+	reportPhaseDetail(opts, "%s", humanBytes(len(bundlePy)))
 
 	// Unpack wheels into the artifact layout *before* introspect.
 	// The user's bundle.py may `import httpx` at module scope; for
@@ -89,17 +101,18 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	// mounts it (under /particle/), the final Result returns it.
 	// Avoids a double-pack and keeps "what we ship" and "what we
 	// introspect" provably identical.
-	stagingFS := fstest.MapFS{
-		"bundle.py": &fstest.MapFile{Data: bundlePy, Mode: 0o644},
+	stagingFS := memfs.FS{
+		"bundle.py": &memfs.File{Data: bundlePy, Mode: 0o644},
 	}
 	for path, data := range depsFiles {
-		stagingFS[path] = &fstest.MapFile{Data: data, Mode: 0o644}
+		stagingFS[path] = &memfs.File{Data: data, Mode: 0o644}
 	}
 
 	// ---- Phase 5: manifest-extract ------------------------------------
 	// ExtractManifest invokes the runtime's
 	// particle:runtime/manifest export — same call shape and typed
 	// result as the JS path.
+	reportPhaseStart(opts, PhaseManifestExtract)
 	extracted, err := comps.ExtractManifest(ctx, runtime.RuntimePython, stagingFS)
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
@@ -115,8 +128,13 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: fmt.Errorf("marshal manifest: %w", err)}
 	}
+	reportPhaseDetail(opts, "%s %s — %d tool%s, %d credential%s",
+		extracted.Name, extracted.Version,
+		len(extracted.Tools), plural(len(extracted.Tools), "", "s"),
+		len(extracted.Credentials), plural(len(extracted.Credentials), "", "s"))
 
 	// ---- Phase 6: assemble --------------------------------------------
+	reportPhaseStart(opts, PhaseAssemble)
 	buildInfo, err := encodePythonBuildInfo(py, wheels)
 	if err != nil {
 		return nil, &Error{Phase: PhaseAssemble, Logs: logs, Cause: fmt.Errorf("encode build-info: %w", err)}
@@ -130,16 +148,36 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	// Add the build-pipeline-derived files (manifest, build-info,
 	// optional lock) onto the already-populated staging FS — the
 	// staging FS is then the artifact FS, no separate assemble.
-	stagingFS["manifest.json"] = &fstest.MapFile{Data: manifestJSON, Mode: 0o644}
-	stagingFS["build-info.json"] = &fstest.MapFile{Data: buildInfo, Mode: 0o644}
+	stagingFS["manifest.json"] = &memfs.File{Data: manifestJSON, Mode: 0o644}
+	stagingFS["build-info.json"] = &memfs.File{Data: buildInfo, Mode: 0o644}
 	if len(lock) > 0 {
-		stagingFS["Particle.lock"] = &fstest.MapFile{Data: lock, Mode: 0o644}
+		stagingFS["Particle.lock"] = &memfs.File{Data: lock, Mode: 0o644}
 	}
 
-	return &Result{
+	result := &Result{
 		Particle: stagingFS,
 		Logs:     logs,
-	}, nil
+	}
+	reportPhaseDetail(opts, "%s", artifactSummary(result.Particle))
+	return result, nil
+}
+
+// summarizeWheels formats a short "<name> <ver>, <name> <ver>, …"
+// preview of the resolved wheel set, capping at `limit` entries so a
+// 30-wheel transitive closure doesn't blow out the line.
+func summarizeWheels(wheels []wacogo.PipResolvedWheel, limit int) string {
+	if len(wheels) == 0 {
+		return "(none)"
+	}
+	parts := make([]string, 0, len(wheels))
+	for i, w := range wheels {
+		if i >= limit {
+			parts = append(parts, fmt.Sprintf("and %d more", len(wheels)-limit))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s %s", w.Name, w.Version))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // pythonRuntimeVersion is the CPython version baked into
