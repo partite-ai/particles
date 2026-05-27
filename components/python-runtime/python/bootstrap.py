@@ -244,6 +244,13 @@ def _load_user_module():
             sys.path.insert(0, _USER_MODULE_DIR)
         if os.path.isdir(_DEPS_SITE_PACKAGES) and _DEPS_SITE_PACKAGES not in sys.path:
             sys.path.insert(0, _DEPS_SITE_PACKAGES)
+        # Eagerly import `particle` so its socket / ssl / urllib /
+        # urllib3 / httpx / httplib2 shims register before any user
+        # bundle line runs — many libraries (httplib2, requests, ...)
+        # do `import ssl` / `import socket` at module load, which
+        # would fail before our `from particle import ...` had a
+        # chance to take effect.
+        import particle  # noqa: F401
         loader = importlib.machinery.SourceFileLoader("bundle", _USER_MODULE_PATH)
         spec = importlib.util.spec_from_loader("bundle", loader)
         if spec is None:

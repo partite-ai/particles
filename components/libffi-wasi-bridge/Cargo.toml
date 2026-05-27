@@ -1,0 +1,22 @@
+[package]
+name = "libffi-wasi-bridge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Side module (libffi.so in the composed python-runtime) that supplies `__wasi_libffi_call` / `__wasi_libffi_closure_*` and the `__wasi_libffi_dispatch` wasm-asm helper. C-level entry points are exported under env-import names cffi-built .so files reach via the dyld env shim; their implementations call into particle:host/libffi via wit_bindgen-generated bindings."
+
+[lib]
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# Same version pinning as components/dyld-libdl: matches the
+# wit-bindgen-rt that Rust's libstd vendors on wasm32-wasip2.
+wit-bindgen = { version = "0.57", default-features = false, features = ["macros", "realloc"] }
+
+[profile.release]
+opt-level = "s"
+lto = false
+codegen-units = 1
+strip = false
+panic = "abort"

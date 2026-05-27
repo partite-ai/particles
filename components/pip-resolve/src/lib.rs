@@ -14,6 +14,7 @@
 
 #![allow(clippy::needless_lifetimes)]
 
+mod particle_index;
 mod pypi;
 mod resolver;
 mod wheel_tag;

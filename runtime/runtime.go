@@ -36,6 +36,7 @@ import (
 	"github.com/partite-ai/particles/credentials"
 	"github.com/partite-ai/particles/internal/embedzstd"
 	wcdyld "github.com/partite-ai/particles/internal/host/gen/particle/host/dyld"
+	wclibffi "github.com/partite-ai/particles/internal/host/gen/particle/host/libffi"
 	"github.com/partite-ai/particles/kv"
 )
 
@@ -106,6 +107,13 @@ type Runtime struct {
 	dyldFactory     *wcdyld.Factory
 	dyldFactoryOnce sync.Once
 	dyldFactoryErr  error
+
+	// libffiFactory backs particle:host/libffi@0.1.0 — the trampoline-
+	// generation interface cffi-built .so files use for ffi_call
+	// dispatch. Same lifecycle as dyldFactory.
+	libffiFactory     *wclibffi.Factory
+	libffiFactoryOnce sync.Once
+	libffiFactoryErr  error
 }
 
 // dyldFactoryFor returns the shared dyld factory, initializing it on
@@ -115,6 +123,14 @@ func (r *Runtime) dyldFactoryFor(ctx context.Context) (*wcdyld.Factory, error) {
 		r.dyldFactory, r.dyldFactoryErr = wcdyld.NewFactory(ctx, r.cfg.Engine)
 	})
 	return r.dyldFactory, r.dyldFactoryErr
+}
+
+// libffiFactoryFor mirrors dyldFactoryFor for the libffi interface.
+func (r *Runtime) libffiFactoryFor(ctx context.Context) (*wclibffi.Factory, error) {
+	r.libffiFactoryOnce.Do(func() {
+		r.libffiFactory, r.libffiFactoryErr = wclibffi.NewFactory(ctx, r.cfg.Engine)
+	})
+	return r.libffiFactory, r.libffiFactoryErr
 }
 
 // preloadedComponentFor returns the shared engine image for the JS

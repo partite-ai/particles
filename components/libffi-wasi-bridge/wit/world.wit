@@ -1,0 +1,10 @@
+// libffi-wasi-bridge: side module composed as libffi.so. Imports
+// the trampoline-generator host capability so its C entry points
+// can route ffi_call / ffi_prep_closure into the runtime's
+// wasm-encoder.
+
+package particle:libffi-wasi-bridge@0.1.0;
+
+world libffi-bridge {
+  import particle:host/libffi@0.1.0;
+}

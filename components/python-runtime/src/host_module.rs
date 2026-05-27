@@ -211,7 +211,7 @@ fn _signing_verify(name: &str, data: &[u8], signature: &[u8]) -> PyResult<bool> 
 // (e.g. "DNS-error", "connection-refused", "HTTP-protocol-error") so user
 // code can branch on .kind exactly like the credentials/kv/oauth bridges.
 
-fn http_err(kind: &str, detail: impl AsRef<str>) -> PyErr {
+pub(crate) fn http_err(kind: &str, detail: impl AsRef<str>) -> PyErr {
     raise(kind, detail.as_ref())
 }
 
@@ -220,7 +220,7 @@ fn http_err(kind: &str, detail: impl AsRef<str>) -> PyErr {
 /// the kind and the optional payload (or empty) as the detail. Keeps
 /// the trap-mode "not allowed during get-manifest" detail string intact
 /// for the manifest_extract trap test.
-fn format_http_error(e: &h_types::ErrorCode) -> (&'static str, String) {
+pub(crate) fn format_http_error(e: &h_types::ErrorCode) -> (&'static str, String) {
     use h_types::ErrorCode::*;
     match e {
         DnsTimeout => ("DNS-timeout", String::new()),
@@ -277,7 +277,7 @@ fn format_http_error(e: &h_types::ErrorCode) -> (&'static str, String) {
 /// Map a method string (case-insensitive) to a wasi:http Method variant.
 /// Unknown methods become Method::Other(<original>) which the host can
 /// either accept or reject — we don't pre-judge.
-fn to_wit_method(s: &str) -> h_types::Method {
+pub(crate) fn to_wit_method(s: &str) -> h_types::Method {
     match s.to_ascii_uppercase().as_str() {
         "GET" => h_types::Method::Get,
         "HEAD" => h_types::Method::Head,
@@ -294,7 +294,7 @@ fn to_wit_method(s: &str) -> h_types::Method {
 
 /// scheme:// → wasi:http Scheme variant. We accept any scheme but emit
 /// only http/https in the canonical variant — others use Scheme::Other.
-fn to_wit_scheme(s: &str) -> h_types::Scheme {
+pub(crate) fn to_wit_scheme(s: &str) -> h_types::Scheme {
     match s.to_ascii_lowercase().as_str() {
         "http" => h_types::Scheme::Http,
         "https" => h_types::Scheme::Https,
@@ -306,7 +306,7 @@ fn to_wit_scheme(s: &str) -> h_types::Scheme {
 /// We avoid pulling the `url` crate in for ~1KB of work; the parser
 /// here handles the shapes wasi:http actually accepts (scheme://
 /// authority/path?query) and rejects degenerate URLs explicitly.
-fn split_url(url: &str) -> Result<(String, String, String), String> {
+pub(crate) fn split_url(url: &str) -> Result<(String, String, String), String> {
     let (scheme, rest) = match url.find("://") {
         Some(i) => (&url[..i], &url[i + 3..]),
         None => return Err(format!("url missing scheme://: {url}")),
@@ -568,6 +568,16 @@ pub fn _runtime_host(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_signing_verify, m)?)?;
 
     m.add_function(wrap_pyfunction!(_http_request, m)?)?;
+
+    // Non-blocking HTTP primitives — backing for particle._wasi_async
+    // (asyncio integration over wasi:io/poll). See async_http.rs.
+    m.add_function(wrap_pyfunction!(crate::async_http::_http_submit, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::async_http::_http_pollable, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::async_http::_http_advance, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::async_http::_http_complete, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::async_http::_http_drop, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::async_http::_io_poll, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::async_http::_pollable_drop, m)?)?;
 
     Ok(())
 }

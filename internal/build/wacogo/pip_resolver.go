@@ -23,12 +23,16 @@ type PipResolvedWheel struct {
 	Name string
 	// Version is the PEP 440 version string the resolver picked.
 	Version string
-	// Sha256 is "sha256:<hex>", matching PyPI's published digest.
+	// Sha256 is "sha256:<hex>" — matches the published digest
+	// (PyPI's JSON for PyPI-sourced wheels, or the PEP 503 fragment
+	// for particle-wheels-index entries).
 	Sha256 string
 	// Filename is the original wheel filename
-	// (`<dist>-<ver>-<pytag>-<abi>-<platform>.whl`). Always
-	// `*-none-any.whl` for our pipeline — the component rejects
-	// platform-tagged wheels at resolve.
+	// (`<dist>-<ver>-<pytag>-<abi>-<platform>.whl`). PyPI-sourced
+	// wheels are always `*-none-any.whl` (the resolver rejects
+	// platform-tagged PyPI wheels). Particle-wheels-index entries
+	// can carry any tag triple — the index publishes wasm-cross-
+	// compiled builds that the host vouches will load.
 	Filename string
 	// WheelBytes is the verified wheel as raw bytes. Caller is
 	// expected to either unzip into the artifact's
@@ -44,17 +48,26 @@ type PipResolveResult struct {
 	Stderr []byte
 }
 
-// PipResolveAndFetch resolves the PEP 508 `reqs` against PyPI, fetches
-// the transitive closure of pure-Python wheels, and returns each one
-// with verified sha256 and the raw bytes.
+// PipResolveAndFetch resolves the PEP 508 `reqs` and fetches the
+// transitive closure of wheels for the resolved set. Wheel selection
+// for each picked version, in priority order:
+//
+//  1. The particle wheels index at
+//     https://partite-ai.github.io/particle-python-wheels/ — a PEP
+//     503 simple repo that ships wasm-cross-compiled builds of
+//     packages whose PyPI wheels are all platform-tagged
+//     (cryptography, cffi, …). Any wheel published there is accepted
+//     host-vouched, bypassing the pure-Python wheel filter.
+//  2. PyPI's pure-Python (`*-none-any.whl`) wheel.
 //
 // `pythonVersion` is informational for v1 (the component doesn't yet
 // evaluate environment markers); reserved for future use.
 //
 // Failure modes are surfaced as typed errors via decodePipError:
-// network failures talking to PyPI, malformed PyPI responses, missing
-// versions / conflicting constraints, packages whose only published
-// wheels carry a compiled-ABI or platform tag, and sha256 mismatches.
+// network failures talking to PyPI / the particle index, malformed
+// PyPI responses, missing versions / conflicting constraints,
+// packages with no usable wheel in either source, and sha256
+// mismatches.
 func (c *Components) PipResolveAndFetch(ctx context.Context, reqs []string, pythonVersion string) (*PipResolveResult, error) {
 	pipResolve, err := c.loadEmbedded(ctx, c.pipResolve)
 	if err != nil {

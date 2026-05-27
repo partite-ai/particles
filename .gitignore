@@ -12,5 +12,6 @@ __pycache__/
 # the shared wit/ root before invoking cargo / wit_bindgen, so treating
 # them as derived keeps the repo from drifting.
 components/dyld-libdl/wit/deps/
+components/libffi-wasi-bridge/wit/deps/
 components/python-runtime/wit/
 components/wasm-example/wit/

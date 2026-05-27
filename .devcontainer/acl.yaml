@@ -41,6 +41,7 @@ default:
         - objects.githubusercontent.com
         - release-assets.githubusercontent.com
         - github.githubassets.com
+        - partite-ai.github.io
 
         # Rust crates (wasm-tools install path; only matters if rebuilt at runtime)
         - crates.io

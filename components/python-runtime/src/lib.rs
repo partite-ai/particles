@@ -23,6 +23,7 @@
 //! the initial skeleton; once the pipeline is green end-to-end we'll
 //! iterate it in.
 
+mod async_http;
 mod host_module;
 
 // `append_to_inittab!` is an ident-only macro — it can't take a `path::name`

@@ -11,6 +11,13 @@ path = "src/main.rs"
 [dependencies]
 wasmparser = "0.250"
 wasm-encoder = { version = "0.250", features = ["wasmparser"] }
+# wit-parser's `decoding` feature gives us `wit_parser::decoding::decode`
+# (extracts a `Resolve` from a wasm component's WIT custom sections) +
+# the canonical-ABI lowering helper `Resolve::wasm_signature(variant, func)`
+# in `wit_parser::abi`. We use both: read the wasi:* interface methods'
+# WIT signatures out of the pre-component, compute their lowered core
+# wasm signatures, feed those into the inject module's import types.
+wit-parser = { version = "0.250", features = ["decoding"] }
 anyhow = "1"
 
 [profile.release]

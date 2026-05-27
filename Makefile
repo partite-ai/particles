@@ -417,6 +417,7 @@ PYTHON_RUNTIME_STUBS_O          := $(PYTHON_RUNTIME_CARGO_TARGET)/stubs.o
 PYTHON_RUNTIME_GROW_TABLE_O     := $(PYTHON_RUNTIME_CARGO_TARGET)/grow_table.o
 PYTHON_RUNTIME_INIT_DYLD_WASM   := $(PYTHON_RUNTIME_CARGO_TARGET)/init_dyld.wasm
 PYTHON_RUNTIME_DYLD_LIBDL_SO    := $(PYTHON_RUNTIME_CARGO_TARGET)/libdl.so
+PYTHON_RUNTIME_LIBFFI_SO        := $(PYTHON_RUNTIME_CARGO_TARGET)/libffi.so
 PYTHON_RUNTIME_INJECT_CAPTURE   := $(PYTHON_RUNTIME_CARGO_TARGET)/inject-capture/release/inject-capture
 PYTHON_RUNTIME_PRE_COMPONENT    := $(PYTHON_RUNTIME_CARGO_TARGET)/python-runtime-pre.wasm
 
@@ -426,6 +427,15 @@ PYTHON_RUNTIME_PRE_COMPONENT    := $(PYTHON_RUNTIME_CARGO_TARGET)/python-runtime
 # dir keeps it isolated from any other dyld-libdl build.
 PYTHON_RUNTIME_DYLD_LIBDL_CARGO_TARGET := $(CARGO_TARGET_BASE)/python-runtime-dyld-libdl
 PYTHON_RUNTIME_DYLD_LIBDL_STATICLIB    := $(PYTHON_RUNTIME_DYLD_LIBDL_CARGO_TARGET)/wasm32-wasip2/release/libdyld_libdl.a
+
+# libffi-wasi-bridge — side module supplying __wasi_libffi_* C entry
+# points + the wasm-asm dispatch helper. Composed in the
+# python-runtime alongside libdl.so / libc.so / libpython3.14.so so
+# its exports show up in the dyld env shim's regular library-source
+# list, NOT pulled in via the MAIN_KEPT_EXPORTS curation.
+PYTHON_RUNTIME_LIBFFI_CARGO_TARGET := $(CARGO_TARGET_BASE)/python-runtime-libffi-wasi-bridge
+PYTHON_RUNTIME_LIBFFI_STATICLIB    := $(PYTHON_RUNTIME_LIBFFI_CARGO_TARGET)/wasm32-wasip2/release/liblibffi_wasi_bridge.a
+PYTHON_RUNTIME_LIBFFI_DISPATCH_O   := $(PYTHON_RUNTIME_LIBFFI_CARGO_TARGET)/libffi_dispatch.o
 
 # PyO3 cross-compile config — see the file header for what each field
 # means and why we need it (no host Python to introspect against).
@@ -488,6 +498,7 @@ $(PYTHON_RUNTIME_DYLD_LIBDL_SO): $(PYTHON_RUNTIME_DYLD_LIBDL_STATICLIB) $(PYTHON
 	  -nostdlib -nodefaultlibs \
 	  -Wl,--shared \
 	  -Wl,--no-entry \
+	  -Wl,--no-export-dynamic \
 	  -Wl,--export=dlopen \
 	  -Wl,--export=dlsym \
 	  -Wl,--export=dlclose \
@@ -502,6 +513,53 @@ $(PYTHON_RUNTIME_DYLD_LIBDL_SO): $(PYTHON_RUNTIME_DYLD_LIBDL_STATICLIB) $(PYTHON
 	  -L$(WASI_SYSROOT_SHARED) -lc \
 	  -o $@
 	@printf '✓  libdl.so: '; ls -lh $@ | awk '{print $$5"  "$$NF}'
+
+# ---- Step 3b: libffi-wasi-bridge staticlib + libffi.so ----
+# Side module supplying __wasi_libffi_* C entry points. Composed
+# alongside libdl.so so its symbols flow through the normal env-shim
+# library-source path — not the curated MAIN_KEPT_EXPORTS list.
+
+$(PYTHON_RUNTIME_LIBFFI_STATICLIB): \
+    components/libffi-wasi-bridge/Cargo.toml \
+    components/libffi-wasi-bridge/src/lib.rs \
+    components/libffi-wasi-bridge/wit/world.wit \
+    wit/deps/particle-host/host.wit
+	@mkdir -p $(PYTHON_RUNTIME_LIBFFI_CARGO_TARGET) components/libffi-wasi-bridge/wit/deps
+	cp -R wit/deps/* components/libffi-wasi-bridge/wit/deps/ 2>/dev/null || true
+	RUSTFLAGS='-C relocation-model=pic' \
+	CARGO_TARGET_DIR=$(PYTHON_RUNTIME_LIBFFI_CARGO_TARGET) \
+	  cargo +stable build \
+	    --manifest-path components/libffi-wasi-bridge/Cargo.toml \
+	    --target wasm32-wasip2 --release -j 1
+
+# libffi_dispatch.s — wasm-asm `call_indirect` helper. Hand-written
+# for the same reason as grow_table.s (clang's C type system can't
+# express variable-table-index + fixed-signature call_indirect).
+$(PYTHON_RUNTIME_LIBFFI_DISPATCH_O): components/libffi-wasi-bridge/src/libffi_dispatch.s
+	@mkdir -p $(@D)
+	$(WASI_SDK_PATH)/bin/clang --target=wasm32-wasip2 -fPIC -c $< -o $@
+
+$(PYTHON_RUNTIME_LIBFFI_SO): $(PYTHON_RUNTIME_LIBFFI_STATICLIB) $(PYTHON_RUNTIME_LIBFFI_DISPATCH_O)
+	$(WASI_SDK_PATH)/bin/clang \
+	  --target=wasm32-wasip2 -fPIC \
+	  -nostdlib -nodefaultlibs \
+	  -Wl,--shared \
+	  -Wl,--no-entry \
+	  -Wl,--no-export-dynamic \
+	  -Wl,--export=__wasi_libffi_call \
+	  -Wl,--export=__wasi_libffi_closure_alloc \
+	  -Wl,--export=__wasi_libffi_closure_free \
+	  -Wl,--export=__wasi_libffi_prep_closure_loc \
+	  -Wl,--export=__wasi_libffi_dispatch \
+	  -Wl,--export=cabi_realloc \
+	  -Wl,--unresolved-symbols=import-dynamic \
+	  -Wl,--allow-undefined \
+	  -Wl,--gc-sections \
+	  $(PYTHON_RUNTIME_LIBFFI_STATICLIB) \
+	  $(PYTHON_RUNTIME_LIBFFI_DISPATCH_O) \
+	  -L$(WASI_SYSROOT_SHARED) -lc \
+	  -o $@
+	@printf '✓  libffi.so: '; ls -lh $@ | awk '{print $$5"  "$$NF}'
 
 # ---- Step 4: non-Rust objects ----
 # grow_table.s wraps table.grow on __indirect_function_table (wasm-asm;
@@ -571,12 +629,13 @@ $(PYTHON_RUNTIME_INJECT_CAPTURE): tools/inject-capture/Cargo.toml tools/inject-c
 # __wasm_set_libraries — which our Rust shim forwards to
 # dyld.set-libraries.
 
-$(PYTHON_RUNTIME_PRE_COMPONENT): $(PYTHON_RUNTIME_MAIN_WASM) $(PYTHON_RUNTIME_INIT_DYLD_WASM) $(PYTHON_RUNTIME_DYLD_LIBDL_SO)
+$(PYTHON_RUNTIME_PRE_COMPONENT): $(PYTHON_RUNTIME_MAIN_WASM) $(PYTHON_RUNTIME_INIT_DYLD_WASM) $(PYTHON_RUNTIME_DYLD_LIBDL_SO) $(PYTHON_RUNTIME_LIBFFI_SO)
 	wasm-tools component link \
 	  main.wasm=$(PYTHON_RUNTIME_MAIN_WASM) \
 	  --dl-openable libpython3.14.so=$(PYTHON_LIB_SO) \
 	  --dl-openable libc.so=$(WASI_SYSROOT_SHARED)/libc.so \
 	  --dl-openable libdl.so=$(PYTHON_RUNTIME_DYLD_LIBDL_SO) \
+	  --dl-openable libffi.so=$(PYTHON_RUNTIME_LIBFFI_SO) \
 	  --dl-openable libwasi-emulated-signal.so=$(WASI_SYSROOT_SHARED)/libwasi-emulated-signal.so \
 	  --dl-openable libwasi-emulated-getpid.so=$(WASI_SYSROOT_SHARED)/libwasi-emulated-getpid.so \
 	  --dl-openable libwasi-emulated-process-clocks.so=$(WASI_SYSROOT_SHARED)/libwasi-emulated-process-clocks.so \
@@ -587,11 +646,22 @@ $(PYTHON_RUNTIME_PRE_COMPONENT): $(PYTHON_RUNTIME_MAIN_WASM) $(PYTHON_RUNTIME_IN
 # ---- Step 9: inject-capture + strip ----
 # Inject the capture core module, then wasm-tools strip removes DWARF
 # (libpython alone is ~21MB of debug info).
+#
+# Pass `KEEP_DEBUG=1` to skip the strip step — useful for debugging
+# trap stack traces with full DWARF symbols available. The resulting
+# .wasm is much larger (~35M vs 13M); re-running `make runtime-embed`
+# afterward also re-embeds the debug-enabled wasm into the runtime
+# binary, so the debug info reaches wazero at instantiation time.
 
 $(DIST_DIR)/particle-python-runtime.wasm: $(PYTHON_RUNTIME_PRE_COMPONENT) $(PYTHON_RUNTIME_INJECT_CAPTURE)
 	$(PYTHON_RUNTIME_INJECT_CAPTURE) $< $@.injected
+ifeq ($(KEEP_DEBUG),1)
+	@echo "KEEP_DEBUG=1: skipping wasm-tools strip (DWARF preserved)"
+	mv $@.injected $@
+else
 	wasm-tools strip $@.injected -o $@
 	rm -f $@.injected
+endif
 	@printf '✓  '; ls -lh $@ | awk '{print $$5"  "$$NF}'
 
 # =============================================================================
@@ -648,7 +718,9 @@ clean:
 	rm -rf components/wasm-example/wit
 	rm -rf components/python-runtime/wit
 	rm -rf components/dyld-libdl/wit/deps
+	rm -rf components/libffi-wasi-bridge/wit/deps
 	rm -rf $(JS_RUNTIME_CARGO_TARGET) $(TYPECHECK_CARGO_TARGET) \
 	       $(PIP_RESOLVE_CARGO_TARGET) $(WASM_EXAMPLE_CARGO_TARGET) \
-	       $(PYTHON_RUNTIME_CARGO_TARGET) $(PYTHON_RUNTIME_DYLD_LIBDL_CARGO_TARGET)
+	       $(PYTHON_RUNTIME_CARGO_TARGET) $(PYTHON_RUNTIME_DYLD_LIBDL_CARGO_TARGET) \
+	       $(PYTHON_RUNTIME_LIBFFI_CARGO_TARGET)
 	rm -rf $(PYBUILD_DIR)

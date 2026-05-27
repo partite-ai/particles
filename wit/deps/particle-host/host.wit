@@ -179,3 +179,57 @@ interface dyld {
   // imports against it without probing wazero's namespace.
   initialize: func();
 }
+// Trampoline-generation interface for cffi/libffi-style FFI dispatch.
+// The libffi shell that emits the `__wasi_libffi_*` C-level externs
+// lives in the particle wheels repo
+// (https://github.com/partite-ai/particle-python-wheels) as part of
+// the cffi wheel build; the Rust side of python-runtime lowers them
+// into this WIT, and internal/runtime/libffi/ holds the Go-side
+// wasm-encoder implementation.
+//
+// The libffi shell (in cffi-built .so's) calls ffi_call(cif, fn,
+// rvalue, avalue). Implementing that requires marshaling avalue[]
+// into wasm-stack values and doing call_indirect with the target's
+// type. On wasi we can't construct wasm functions at runtime from
+// Rust — but we can ask the host to do it for us. This interface
+// is the channel: the host emits a tiny wasm module per unique
+// target signature, places its "trampoline" function into main's
+// __indirect_function_table, returns the slot index, and main.wasm
+// uses a fixed-signature call_indirect at that slot.
+//
+// Signatures are encoded as a packed byte sequence:
+//   byte 0:        num-results (0 or 1; libffi targets at most one)
+//   byte 1:        num-params (0..=64 supported)
+//   bytes 2..:     result type, then param types, one byte each
+//
+// Type bytes (matching wasm valtype encoding, low-byte only):
+//   0x7f = i32, 0x7e = i64, 0x7d = f32, 0x7c = f64
+//
+// The same sig descriptor maps to one cached trampoline; repeat
+// calls with the same sig return the same table index.
+interface libffi {
+  variant libffi-error {
+    unsupported-signature(string),
+    table-full,
+  }
+
+  // Return an indirect-function-table slot whose trampoline calls
+  // a function with the given signature. The trampoline's own
+  // signature is fixed `(fn_idx: u32, rvalue: u32, avalue: u32)
+  // -> ()` — main.wasm's `__wasi_libffi_dispatch` wasm-asm helper
+  // does call_indirect via this slot, the trampoline reads
+  // avalue[i] from memory, type-promotes per the encoded signature,
+  // performs the actual call_indirect at the target, and stores
+  // the result at *rvalue.
+  //
+  // Slots returned by this call are pinned for the process
+  // lifetime; cffi caches them in its `ffi_cif` so a given
+  // (return-type, arg-types) tuple pays the host roundtrip exactly
+  // once.
+  prep-trampoline: func(sig: list<u8>) -> result<u32, libffi-error>;
+
+  // Build a closure trampoline at a pre-allocated table slot.
+  // closure-ptr layout (libffi convention): u32@0 ftramp (slot),
+  // u32@4 cif, u32@8 fun (table idx), u32@12 user_data.
+  prep-closure: func(closure-ptr: u32, slot: u32, sig: list<u8>) -> result<_, libffi-error>;
+}

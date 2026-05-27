@@ -31,6 +31,14 @@ pub struct PyPiFile {
     #[serde(default)]
     pub yanked: bool,
     pub digests: PyPiDigests,
+    /// True for files sourced from the particle wheels index (a
+    /// PEP 503 simple repo of wasm-cross-compiled wheels). PyPI's
+    /// JSON response won't carry this flag, so serde defaults to
+    /// false; particle_index.rs sets it explicitly. The resolver
+    /// uses this as the marker for "the host has vouched this wheel
+    /// is loadable; skip the pure-Python wheel filter."
+    #[serde(default)]
+    pub host_vouched: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -136,6 +144,41 @@ async fn http_get_raw(url: &str) -> Result<Vec<u8>, Error> {
         .await
         .map_err(|e| Error::NetworkError(format!("read {url}: {e}")))?;
     Ok(buf)
+}
+
+/// Fetch a text resource, returning `Ok(None)` for 404. Used by the
+/// particle wheels index: most packages aren't there, so a 404 must
+/// be a routine fall-through case, not an error.
+pub async fn http_get_text_or_404(url: &str) -> Result<Option<String>, Error> {
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(url)
+        .header("Accept", "text/html, application/vnd.pypi.simple.v1+html")
+        .body(empty())
+        .map_err(|e| Error::NetworkError(format!("build req {url}: {e}")))?;
+
+    let mut response = Client::new()
+        .send(request)
+        .await
+        .map_err(|e| Error::NetworkError(format!("send {url}: {e}")))?;
+
+    let status = response.status();
+    if status.as_u16() == 404 {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        return Err(Error::NetworkError(format!("GET {url} -> HTTP {status}")));
+    }
+
+    let mut buf = Vec::new();
+    response
+        .body_mut()
+        .read_to_end(&mut buf)
+        .await
+        .map_err(|e| Error::NetworkError(format!("read {url}: {e}")))?;
+    let text = String::from_utf8(buf)
+        .map_err(|e| Error::NetworkError(format!("decode {url} as utf-8: {e}")))?;
+    Ok(Some(text))
 }
 
 /// PyPI's URL path expects the canonical project name. PEP 503

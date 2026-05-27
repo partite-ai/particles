@@ -1,0 +1,61 @@
+package particle:host@0.1.0;
+
+// Trampoline-generation interface for cffi/libffi-style FFI dispatch.
+// The libffi shell that emits the `__wasi_libffi_*` C-level externs
+// lives in the particle wheels repo
+// (https://github.com/partite-ai/particle-python-wheels) as part of
+// the cffi wheel build; the Rust side of python-runtime lowers them
+// into this WIT, and internal/runtime/libffi/ holds the Go-side
+// wasm-encoder implementation.
+//
+// Inlined into this file rather than referenced from host.wit so
+// wacogo-witgen's single-file load path resolves it. host.wit
+// retains the canonical copy for documentation; the two must be
+// kept in sync (lint: any change to one needs the matching change
+// here).
+interface libffi {
+  variant libffi-error {
+    unsupported-signature(string),
+    table-full,
+  }
+
+  // Allocate a call-direction trampoline for the given target
+  // signature. Returns an indirect-function-table slot whose
+  // trampoline reads libffi's avalue[] pointer array, dispatches
+  // via call_indirect at the target, and stores the result at
+  // *rvalue. The trampoline's wasm signature is fixed
+  // `(fn_idx, rvalue, avalue) -> ()` — main.wasm's
+  // `__wasi_libffi_dispatch` wasm-asm helper does the call_indirect
+  // through the returned slot. Trampolines are cached per sig; the
+  // same descriptor returns the same slot.
+  prep-trampoline: func(sig: list<u8>) -> result<u32, libffi-error>;
+
+  // Build a closure trampoline at a pre-allocated table slot. The
+  // trampoline has the target's wasm signature (so C callers can
+  // call_indirect via the slot with the natural calling convention);
+  // its body reads cif / fun / user_data from the closure struct
+  // and invokes `closure->fun(cif, rvalue, avalue, user_data)`.
+  //
+  // The Rust libffi shim does __grow_table(1) itself to get the
+  // slot (so it can store it in closure->ftramp before we wire the
+  // trampoline body). closure-ptr is the closure struct address;
+  // its layout is the upstream-libffi convention:
+  //
+  //   offset 0..4   ftramp  (slot, set by the shim)
+  //   offset 4..8   cif*
+  //   offset 8..12  fun*    (table index of the user callback)
+  //   offset 12..16 user_data
+  //
+  // Each prep-closure call generates a fresh wasm module — closure
+  // trampolines are not cached because the closure pointer is baked
+  // into the trampoline body and each closure has a distinct one.
+  prep-closure: func(closure-ptr: u32, slot: u32, sig: list<u8>) -> result<_, libffi-error>;
+}
+
+/// `libffi-gen` is the synthetic world wacogo-witgen generates the
+/// libffi capability bindings from. It imports just the libffi
+/// interface so the produced binding tree is scoped and doesn't
+/// drag in unrelated host types.
+world libffi-gen {
+  import libffi;
+}

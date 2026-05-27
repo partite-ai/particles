@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"strings"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -26,16 +27,15 @@ type soInfo struct {
 	// reserve at env.__memory_base; memoryAlignLog2 is power-of-two
 	// alignment (the spec encodes alignment as log2). Same for the
 	// table.
-	memorySize        uint32
-	memoryAlignLog2   uint32
-	tableSize         uint32
-	tableAlignLog2    uint32
+	memorySize      uint32
+	memoryAlignLog2 uint32
+	tableSize       uint32
+	tableAlignLog2  uint32
 
 	// dylink.0 NEEDED — transitive shared-library deps the .so
 	// expects the loader to load first. Surfaced for diagnostics;
 	// the spike doesn't actually do nested loads.
 	needed []string
-
 
 	// Function imports the .so wants from "env". Each entry's typeIdx
 	// is an index into types — the .so's own type-section indices,
@@ -45,17 +45,28 @@ type soInfo struct {
 
 	// Whether the .so imports memory / table / each known global.
 	// All wasm-dl .so's import these, but we double-check.
-	importsMemory      bool
-	importsTable       bool
-	importsStackPtr    bool
-	importsMemoryBase  bool
-	importsTableBase   bool
+	importsMemory     bool
+	importsTable      bool
+	importsStackPtr   bool
+	importsMemoryBase bool
+	importsTableBase  bool
 
 	// gotFuncImports / gotMemImports: per-symbol GOT entries
 	// (mutable i32 globals) the .so requests. wasm-ld --shared emits
 	// these when the .so takes the address of a symbol from main.
 	gotFuncImports []string
 	gotMemImports  []string
+
+	// wasiImports: per-method core imports the .so makes from
+	// wasi:*@X.Y.Z module names. wasm32-wasip2 Rust cdylibs emit
+	// these directly via libstd's wasi-pal (one core import per
+	// canonical-abi-lowered wasi method). The dyld loader satisfies
+	// them by synthesizing per-interface shim modules that bridge
+	// `(wasi:io/poll@0.2.0, [method]pollable.block)` to captured's
+	// `wasi-lowered:wasi:io/poll#[method]pollable.block` (the
+	// pre-lowered functions inject-capture emits at runtime-build
+	// time).
+	wasiImports []wasiImport
 
 	// ownFuncCount is the number of locally-defined functions in the
 	// .so. Used to size the table grow.
@@ -87,6 +98,27 @@ type soInfo struct {
 	// unless the build explicitly --export=<data-symbol>'d them.
 	dataExportNames []string
 
+	// dataExportOffsets maps each exported data symbol to its
+	// link-time offset relative to env.__memory_base. wasm-ld
+	// --shared emits each data export as a global with init expr
+	// `(i32.const offset)` — the loader is supposed to add
+	// memoryBase itself to produce the absolute address. We parse
+	// these statically so self-GOT.mem references can be wired
+	// pre-instantiation (no mutable-globals patching needed).
+	dataExportOffsets map[string]int32
+
+	// importedGlobals is the count of imported globals — needed to
+	// translate export-section global indices into own-global
+	// indices for offset lookup.
+	importedGlobals uint32
+
+	// ownGlobalInitConsts[i] is the i32.const value used as the init
+	// expr for the i-th locally-defined global, when that init expr
+	// is exactly a single i32.const (the wasm-ld --shared data-
+	// export pattern). Non-const init exprs leave the slot at 0;
+	// they aren't relevant for the self-GOT.mem resolution path.
+	ownGlobalInitConsts []int32
+
 	// types is the .so's type section in raw param/result bytes.
 	// We re-intern the function-import shapes in the env module
 	// by referencing back into here.
@@ -98,6 +130,19 @@ type soInfo struct {
 type funcImport struct {
 	name    string
 	typeIdx uint32 // index into soInfo.types
+}
+
+// wasiImport is one core wasm import line from the .so addressing a
+// wasi:*@X.Y.Z module. moduleName carries the version verbatim (it's
+// the .so's expectation; the dyld shim handles the version mismatch
+// with the captured module's version-agnostic `wasi-lowered:`
+// exports). methodName is the import's inner name. typeIdx is the
+// .so's own type-section index for the import's signature — the shim
+// module reuses the same shape.
+type wasiImport struct {
+	moduleName string
+	methodName string
+	typeIdx    uint32
 }
 
 // parseSO consumes a wasm .so binary and extracts everything the
@@ -146,6 +191,10 @@ func parseSO(wasmBytes []byte) (*soInfo, error) {
 		case 3: // function section — for own-function count
 			if err := info.parseFunctionSection(sr); err != nil {
 				return nil, fmt.Errorf("parseSO: function section: %w", err)
+			}
+		case secGlobal:
+			if err := info.parseGlobalSection(sr); err != nil {
+				return nil, fmt.Errorf("parseSO: global section: %w", err)
 			}
 		case secExport:
 			if err := info.parseExportSection(sr); err != nil {
@@ -289,10 +338,17 @@ func (info *soInfo) parseImportSection(r *bytes.Reader) error {
 			if err != nil {
 				return err
 			}
-			if modName == "env" {
+			switch {
+			case modName == "env":
 				info.funcImports = append(info.funcImports, funcImport{
 					name:    name,
 					typeIdx: uint32(typeIdx),
+				})
+			case strings.HasPrefix(modName, "wasi:"):
+				info.wasiImports = append(info.wasiImports, wasiImport{
+					moduleName: modName,
+					methodName: name,
+					typeIdx:    uint32(typeIdx),
 				})
 			}
 			importedFuncs++
@@ -326,6 +382,11 @@ func (info *soInfo) parseImportSection(r *bytes.Reader) error {
 			}
 			_ = valType
 			_ = mutByte
+			// Track imported-global count so the export section's
+			// global indices can be translated into the
+			// ownGlobalInitConsts space when we look up data-export
+			// offsets later.
+			info.importedGlobals++
 			switch modName {
 			case "env":
 				switch name {
@@ -378,6 +439,152 @@ func (info *soInfo) parseFunctionSection(r *bytes.Reader) error {
 	return nil
 }
 
+// parseGlobalSection records the i32.const value of every locally-
+// defined global whose init expression is exactly a single i32.const.
+// That's the wasm-ld --shared pattern for data-export offsets: the
+// global holds the link-time offset relative to env.__memory_base,
+// and consumers (us, plus the .so's own __wasm_apply_data_relocs)
+// add memory_base themselves to get the absolute address.
+//
+// Globals with more complex init exprs (e.g. global.get $memory_base
+// + i32.const N + i32.add) are not data-export offsets; they leave
+// the slot at 0 and we ignore them.
+//
+// Notes on encoding (binary wasm 2.0):
+//   - Each global is `valtype mut <init expr>`.
+//   - Init exprs are a sequence of instructions terminated by 0x0B
+//     (`end`). The single-instruction `i32.const N end` form is 3 to
+//     7 bytes: 0x41 + sleb128(N) + 0x0B.
+func (info *soInfo) parseGlobalSection(r *bytes.Reader) error {
+	n, err := readULEB128(r)
+	if err != nil {
+		return err
+	}
+	info.ownGlobalInitConsts = make([]int32, n)
+	for i := uint64(0); i < n; i++ {
+		valType, err := r.ReadByte()
+		if err != nil {
+			return err
+		}
+		_, err = r.ReadByte() // mut byte
+		if err != nil {
+			return err
+		}
+		// Try to recognize the bare `i32.const N end` init expr.
+		first, err := r.ReadByte()
+		if err != nil {
+			return err
+		}
+		switch {
+		case valType == valI32 && first == opI32Const:
+			val, err := readSLEB128(r)
+			if err != nil {
+				return err
+			}
+			end, err := r.ReadByte()
+			if err != nil {
+				return err
+			}
+			if end != opEnd {
+				return fmt.Errorf("global[%d]: i32.const init expr without trailing end (got 0x%02x)", i, end)
+			}
+			info.ownGlobalInitConsts[i] = int32(val)
+		default:
+			// Some other init shape (global.get + arithmetic, f32/i64
+			// const, ref.null, ...). Not a data-export offset
+			// pattern; skip past it by scanning to `end`. wasm
+			// constant expressions don't contain nested ends, so a
+			// flat scan suffices.
+			if err := skipUntilEnd(r, first); err != nil {
+				return fmt.Errorf("global[%d]: %w", i, err)
+			}
+		}
+	}
+	return nil
+}
+
+// skipUntilEnd advances r past the rest of a constant init
+// expression whose first byte has already been read. Constant exprs
+// are flat (no blocks) so a byte-level scan for opEnd is correct.
+//
+// We can't cleanly disambiguate every opcode's operand length without
+// a full instruction table, but the constant-expression vocabulary
+// is tiny: i32/i64.const (sleb128 operand), f32/f64.const (4/8
+// bytes), global.get (uleb128), ref.null (1 byte), ref.func (uleb128),
+// and the binary ops (no operands). Handle the leb128-shaped ones
+// inline and treat unrecognized bytes as zero-operand (best effort —
+// non-matching modules just produce garbage offsets that the load
+// path catches downstream).
+func skipUntilEnd(r *bytes.Reader, first byte) error {
+	b := first
+	for {
+		switch b {
+		case opEnd:
+			return nil
+		case opI32Const:
+			if _, err := readSLEB128(r); err != nil {
+				return err
+			}
+		case 0x42: // i64.const
+			if _, err := readSLEB128(r); err != nil {
+				return err
+			}
+		case 0x43: // f32.const
+			if _, err := r.Seek(4, 1); err != nil {
+				return err
+			}
+		case 0x44: // f64.const
+			if _, err := r.Seek(8, 1); err != nil {
+				return err
+			}
+		case 0x23: // global.get
+			if _, err := readULEB128(r); err != nil {
+				return err
+			}
+		case 0xD0: // ref.null (followed by ref type byte)
+			if _, err := r.ReadByte(); err != nil {
+				return err
+			}
+		case 0xD2: // ref.func
+			if _, err := readULEB128(r); err != nil {
+				return err
+			}
+		default:
+			// Treat as zero-operand (i32.add etc.); skip nothing.
+		}
+		nb, err := r.ReadByte()
+		if err != nil {
+			return err
+		}
+		b = nb
+	}
+}
+
+// readSLEB128 mirrors writeSLEB128 in wasm.go — sign-aware variable-
+// length decode for i32.const / i64.const init-expr operands.
+func readSLEB128(r *bytes.Reader) (int64, error) {
+	var result int64
+	var shift uint
+	for {
+		b, err := r.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		result |= int64(b&0x7F) << shift
+		shift += 7
+		if b&0x80 == 0 {
+			// Sign-extend if needed.
+			if shift < 64 && (b&0x40) != 0 {
+				result |= -1 << shift
+			}
+			return result, nil
+		}
+		if shift >= 64 {
+			return 0, fmt.Errorf("SLEB128 too long")
+		}
+	}
+}
+
 func (info *soInfo) parseExportSection(r *bytes.Reader) error {
 	n, err := readULEB128(r)
 	if err != nil {
@@ -398,6 +605,20 @@ func (info *soInfo) parseExportSection(r *bytes.Reader) error {
 		}
 		if kind == exportKindGlobal {
 			info.dataExportNames = append(info.dataExportNames, name)
+			// Translate the export's global index (which addresses
+			// both imported and own globals as one space) into the
+			// own-global slot — that's where ownGlobalInitConsts
+			// holds the i32.const offset.
+			absIdx := uint32(idx)
+			if absIdx >= info.importedGlobals {
+				ownIdx := absIdx - info.importedGlobals
+				if int(ownIdx) < len(info.ownGlobalInitConsts) {
+					if info.dataExportOffsets == nil {
+						info.dataExportOffsets = make(map[string]int32)
+					}
+					info.dataExportOffsets[name] = info.ownGlobalInitConsts[ownIdx]
+				}
+			}
 			continue
 		}
 		if kind != exportKindFunc {
@@ -650,31 +871,42 @@ func (a *Adapter) buildEnvModule(info *soInfo, envFuncSources []string, memoryBa
 }
 
 // buildGotFuncShim synthesizes the module that satisfies the .so's
-// GOT.func.X imports. Each X is resolved against (a) the loader's
-// registry of already-loaded libraries and (b) main's exports.
+// GOT.func.X imports. Each X is resolved against, in order:
 //
-// Symbols resolved against the registry already have a table slot
-// (placed there by the source library's post-load shim) — we just
-// emit an i32-const global with that slot's index, no fresh import
-// or elem placement required.
+//  1. The .so being loaded itself — wasm-ld emits GOT.func for any
+//     address-taken function, including ones the .so defines locally
+//     (so a self-referential function-pointer table works). These
+//     resolve to the post-load shim's planned table slot:
+//     shimBase + position of X in exportOrder. No fresh table slot
+//     required; the post-load shim handles placement.
+//  2. The loader's registry of already-loaded libraries. Each lib
+//     records the absolute table index of its exports, so the lookup
+//     returns a known slot — no fresh import or elem placement here.
+//  3. main's exports. Need (a) a func import (signature pulled from
+//     main.ExportedFunction(sym)) and (b) an active elem segment
+//     placing the imported func at table[gotFuncBase + i].
 //
-// Symbols resolved against main need (1) a func import (signature
-// pulled from main.ExportedFunction(sym)) and (2) an active elem
-// segment placing the imported func at table[gotFuncBase + i].
-//
-// `a` is the adapter — locked by the caller, so resolveFunc can
-// read the registry safely.
-func (a *Adapter) buildGotFuncShim(info *soInfo, main api.Module, gotFuncBase int32) ([]byte, error) {
+// shimBase / exportOrder are passed in so case (1) can compute the
+// future table index for symbols the .so defines itself.
+func (a *Adapter) buildGotFuncShim(info *soInfo, main api.Module, gotFuncBase, shimBase int32, exportOrder []string) ([]byte, error) {
 	spec := &envModuleSpec{}
 
+	// O(1) lookup for "is this symbol one of our own exports, and at
+	// what offset within the post-load shim's table region?"
+	selfOffset := make(map[string]int32, len(exportOrder))
+	for i, n := range exportOrder {
+		selfOffset[n] = int32(i)
+	}
+
 	// Decide per-target whether the symbol comes from main (needs
-	// elem placement here) or a loaded library (just record the
-	// index). Allocate fresh slots in [gotFuncBase, gotFuncBase+G)
+	// elem placement here), a loaded library (just record the
+	// index), or this same .so (use the post-load shim's table
+	// position). Allocate fresh slots in [gotFuncBase, gotFuncBase+G)
 	// only for main-sourced symbols.
 	type gotResolution struct {
-		fromMain     bool
-		tableIdx     uint32 // populated when fromMain=false
-		mainFuncIdx  uint32 // populated when fromMain=true; index into func index space of this shim
+		fromMain    bool
+		tableIdx    uint32 // populated when fromMain=false
+		mainFuncIdx uint32 // populated when fromMain=true; index into func index space of this shim
 	}
 	resolutions := make([]gotResolution, len(info.gotFuncImports))
 
@@ -682,6 +914,9 @@ func (a *Adapter) buildGotFuncShim(info *soInfo, main api.Module, gotFuncBase in
 	// placement) and the per-target funcs that come from main.
 	var needTable bool
 	for _, sym := range info.gotFuncImports {
+		if _, self := selfOffset[sym]; self {
+			continue
+		}
 		_, foundInLib, mainHas := a.resolveFunc(sym, main)
 		if !foundInLib && mainHas {
 			needTable = true
@@ -700,6 +935,13 @@ func (a *Adapter) buildGotFuncShim(info *soInfo, main api.Module, gotFuncBase in
 
 	mainFuncImportCount := uint32(0)
 	for i, sym := range info.gotFuncImports {
+		if off, self := selfOffset[sym]; self {
+			resolutions[i] = gotResolution{
+				fromMain: false,
+				tableIdx: uint32(shimBase + off),
+			}
+			continue
+		}
 		idx, foundInLib, mainHas := a.resolveFunc(sym, main)
 		switch {
 		case foundInLib:
@@ -723,7 +965,7 @@ func (a *Adapter) buildGotFuncShim(info *soInfo, main api.Module, gotFuncBase in
 				typeIdx: spec.internType(ft),
 			})
 		default:
-			return nil, fmt.Errorf("GOT.func.%s: not resolved by main or any loaded library", sym)
+			return nil, fmt.Errorf("GOT.func.%s: not resolved by self exports, main, or any loaded library", sym)
 		}
 	}
 
@@ -876,6 +1118,96 @@ func buildPostLoadShim(info *soInfo, exportOrder []string, shimBase int32) ([]by
 	return spec.encode()
 }
 
+// buildWasiShims synthesizes one core module per unique wasi:*@X.Y.Z
+// module name in info.wasiImports. Each shim imports each method from
+// "main" under name `wasi-lowered:<module-stripped-of-version>#<method>`
+// (the names inject-capture's wasi-lowering pass exposed on the
+// captured module) and exports them under the .so's expected bare
+// method name.
+//
+// Returns a map from .so import-module-name → shim instance, ready to
+// plug into the .so's ImportResolver.
+//
+// Empty result for a .so that doesn't import any wasi:* function — the
+// common case for non-Rust-libstd code.
+func (a *Adapter) buildWasiShims(ctx context.Context, info *soInfo, main api.Module) (map[string]api.Module, error) {
+	if len(info.wasiImports) == 0 {
+		return nil, nil
+	}
+
+	// Group imports by their .so import-module-name.
+	byModule := make(map[string][]wasiImport)
+	for _, wi := range info.wasiImports {
+		byModule[wi.moduleName] = append(byModule[wi.moduleName], wi)
+	}
+
+	out := make(map[string]api.Module, len(byModule))
+	for moduleName, methods := range byModule {
+		shimBytes, err := buildWasiShim(info, moduleName, methods)
+		if err != nil {
+			return nil, fmt.Errorf("build wasi shim for %s: %w", moduleName, err)
+		}
+		shimMod, err := a.runtime.CompileModule(ctx, shimBytes)
+		if err != nil {
+			return nil, fmt.Errorf("compile wasi shim for %s: %w", moduleName, err)
+		}
+		shimCtx := experimental.WithImportResolver(ctx, func(mn string) api.Module {
+			if mn == "main" {
+				return main
+			}
+			return nil
+		})
+		shimInst, err := a.runtime.InstantiateModule(shimCtx, shimMod, wazero.NewModuleConfig().
+			WithName("").WithStartFunctions())
+		if err != nil {
+			return nil, fmt.Errorf("instantiate wasi shim for %s: %w", moduleName, err)
+		}
+		out[moduleName] = shimInst
+	}
+	return out, nil
+}
+
+// buildWasiShim synthesizes the wasm bytes of a single per-interface
+// shim module. The shim imports each method from `main` under the
+// `wasi-lowered:<short_module>#<method>` name and re-exports under the
+// bare method name with the same signature (taken verbatim from the
+// .so's own type section).
+//
+// `moduleName` is the .so's import-module string (e.g. `wasi:io/poll@0.2.0`).
+// We strip the `@X.Y.Z` suffix to derive the `wasi-lowered:` prefix —
+// the captured module's exports are version-agnostic.
+func buildWasiShim(info *soInfo, moduleName string, methods []wasiImport) ([]byte, error) {
+	shortName := moduleName
+	if i := strings.LastIndex(shortName, "@"); i >= 0 {
+		shortName = shortName[:i]
+	}
+
+	spec := &envModuleSpec{}
+	// One func import per method, sourced from "main" under the
+	// lowered prefixed name. Each gets a re-export under the bare
+	// method name.
+	for i, m := range methods {
+		if int(m.typeIdx) >= len(info.types) {
+			return nil, fmt.Errorf("method %s: typeIdx %d out of range", m.methodName, m.typeIdx)
+		}
+		ft := info.types[m.typeIdx]
+		envTyIdx := spec.internType(ft)
+		importName := fmt.Sprintf("wasi-lowered:%s#%s", shortName, m.methodName)
+		spec.imports = append(spec.imports, envImport{
+			module:  "main",
+			name:    importName,
+			kind:    importKindFunc,
+			typeIdx: envTyIdx,
+		})
+		spec.exports = append(spec.exports, envExport{
+			name: m.methodName,
+			kind: exportKindFunc,
+			idx:  uint32(i),
+		})
+	}
+	return spec.encode()
+}
+
 // load is the body of dyld.load. Walks the registry first (re-dlopen
 // returns a fresh handle on the same library, bumping refcount), then
 // NEEDED dependencies (each adds one refcount edge so cascading
@@ -911,7 +1243,14 @@ func (a *Adapter) load(ctx context.Context, main api.Module, name string) (*libr
 	a.loading[name] = true
 	defer delete(a.loading, name)
 
-	soBytes, err := fs.ReadFile(a.cfg.FS, name)
+	// CPython's import machinery passes absolute paths
+	// (`/particle/_deps/.../*.abi3.so`) into dlopen. Go's `fs.FS`
+	// contract rejects any leading slash — paths must be relative
+	// roots. Strip the leading slash so the lookup matches the
+	// bundleFS layout. Relative names (`libfoo.so` passed by a guest
+	// that hand-rolled the dlopen call) pass through unchanged.
+	fsPath := strings.TrimPrefix(name, "/")
+	soBytes, err := fs.ReadFile(a.cfg.FS, fsPath)
 	if err != nil {
 		return nil, fmt.Errorf("read .so %q: %w", name, err)
 	}
@@ -1065,7 +1404,7 @@ func (a *Adapter) load(ctx context.Context, main api.Module, name string) (*libr
 	// names (`GOT.func`, `GOT.mem`).
 	var gotFuncInst api.Module
 	if len(info.gotFuncImports) > 0 {
-		gotFuncBytes, err := a.buildGotFuncShim(info, main, gotFuncBase)
+		gotFuncBytes, err := a.buildGotFuncShim(info, main, gotFuncBase, shimBase, exportOrder)
 		if err != nil {
 			return nil, fmt.Errorf("build GOT.func shim: %w", err)
 		}
@@ -1083,17 +1422,29 @@ func (a *Adapter) load(ctx context.Context, main api.Module, name string) (*libr
 
 	var gotMemInst api.Module
 	if len(info.gotMemImports) > 0 {
-		// Resolve each GOT.mem.X by consulting the loader's registry
-		// first, then main's exported data-symbol globals. wasm-ld
-		// with --export-dynamic emits the latter for data symbols;
-		// a missing entry surfaces explicitly so the user knows
-		// whether to add --export=X to main or to register a
+		// Resolve each GOT.mem.X by consulting, in order:
+		//   1. This .so's own data exports — wasm-ld --shared emits
+		//      each as a global with `(i32.const offset)` init expr,
+		//      relative to env.__memory_base. parseGlobalSection +
+		//      parseExportSection capture those offsets into
+		//      info.dataExportOffsets. Absolute address is
+		//      memoryBase + offset.
+		//   2. The loader's registry of already-loaded libraries.
+		//   3. main's exported data-symbol globals. wasm-ld
+		//      --export-dynamic emits these for data symbols.
+		//
+		// A missing entry surfaces explicitly so the user knows
+		// whether to add --export=X to main or register a
 		// pre-loaded library that defines X.
 		addresses := make([]int32, len(info.gotMemImports))
 		for i, sym := range info.gotMemImports {
+			if off, self := info.dataExportOffsets[sym]; self {
+				addresses[i] = memoryBase + off
+				continue
+			}
 			addr, ok := a.resolveData(sym, main)
 			if !ok {
-				return nil, fmt.Errorf("GOT.mem.%s: not resolved by main or any loaded library", sym)
+				return nil, fmt.Errorf("GOT.mem.%s: not resolved by self exports, main, or any loaded library", sym)
 			}
 			addresses[i] = int32(addr)
 		}
@@ -1112,8 +1463,22 @@ func (a *Adapter) load(ctx context.Context, main api.Module, name string) (*libr
 		}
 	}
 
-	// Compile + instantiate the .so. Its "env" import resolves to
-	// envInst; "GOT.func" → gotFuncInst; "GOT.mem" → gotMemInst.
+	// Per-wasi-interface shim modules. The .so imports each wasi:*
+	// method at the core level with a module name like
+	// `wasi:io/poll@0.2.0`; we satisfy each by building a tiny shim
+	// core module per unique wasi: module name. The shim imports the
+	// matching `wasi-lowered:<module-stripped-of-version>#<method>`
+	// from `main` (the captured module, which inject-capture stocked
+	// at runtime-build time) and re-exports it under the bare method
+	// name the .so expects.
+	wasiShimInsts, err := a.buildWasiShims(ctx, info, main)
+	if err != nil {
+		return nil, fmt.Errorf("build wasi shims: %w", err)
+	}
+
+	// Compile + instantiate the .so. "env" → envInst; "GOT.func" →
+	// gotFuncInst; "GOT.mem" → gotMemInst; "wasi:*@*" → matching
+	// per-interface shim from wasiShimInsts.
 	soMod, err := a.runtime.CompileModule(ctx, soBytes)
 	if err != nil {
 		return nil, fmt.Errorf("compile .so: %w", err)
@@ -1126,6 +1491,9 @@ func (a *Adapter) load(ctx context.Context, main api.Module, name string) (*libr
 			return gotFuncInst
 		case "GOT.mem":
 			return gotMemInst
+		}
+		if shim, ok := wasiShimInsts[mn]; ok {
+			return shim
 		}
 		return nil
 	})

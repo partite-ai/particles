@@ -30,6 +30,7 @@
 //! `choose_version` — surfaces a clear error rather than the cryptic
 //! pubgrub "no solution" message.
 
+use crate::particle_index;
 use crate::pypi::{self, PyPiFile, ReleaseIndex, VersionInfo};
 use crate::wheel_tag;
 use crate::Error;
@@ -49,8 +50,10 @@ use std::str::FromStr;
 use crate::exports::particle::build::pip_installer::ResolvedWheel;
 
 /// One node in the resolution graph after pubgrub picks a solution.
-/// We keep the file we'll fetch attached so the post-resolution fetch
-/// phase doesn't need a second PyPI lookup.
+/// `file` carries the URL + digest fetch_all needs. Host-vouched
+/// files (from the particle index) are flagged via
+/// `file.host_vouched` so fetch_all can use the file's own sha256
+/// verbatim (`sha256:<hex>`) instead of recomputing.
 #[derive(Debug)]
 pub struct Resolved {
     pub name: String,
@@ -86,8 +89,14 @@ fn root_version() -> Version {
 // Cache
 // -----------------------------------------------------------------------------
 
-/// Per-call PyPI metadata cache. Lives behind a RefCell because the
-/// pubgrub trait methods take `&self`.
+/// Per-package fetched metadata. Holds PyPI's release index and,
+/// for packages also present in the particle wheels index, the
+/// files we fetched from there (keyed by version). Particle-index
+/// versions can refer to versions that exist on PyPI (we add to
+/// PyPI's release files for that version, marking them
+/// `host_vouched`) or to versions that PyPI doesn't ship — in the
+/// latter case we synthesize a release entry so pubgrub treats them
+/// as choosable.
 #[derive(Default)]
 struct Cache {
     release_indices: BTreeMap<String, ReleaseIndex>,
@@ -98,18 +107,40 @@ struct Cache {
 // Resolution
 // -----------------------------------------------------------------------------
 
+/// Fetch PyPI's release index for `name` AND consult the particle
+/// wheels index, merging any particle-index files into the result.
+/// Particle index entries are marked `host_vouched = true` so
+/// `choose_version` accepts them without the pure-Python wheel
+/// filter. Versions present in the particle index but not on PyPI
+/// get synthesized release entries so pubgrub can choose them.
+async fn fetch_combined_release_index(name: &str) -> Result<ReleaseIndex, Error> {
+    let mut pypi_idx = pypi::fetch_release_index(name).await?;
+    if let Some(particle_idx) = particle_index::fetch_release_index(name).await? {
+        for (version, particle_files) in particle_idx.releases {
+            pypi_idx
+                .releases
+                .entry(version)
+                .or_default()
+                .extend(particle_files);
+        }
+    }
+    Ok(pypi_idx)
+}
+
 /// Resolve `top_level` reqs to a flat list of pinned (name, version,
-/// file). Drives pubgrub through the cache+retry loop described in the
-/// module docstring.
+/// file). Drives pubgrub through the cache+retry loop described in
+/// the module docstring. For each package we consult, the cache
+/// holds the merged PyPI + particle-wheels-index release set; the
+/// resolver prefers particle-index files (host-vouched) over
+/// PyPI's pure-Python wheels for the same version.
 pub async fn resolve(top_level: &[Requirement]) -> Result<Vec<Resolved>, Error> {
     let cache = RefCell::new(Cache::default());
 
-    // Pre-fetch release indices for every top-level package so
-    // pubgrub's first pass has something to chew on.
+    // Pre-fetch release indices for every top-level package.
     for req in top_level {
         let name = pypi::normalize_for_url(req.name.as_ref());
         if !cache.borrow().release_indices.contains_key(&name) {
-            let idx = pypi::fetch_release_index(&name).await?;
+            let idx = fetch_combined_release_index(&name).await?;
             cache.borrow_mut().release_indices.insert(name, idx);
         }
     }
@@ -128,7 +159,7 @@ pub async fn resolve(top_level: &[Requirement]) -> Result<Vec<Resolved>, Error> 
             Err(pubgrub::PubGrubError::ErrorRetrievingDependencies { source, .. }) => {
                 match source {
                     ProviderError::NeedReleaseIndex(name) => {
-                        let idx = pypi::fetch_release_index(&name).await?;
+                        let idx = fetch_combined_release_index(&name).await?;
                         cache.borrow_mut().release_indices.insert(name, idx);
                     }
                     ProviderError::NeedVersionInfo(name, version) => {
@@ -144,7 +175,7 @@ pub async fn resolve(top_level: &[Requirement]) -> Result<Vec<Resolved>, Error> 
             Err(pubgrub::PubGrubError::ErrorChoosingVersion { source, .. }) => {
                 match source {
                     ProviderError::NeedReleaseIndex(name) => {
-                        let idx = pypi::fetch_release_index(&name).await?;
+                        let idx = fetch_combined_release_index(&name).await?;
                         cache.borrow_mut().release_indices.insert(name, idx);
                     }
                     ProviderError::NeedVersionInfo(name, version) => {
@@ -179,14 +210,12 @@ pub async fn resolve(top_level: &[Requirement]) -> Result<Vec<Resolved>, Error> 
             Package::Root => continue,
             Package::Named(n) => n.clone(),
         };
-        // The provider already vetted that this (name, version) has a
-        // pure-Python wheel — grab it again from the cache.
         let idx = cache_ref
             .release_indices
             .get(&name)
             .expect("cache hit guaranteed: provider populated this entry");
-        let file = pick_pure_wheel(idx, version)
-            .expect("provider only chose versions with a pure-Python wheel");
+        let file = pick_usable_wheel(idx, version)
+            .expect("provider only chose versions with a usable wheel");
         out.push(Resolved {
             name,
             version: version.to_string(),
@@ -280,11 +309,12 @@ impl<'a> DependencyProvider for CachedProvider<'a> {
                     .collect();
                 candidates.sort_by(|a, b| b.cmp(a));
 
-                // First pass: any version that's both in range AND
-                // ships a pure-Python wheel. This is what pubgrub
-                // normally wants.
+                // First pass: pick any version in range that has a
+                // usable wheel — either a particle-index file
+                // (host-vouched, any tag triple) or PyPI's
+                // pure-Python (`*-none-any.whl`).
                 for v in &candidates {
-                    if range.contains(v) && pick_pure_wheel(idx, v).is_some() {
+                    if range.contains(v) && pick_usable_wheel(idx, v).is_some() {
                         return Ok(Some(v.clone()));
                     }
                 }
@@ -303,12 +333,13 @@ impl<'a> DependencyProvider for CachedProvider<'a> {
                 //       NoPurePythonWheel. Pubgrub would otherwise
                 //       report a cryptic "no solution," which sends
                 //       the author hunting for the wrong fix.
-                let any_pure = candidates.iter().any(|v| pick_pure_wheel(idx, v).is_some());
-                if !any_pure {
+                let any_usable = candidates.iter().any(|v| pick_usable_wheel(idx, v).is_some());
+                if !any_usable {
                     return Err(ProviderError::Fatal(Error::NoPurePythonWheel(format!(
-                        "{name}: every published wheel carries a compiled-ABI \
-                         or platform tag; Python particles can use pure-Python \
-                         wheels only"
+                        "{name}: no usable wheel — every published \
+                         version carries a compiled-ABI or platform tag \
+                         on PyPI and the particle wheels index doesn't \
+                         ship a cross-build for this package"
                     ))));
                 }
                 Ok(None)
@@ -348,40 +379,9 @@ impl<'a> DependencyProvider for CachedProvider<'a> {
                         ))
                     }
                 };
-
-                let mut deps: DependencyConstraints<Package, Range<Version>> =
-                    DependencyConstraints::default();
-                if let Some(rds) = &info.info.requires_dist {
-                    for rd in rds {
-                        let child = match Requirement::from_str(rd) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                return Err(ProviderError::Fatal(Error::ResolutionError(format!(
-                                    "{name}@{version}: requires_dist entry {rd:?}: {e}"
-                                ))));
-                            }
-                        };
-                        if should_skip_marker(&child) {
-                            continue;
-                        }
-                        let child_name = pypi::normalize_for_url(child.name.as_ref());
-                        let r = requirement_to_range(&child);
-                        // If the same dep appears more than once
-                        // (multiple environment-marker entries that
-                        // both apply), intersect the constraints.
-                        let key = Package::Named(child_name);
-                        match deps.get(&key) {
-                            Some(prev) => {
-                                let merged = prev.intersection(&r);
-                                deps.insert(key, merged);
-                            }
-                            None => {
-                                deps.insert(key, r);
-                            }
-                        }
-                    }
-                }
-                Ok(Dependencies::Available(deps))
+                let empty = Vec::new();
+                let rds = info.info.requires_dist.as_ref().unwrap_or(&empty);
+                Ok(Dependencies::Available(parse_requires_dist(name, version, rds)?))
             }
         }
     }
@@ -421,46 +421,115 @@ fn should_skip_marker(req: &Requirement) -> bool {
     }
 }
 
-/// Find a pure-Python wheel for a specific version, if one exists.
-/// Looks at the release index's files for the exact version key —
-/// PyPI normalizes version strings in the JSON, so we match against
-/// the version's `to_string()` form.
-fn pick_pure_wheel(idx: &ReleaseIndex, version: &Version) -> Option<PyPiFile> {
+/// Decode a Requires-Dist list (PEP 508 strings) into pubgrub
+/// `DependencyConstraints`. Same shape PyPI's `info.requires_dist`
+/// uses, so locals and PyPI-sourced versions share this code path.
+fn parse_requires_dist(
+    name: &str,
+    version: &Version,
+    rds: &[String],
+) -> Result<DependencyConstraints<Package, Range<Version>>, ProviderError> {
+    let mut deps: DependencyConstraints<Package, Range<Version>> =
+        DependencyConstraints::default();
+    for rd in rds {
+        let child = match Requirement::from_str(rd) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(ProviderError::Fatal(Error::ResolutionError(format!(
+                    "{name}@{version}: requires_dist entry {rd:?}: {e}"
+                ))));
+            }
+        };
+        if should_skip_marker(&child) {
+            continue;
+        }
+        let child_name = pypi::normalize_for_url(child.name.as_ref());
+        let r = requirement_to_range(&child);
+        let key = Package::Named(child_name);
+        // If the same dep appears more than once (multiple env-marker
+        // entries that both apply), intersect the constraints.
+        match deps.get(&key) {
+            Some(prev) => {
+                let merged = prev.intersection(&r);
+                deps.insert(key, merged);
+            }
+            None => {
+                deps.insert(key, r);
+            }
+        }
+    }
+    Ok(deps)
+}
+
+/// Find a usable wheel for a specific version. Two acceptance paths:
+///
+///   1. Host-vouched: any wheel from the particle wheels index. The
+///      tag triple isn't checked — the host certifies these were
+///      built for the right ABI (cryptography-48.0.0-cp314-abi3-any
+///      and similar).
+///   2. PyPI pure-Python: `<dist>-<version>-<pytag>-none-any.whl` on
+///      PyPI. Anything narrower (cp314-cp314-manylinux_2_28_x86_64,
+///      etc.) is rejected because the wasi-CPython we ship can't
+///      load native extensions.
+///
+/// Host-vouched files are preferred when both kinds are present for
+/// the same version, so a particle-index cross-build always wins
+/// over PyPI's pure-Python alternative (this matters for packages
+/// that ship both, e.g., when a future particle-index version
+/// supersedes a slower pure-Python implementation).
+fn pick_usable_wheel(idx: &ReleaseIndex, version: &Version) -> Option<PyPiFile> {
     let key = version.to_string();
     let files = idx.releases.get(&key)?;
     if files.iter().all(|f| f.yanked) {
         return None;
     }
+    // Pass 1: host-vouched.
+    if let Some(f) = files.iter().find(|f| {
+        f.packagetype == "bdist_wheel" && !f.yanked && f.host_vouched
+    }) {
+        return Some(f.clone());
+    }
+    // Pass 2: PyPI pure-Python.
     files
         .iter()
         .find(|f| {
             f.packagetype == "bdist_wheel"
                 && !f.yanked
+                && !f.host_vouched
                 && wheel_tag::is_pure_python_wheel(&f.filename)
         })
         .cloned()
 }
 
 // -----------------------------------------------------------------------------
-// Fetch phase (unchanged from greedy version — pubgrub picks; we fetch).
+// Fetch phase — pubgrub picked; we download. Host-vouched files
+// from the particle index and PyPI files share the same path:
+// follow the URL, verify the published sha256.
 // -----------------------------------------------------------------------------
 
 pub async fn fetch_all(items: &[Resolved]) -> Result<Vec<ResolvedWheel>, Error> {
     let mut out = Vec::with_capacity(items.len());
     for r in items {
-        let bytes = pypi::fetch_wheel_bytes(&r.file).await?;
+        let file = &r.file;
+        let bytes = pypi::fetch_wheel_bytes(file).await?;
         let actual = sha256_hex(&bytes);
-        if !actual.eq_ignore_ascii_case(&r.file.digests.sha256) {
+        // Particle-index entries may publish without a hash (older
+        // PEP 503 indexes didn't always carry one). When we have a
+        // published digest we verify; when we don't, we trust the
+        // bytes and stamp the computed hash.
+        if !file.digests.sha256.is_empty()
+            && !actual.eq_ignore_ascii_case(&file.digests.sha256)
+        {
             return Err(Error::IntegrityMismatch(format!(
                 "{}@{}: expected sha256={}, got {}",
-                r.name, r.version, r.file.digests.sha256, actual
+                r.name, r.version, file.digests.sha256, actual
             )));
         }
         out.push(ResolvedWheel {
             name: r.name.clone(),
             version: r.version.clone(),
             sha256: format!("sha256:{actual}"),
-            filename: r.file.filename.clone(),
+            filename: file.filename.clone(),
             wheel_bytes: bytes,
         });
     }

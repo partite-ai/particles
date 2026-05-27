@@ -30,7 +30,7 @@ import _runtime_host
 
 from . import credentials as _credentials
 
-__all__ = ["Response", "fetch"]
+__all__ = ["Response", "fetch", "async_fetch"]
 
 
 class Response:
@@ -101,6 +101,48 @@ def fetch(
     body_bytes = _normalize_body(body)
 
     out = _runtime_host._http_request(method.upper(), url, hdr_pairs, body_bytes)
+    return Response(
+        status=out["status"],
+        headers=out["headers"],
+        body=out["body"],
+    )
+
+
+async def async_fetch(
+    url: str,
+    *,
+    method: str = "GET",
+    headers: dict | None = None,
+    body: bytes | str | None = None,
+    credential_name: str | None = None,
+) -> Response:
+    """Asynchronous counterpart to `fetch`. Drives wasi:http through
+    `particle._wasi_async.WasiHttpFuture` so the in-flight request
+    yields to the asyncio event loop between submit and response —
+    other coroutines (including other `async_fetch` calls in an
+    `asyncio.gather`) can make progress in parallel.
+
+    Semantically equivalent to `fetch` in every other respect:
+    credential placeholders flow through the same wasi:http
+    boundary, headers / body are normalized identically, and the
+    returned `Response` is the same shape.
+    """
+    # Lazy import to keep the loop module off the cold path for
+    # particles that never touch async.
+    from ._wasi_async import WasiHttpFuture
+
+    if credential_name is not None:
+        info = _credentials.get_placeholder(credential_name)
+        url, headers = _apply_placeholder(
+            url, headers or {}, info.placeholder, info.apply,
+        )
+
+    hdr_pairs: list = []
+    for k, v in (headers or {}).items():
+        hdr_pairs.append((str(k), _encode_header(v)))
+    body_bytes = _normalize_body(body)
+
+    out = await WasiHttpFuture(method, url, hdr_pairs, body_bytes)
     return Response(
         status=out["status"],
         headers=out["headers"],

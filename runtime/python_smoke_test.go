@@ -17,9 +17,11 @@ import (
 	wccreds "github.com/partite-ai/particles/internal/host/gen/particle/host/credentials"
 	wcdyld "github.com/partite-ai/particles/internal/host/gen/particle/host/dyld"
 	wckv "github.com/partite-ai/particles/internal/host/gen/particle/host/kv"
+	wclibffi "github.com/partite-ai/particles/internal/host/gen/particle/host/libffi"
 	wcoauth "github.com/partite-ai/particles/internal/host/gen/particle/host/oauth"
 	wcsigning "github.com/partite-ai/particles/internal/host/gen/particle/host/signing"
 	"github.com/partite-ai/particles/internal/runtime/dyld"
+	"github.com/partite-ai/particles/internal/runtime/libffi"
 )
 
 // nullHostAdapters bundles no-op adapter impls for the four
@@ -264,6 +266,23 @@ particle = Particle(
 	}
 	defer signingInst.Close(ctx)
 
+	// libffi adapter — wired the same way components/python-runtime's
+	// runtime.go does for production particles. Smoke test doesn't
+	// exercise cffi, but the import must be live or instantiation
+	// fails (libffi-wasi-bridge is composed into the python-runtime
+	// wasm and unconditionally imports the host interface).
+	libffiAdapter := libffi.NewAdapter(engine.WazeroRuntime())
+	libffiFac, err := wclibffi.NewFactory(ctx, engine)
+	if err != nil {
+		t.Fatalf("libffi NewFactory: %v", err)
+	}
+	defer libffiFac.Close(ctx)
+	libffiInst, err := libffiFac.NewInstance(ctx, libffiAdapter, nil)
+	if err != nil {
+		t.Fatalf("libffi NewInstance: %v", err)
+	}
+	defer libffiInst.Close(ctx)
+
 	imports := append(
 		w.Imports(),
 		wacogo.WithInstanceImport(wcdyld.InterfaceName, dyldInst.Core()),
@@ -271,6 +290,7 @@ particle = Particle(
 		wacogo.WithInstanceImport(wckv.InterfaceName, kvInst.Core()),
 		wacogo.WithInstanceImport(wcoauth.InterfaceName, oauthInst.Core()),
 		wacogo.WithInstanceImport(wcsigning.InterfaceName, signingInst.Core()),
+		wacogo.WithInstanceImport(wclibffi.InterfaceName, libffiInst.Core()),
 	)
 	inst, err := comp.Instantiate(ctx, imports...)
 	if err != nil {

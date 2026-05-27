@@ -46,6 +46,14 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	}
 
 	// ---- Phase 2: resolve-and-fetch (only when deps declared) ---------
+	//
+	// pip-resolve checks PyPI for pure-Python wheels and the particle
+	// wheels index at
+	// https://partite-ai.github.io/particle-python-wheels/ for
+	// wasm-cross-compiled native wheels — packages whose published
+	// PyPI wheels are all platform-tagged (cryptography, cffi, …).
+	// All the policy lives inside the wasm component; the host just
+	// passes the declared dep list.
 	var wheels []wacogo.PipResolvedWheel
 	if py.HasBlock && len(py.Dependencies) > 0 {
 		pr, err := comps.PipResolveAndFetch(ctx, py.Dependencies, pythonRuntimeVersion)
@@ -53,7 +61,7 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 		if err != nil {
 			return nil, &Error{Phase: PhaseResolveAndFetch, Logs: logs, Cause: err}
 		}
-		wheels = pr.Wheels
+		wheels = append(wheels, pr.Wheels...)
 	}
 
 	// ---- Phase 3: typecheck (skipped) ---------------------------------

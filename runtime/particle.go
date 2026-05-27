@@ -19,8 +19,10 @@ import (
 
 	"github.com/partite-ai/particles/credentials"
 	wcdyld "github.com/partite-ai/particles/internal/host/gen/particle/host/dyld"
+	wclibffi "github.com/partite-ai/particles/internal/host/gen/particle/host/libffi"
 	"github.com/partite-ai/particles/internal/hostmeter"
 	"github.com/partite-ai/particles/internal/runtime/dyld"
+	"github.com/partite-ai/particles/internal/runtime/libffi"
 	"github.com/partite-ai/particles/kv"
 )
 
@@ -448,6 +450,24 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 		}
 		hostInsts = append(hostInsts, dyldInst)
 		imports = append(imports, wc.WithInstanceImport(wcdyld.InterfaceName, dyldInst.Core()))
+
+		// libffi adapter — cffi-built .so files (when dlopened by dyld)
+		// route ffi_call through this. The trampoline generator needs
+		// the same wazero runtime + the eventual main module reference
+		// (set lazily once the python-runtime component instantiates).
+		libffiAdapter := libffi.NewAdapter(r.cfg.Engine.WazeroRuntime())
+		libffiFac, err := r.libffiFactoryFor(ctx)
+		if err != nil {
+			closeAll()
+			return nil, fmt.Errorf("runtime: init libffi factory: %w", err)
+		}
+		libffiInst, err := libffiFac.NewInstance(ctx, libffiAdapter, nil)
+		if err != nil {
+			closeAll()
+			return nil, fmt.Errorf("runtime: build libffi host instance: %w", err)
+		}
+		hostInsts = append(hostInsts, libffiInst)
+		imports = append(imports, wc.WithInstanceImport(wclibffi.InterfaceName, libffiInst.Core()))
 	}
 
 	inst, err := comp.Instantiate(ctx, imports...)

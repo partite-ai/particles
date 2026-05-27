@@ -58,11 +58,23 @@ interface pip-installer {
   }
 
   /// Resolve `reqs` and fetch every wheel needed for the transitive
-  /// closure. `python-version` is informational for v1 (PyPI metadata
-  /// is queried independently of interpreter version); reserved for
+  /// closure. Wheel selection priority for each picked version:
+  ///   1. The particle wheels index — a PEP 503 simple repo at
+  ///      https://partite-ai.github.io/particle-python-wheels/ —
+  ///      ships wasm-cross-compiled builds of packages whose PyPI
+  ///      wheels are all platform-tagged (cryptography, cffi, …).
+  ///      Any wheel found there is accepted as host-vouched and
+  ///      bypasses the pure-Python wheel filter.
+  ///   2. PyPI's pure-Python (`*-none-any.whl`) wheel for that
+  ///      version, if one exists.
+  ///
+  /// `python-version` is informational for v1 (PyPI metadata is
+  /// queried independently of interpreter version); reserved for
   /// future environment-marker evaluation.
-  resolve-and-fetch: func(reqs: list<pip-request>, python-version: string)
-    -> result<list<resolved-wheel>, pip-error>;
+  resolve-and-fetch: func(
+    reqs: list<pip-request>,
+    python-version: string,
+  ) -> result<list<resolved-wheel>, pip-error>;
 }
 
 world component {
