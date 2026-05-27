@@ -89,9 +89,16 @@ func TestPipResolve_Live_Httpx_Transitives(t *testing.T) {
 	}
 }
 
-// Compiled-only package: pyyaml has never published a pure-Python
-// wheel. The resolver must surface no-pure-python-wheel rather than
-// silently picking a platform wheel that the runtime can't load.
+// Compiled-only package that the particle wheels index doesn't ship a
+// cross-build for: resolver must surface no-pure-python-wheel.
+//
+// Picking a stable witness for this is awkward — every "PyPI publishes
+// only compiled wheels" package is potentially also published in the
+// particle wheels index, which would make the test fail. lxml is the
+// long-standing choice: heavyweight C-extension package nobody has
+// asked us to cross-build, and unlikely to appear in the particle
+// index for the foreseeable future. If the particle index starts
+// publishing lxml, swap the witness here.
 func TestPipResolve_Live_RejectsCompiledOnly(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipped under -short (live PyPI access)")
@@ -104,7 +111,7 @@ func TestPipResolve_Live_RejectsCompiledOnly(t *testing.T) {
 	}
 	defer c.Close(ctx)
 
-	_, err = c.PipResolveAndFetch(ctx, []string{"pyyaml"}, "3.12")
+	_, err = c.PipResolveAndFetch(ctx, []string{"lxml"}, "3.12")
 	if err == nil {
 		t.Fatal("expected no-pure-python-wheel error, got nil")
 	}

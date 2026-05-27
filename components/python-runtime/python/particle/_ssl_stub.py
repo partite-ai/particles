@@ -31,9 +31,14 @@ class _StubAttr:
 
     Truthy (so `getattr(ssl, "X", None) or fallback()` keeps the
     first-hit; httplib2 does this for PROTOCOL_TLS_CLIENT). Calling
-    it raises — no library that calls into the stub will work, but
-    those code paths only run when we DIDN'T patch the high-level
-    HTTP entrypoint, which is the actual bug to surface.
+    and attribute access both return more stubs — libraries probe ssl
+    at import time in shapes we can't predict (urllib3 calls
+    `ssl.OPENSSL_VERSION.startswith("OpenSSL ")` for feature
+    detection, requests does similar dance with SSLContext). Forwarding
+    everything as a stub lets module init complete; our HTTP shims
+    intercept the high-level request entrypoints before any actual
+    ssl operation is reached, so the never-real return values don't
+    matter at runtime.
     """
 
     __slots__ = ("_name",)
@@ -48,13 +53,32 @@ class _StubAttr:
         return True
 
     def __call__(self, *args, **kwargs):
-        raise RuntimeError(
-            f"{self._name} is a particle stub — TLS lives host-side in "
-            "wasi:http; guest-side ssl is not available."
-        )
+        return _StubAttr(f"{self._name}(...)")
 
     def __getattr__(self, name):
         return _StubAttr(f"{self._name}.{name}")
+
+    # Comparisons: urllib3 / requests do feature detection via
+    # `ssl.OPENSSL_VERSION_INFO < (1, 1, 1)` and similar. The
+    # consistent answer is "no, this stub isn't ordered relative to
+    # any real value" — return False everywhere so callers skip the
+    # legacy / defensive branches and take the modern path, which is
+    # the one we end up intercepting anyway.
+    def __lt__(self, other): return False
+    def __le__(self, other): return False
+    def __gt__(self, other): return False
+    def __ge__(self, other): return False
+    def __eq__(self, other): return isinstance(other, _StubAttr) and self._name == other._name
+    def __ne__(self, other): return not self.__eq__(other)
+    def __hash__(self): return hash(self._name)
+
+    # Iteration & indexing: occasionally a library does
+    # `for x in ssl.SOMETHING:` or `ssl.SOMETHING[0]`. Yield nothing /
+    # return another stub respectively, so the surrounding control
+    # flow stays sane at import time.
+    def __iter__(self): return iter(())
+    def __getitem__(self, _key): return _StubAttr(f"{self._name}[...]")
+    def __len__(self): return 0
 
 
 class _StubModule(types.ModuleType):
