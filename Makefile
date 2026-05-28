@@ -12,6 +12,7 @@
 #   make python-bootstrap-zip   runtime/embed/python-runtime-bootstrap.zip
 #   make embed             build-pipeline wasms → internal/build/wacogo/embed/
 #   make runtime-embed     runtime wasms + zips → runtime/embed/
+#   make win-trampoline    windows launcher stubs → cmd/particle/winstub/{amd64,arm64}/
 #   make test              go test ./...
 #   make clean             wipe dist/ and intermediate build dirs
 #
@@ -47,7 +48,7 @@ NPM_INSTALL := npm install --no-bin-links --no-audit --no-fund
 # .PHONY
 # -----------------------------------------------------------------------------
 
-.PHONY: all clean test go-test embed runtime-embed \
+.PHONY: all clean test go-test embed runtime-embed win-trampoline \
         deno-npm pip-resolve js-runtime typecheck wasm-example \
         python-lib python-runtime python-stdlib-zip python-bootstrap-zip
 
@@ -76,6 +77,68 @@ runtime-embed: js-runtime python-runtime python-stdlib-zip python-bootstrap-zip
 	go run ./tools/embedcompress $(DIST_DIR)/particle-js-runtime.wasm     $(RUNTIME_EMBED_DIR)/particle-js-runtime.wasm.zst
 	go run ./tools/embedcompress $(DIST_DIR)/particle-python-runtime.wasm $(RUNTIME_EMBED_DIR)/particle-python-runtime.wasm.zst
 	@printf '✓  embedded:\n'; ls -lh $(RUNTIME_EMBED_DIR)/*.wasm.zst $(RUNTIME_EMBED_DIR)/*.zip 2>/dev/null | awk '{print "    "$$5"  "$$NF}'
+
+# -----------------------------------------------------------------------------
+# win-trampoline — native Windows launcher stub (no_std Rust) embedded
+# into the particle CLI and appended-to by `particle link`. Built for
+# both Windows arches and zstd-compressed into the cmd/particle
+# go:embed dirs. Each stub is ~19 KB (≈9 KB compressed).
+#
+# Not part of `all`: it needs a Windows cross-toolchain the default dev
+# container lacks. We cross-compile the *-pc-windows-gnullvm targets
+# from Linux/macOS with llvm-mingw (self-contained clang + lld + CRT,
+# no sudo): download the release matching your HOST arch from
+# https://github.com/mstorsjo/llvm-mingw/releases, extract it, and pass
+# its bin/ dir:
+#
+#   make win-trampoline LLVM_MINGW_BIN=$HOME/llvm-mingw/bin
+#
+# On a native Windows runner, override the triples to the msvc ones and
+# leave LLVM_MINGW_BIN empty to use the default linker:
+#
+#   make win-trampoline \
+#     WIN_TRAMPOLINE_TARGET_AMD64=x86_64-pc-windows-msvc \
+#     WIN_TRAMPOLINE_TARGET_ARM64=aarch64-pc-windows-msvc
+#
+# The matching rustup targets must be installed:
+#   rustup target add x86_64-pc-windows-gnullvm aarch64-pc-windows-gnullvm
+#
+# Like the wasm embeds, the outputs (cmd/particle/winstub/*/*.zst) are
+# committed so a plain `go build` works toolchain-free; commit the
+# regenerated stubs alongside any components/win-trampoline change.
+# -----------------------------------------------------------------------------
+
+WIN_TRAMPOLINE_DIR          := components/win-trampoline
+WIN_TRAMPOLINE_CARGO_TARGET := $(CARGO_TARGET_BASE)/win-trampoline
+WIN_TRAMPOLINE_TARGET_AMD64 ?= x86_64-pc-windows-gnullvm
+WIN_TRAMPOLINE_TARGET_ARM64 ?= aarch64-pc-windows-gnullvm
+LLVM_MINGW_BIN              ?=
+
+# When LLVM_MINGW_BIN is set, point each gnullvm target's Rust linker at
+# the matching llvm-mingw clang driver (it knows its own CRT sysroot)
+# and put the toolchain on PATH so the driver finds ld.lld.
+ifneq ($(LLVM_MINGW_BIN),)
+WIN_TRAMPOLINE_ENV_AMD64 := PATH="$(LLVM_MINGW_BIN):$$PATH" CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER="$(LLVM_MINGW_BIN)/x86_64-w64-mingw32-clang"
+WIN_TRAMPOLINE_ENV_ARM64 := PATH="$(LLVM_MINGW_BIN):$$PATH" CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER="$(LLVM_MINGW_BIN)/aarch64-w64-mingw32-clang"
+endif
+
+win-trampoline:
+	@mkdir -p cmd/particle/winstub/amd64 cmd/particle/winstub/arm64 $(WIN_TRAMPOLINE_CARGO_TARGET)
+	@echo '[amd64] cargo build --target $(WIN_TRAMPOLINE_TARGET_AMD64) --release'
+	$(WIN_TRAMPOLINE_ENV_AMD64) CARGO_TARGET_DIR=$(WIN_TRAMPOLINE_CARGO_TARGET) cargo build \
+	  --manifest-path $(WIN_TRAMPOLINE_DIR)/Cargo.toml \
+	  --target $(WIN_TRAMPOLINE_TARGET_AMD64) --release
+	go run ./tools/embedcompress \
+	  $(WIN_TRAMPOLINE_CARGO_TARGET)/$(WIN_TRAMPOLINE_TARGET_AMD64)/release/trampoline.exe \
+	  cmd/particle/winstub/amd64/trampoline.exe.zst
+	@echo '[arm64] cargo build --target $(WIN_TRAMPOLINE_TARGET_ARM64) --release'
+	$(WIN_TRAMPOLINE_ENV_ARM64) CARGO_TARGET_DIR=$(WIN_TRAMPOLINE_CARGO_TARGET) cargo build \
+	  --manifest-path $(WIN_TRAMPOLINE_DIR)/Cargo.toml \
+	  --target $(WIN_TRAMPOLINE_TARGET_ARM64) --release
+	go run ./tools/embedcompress \
+	  $(WIN_TRAMPOLINE_CARGO_TARGET)/$(WIN_TRAMPOLINE_TARGET_ARM64)/release/trampoline.exe \
+	  cmd/particle/winstub/arm64/trampoline.exe.zst
+	@printf '✓  win-trampoline embedded:\n'; ls -lh cmd/particle/winstub/*/trampoline.exe.zst | awk '{print "    "$$5"  "$$NF}'
 
 # -----------------------------------------------------------------------------
 # Tests

@@ -64,11 +64,7 @@ func runReconfigure(cmd *cobra.Command, particleName, credName, dbPath string) e
 		return fmt.Errorf("registry: %w", err)
 	}
 
-	sealer, err := credsqlite.NewKeyringSealer(keyringService, keyringName)
-	if err != nil {
-		return fmt.Errorf("keyring: %w", err)
-	}
-	credBackend, err := credsqlite.New(ctx, db, sealer)
+	credBackend, err := credsqlite.New(ctx, db, openCredentialSealer(cmd.ErrOrStderr()))
 	if err != nil {
 		return fmt.Errorf("credentials store: %w", err)
 	}

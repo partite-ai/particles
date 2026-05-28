@@ -34,11 +34,7 @@ import (
 // `serve-mcp` — can share the bring-up without each carrying eight
 // `defer` lines.
 func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry, warnW io.Writer) (*runtime.Particle, func(), error) {
-	sealer, err := credsqlite.NewKeyringSealer(keyringService, keyringName)
-	if err != nil {
-		return nil, nil, fmt.Errorf("keyring: %w", err)
-	}
-	credBackend, err := credsqlite.New(ctx, db, sealer)
+	credBackend, err := credsqlite.New(ctx, db, openCredentialSealer(warnW))
 	if err != nil {
 		return nil, nil, fmt.Errorf("credentials store: %w", err)
 	}

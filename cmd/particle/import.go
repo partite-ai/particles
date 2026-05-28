@@ -93,11 +93,7 @@ func runImport(cmd *cobra.Command, src, dbPath string, permMode importer.Permiss
 	}
 	var credStore credentials.Store
 	if len(declared) > 0 {
-		sealer, sErr := credsqlite.NewKeyringSealer(keyringService, keyringName)
-		if sErr != nil {
-			return fmt.Errorf("keyring: %w", sErr)
-		}
-		backend, bErr := credsqlite.New(ctx, db, sealer)
+		backend, bErr := credsqlite.New(ctx, db, openCredentialSealer(cmd.ErrOrStderr()))
 		if bErr != nil {
 			return fmt.Errorf("credentials store: %w", bErr)
 		}

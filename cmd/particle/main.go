@@ -21,6 +21,12 @@
 //
 //	particle serve-mcp <name>[@version]
 //	    Run a stdio MCP server backed by the registered particle.
+//
+//	particle link <name>[@version] <path>
+//	    Create an executable at <path> that runs the equivalent of
+//	    `particle run <name>[@version]`, forwarding its arguments.
+//	    A tiny sh shim on Unix, a self-contained launcher .exe on
+//	    Windows.
 package main
 
 import (
@@ -111,6 +117,7 @@ func newRootCmd() (*cobra.Command, func() func()) {
 		newBuildCmd(),
 		newDeleteCmd(),
 		newImportCmd(),
+		newLinkCmd(),
 		newListCmd(),
 		newPingCmd(),
 		newReconfigureCmd(),

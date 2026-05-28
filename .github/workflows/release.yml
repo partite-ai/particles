@@ -3,10 +3,11 @@
 # pushed. No third-party release actions — `gh release create`
 # does the upload with one fewer dependency to keep pinned.
 #
-# The wasm components are committed under runtime/embed and
-# internal/build/wacogo/embed; the release picks them up from the
-# tagged tree. Always rebuild & commit those (`make` from the
-# repo root) BEFORE tagging.
+# The embedded artifacts are committed and picked up from the tagged
+# tree: the wasm components under runtime/embed and
+# internal/build/wacogo/embed, and the Windows `particle link`
+# launcher stubs under cmd/particle/winstub. Always rebuild & commit
+# those (`make` + `make win-trampoline`) BEFORE tagging.
 #
 # Pinning + upgrade procedure: see test.yml header.
 name: Release
@@ -72,6 +73,7 @@ jobs:
           darwin  amd64 tar.gz
           darwin  arm64 tar.gz
           windows amd64 zip
+          windows arm64 zip
           PLATFORMS
           rm -rf dist/staging
           # Single SHA256SUMS file alongside the archives — what

@@ -1,0 +1,41 @@
+[package]
+name = "particle-win-trampoline"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Native Windows launcher stub embedded into the particle CLI. `particle link` appends a trailer (particle binary path + `run <target>` argv) to a copy of this exe; at run time the stub reads its own trailer and execs the particle binary, forwarding arguments. no_std; adapted from njsmith/posy and astral-sh/uv's Windows trampolines."
+
+[[bin]]
+name = "trampoline"
+path = "src/main.rs"
+
+[dependencies]
+# Pure FFI bindings (no build script, no C). We build only for the
+# *-pc-windows-gnullvm targets via llvm-mingw — see the Makefile's
+# win-trampoline target.
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
+  "Win32_System_Environment",
+  "Win32_System_IO",
+  "Win32_System_JobObjects",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_Threading",
+] }
+
+# no_std needs LTO + opt even in dev or linking the intrinsics fails.
+[profile.dev]
+opt-level = 1
+lto = true
+panic = "abort"
+overflow-checks = false
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
