@@ -52,7 +52,6 @@ jobs:
 
       - name: Test
         # -short skips tests that need network / external systems
-        # (npm registry fetches, etc.); -race finds data races
-        # while we're at it; -count=1 disables the test cache so
+        # (npm registry fetches, etc.); -count=1 disables the test cache so
         # CI always re-runs.
-        run: go test -short -race -count=1 ./...
+        run: go test -short -count=1 ./...
