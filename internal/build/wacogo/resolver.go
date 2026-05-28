@@ -42,13 +42,22 @@ type ResolveResult struct {
 	Stderr      []byte
 }
 
+// ResolveProgressFn fires once per resolved package as ResolveAndFetch
+// unpacks the tarball into the virtual node_modules tree. `current`
+// ranges from 1 to `total`. The wasm component itself is opaque (a
+// single host->guest call), so this callback is the only progress
+// signal callers get during a resolve — and it only fires after the
+// wasm phase has returned, while the Go-side unpack runs.
+type ResolveProgressFn func(current, total int, name, version string)
+
 // ResolveAndFetch resolves the transitive dep tree for `deps`, fetches
 // each tarball over wasi:http, and returns the resolved tree plus a
-// virtual node_modules fs.FS.
+// virtual node_modules fs.FS. `onProgress` is optional; pass nil for
+// no progress events.
 //
 // The deno-npm component is a Rust component with no QuickJS engine —
 // no wasm-rquickjs convention quirks — and imports wasi:http directly.
-func (c *Components) ResolveAndFetch(ctx context.Context, deps []importscan.NpmSpec) (*ResolveResult, error) {
+func (c *Components) ResolveAndFetch(ctx context.Context, deps []importscan.NpmSpec, onProgress ResolveProgressFn) (*ResolveResult, error) {
 	denoNpm, err := c.loadEmbedded(ctx, c.denoNpm)
 	if err != nil {
 		return nil, err
@@ -113,7 +122,7 @@ func (c *Components) ResolveAndFetch(ctx context.Context, deps []importscan.NpmS
 	if !ok {
 		return nil, fmt.Errorf("resolve-and-fetch ok payload is %T, want *wacogo.ValList", res.Ok())
 	}
-	pkgs, nm, err := assembleResolved(list)
+	pkgs, nm, err := assembleResolved(list, onProgress)
 	if err != nil {
 		return nil, err
 	}
@@ -142,11 +151,12 @@ func decodeInstallerError(v wc.Val) error {
 	return fmt.Errorf("deno-npm: %s: %s", name, msg)
 }
 
-func assembleResolved(list *wc.ValList) ([]ResolvedPackage, fs.FS, error) {
+func assembleResolved(list *wc.ValList, onProgress ResolveProgressFn) ([]ResolvedPackage, fs.FS, error) {
 	pkgs := make([]ResolvedPackage, 0, list.Len())
 	mfs := memfs.FS{}
+	total := list.Len()
 
-	for i := 0; i < list.Len(); i++ {
+	for i := 0; i < total; i++ {
 		rec, ok := list.Get(i).(*wc.ValRecord)
 		if !ok {
 			return nil, nil, fmt.Errorf("resolved-dep[%d] is %T, want *wacogo.ValRecord", i, list.Get(i))
@@ -175,6 +185,10 @@ func assembleResolved(list *wc.ValList) ([]ResolvedPackage, fs.FS, error) {
 			Integrity:  integrity,
 			Transitive: transitive,
 		})
+
+		if onProgress != nil {
+			onProgress(i+1, total, name, version)
+		}
 	}
 	return pkgs, mfs, nil
 }

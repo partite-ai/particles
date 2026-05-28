@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -69,9 +68,9 @@ func runImport(cmd *cobra.Command, src, dbPath string, permMode importer.Permiss
 		return err
 	}
 	ctx := cmd.Context()
-	db, err := sql.Open("sqlite", "file:"+dbPath)
+	db, err := openStateDB(dbPath)
 	if err != nil {
-		return fmt.Errorf("open db: %w", err)
+		return err
 	}
 	defer db.Close()
 

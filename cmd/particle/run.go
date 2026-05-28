@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -50,9 +49,9 @@ func runRun(cmd *cobra.Command, args []string, dbPath string) error {
 	}
 
 	ctx := cmd.Context()
-	db, err := sql.Open("sqlite", "file:"+dbPath)
+	db, err := openStateDB(dbPath)
 	if err != nil {
-		return fmt.Errorf("open db: %w", err)
+		return err
 	}
 	defer db.Close()
 

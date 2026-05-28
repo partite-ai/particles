@@ -40,12 +40,15 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	var logs []Log
 
 	// ---- Phase 1: import-scan (PEP 723) -------------------------------
-	reportPhaseStart(opts, PhaseImportScan)
+	phaseStart(opts, PhaseImportScan)
 	py, err := pyscan.Scan(opts.Source, entry)
 	if err != nil {
 		return nil, &Error{Phase: PhaseImportScan, Logs: logs, Cause: err}
 	}
-	reportPhaseDetail(opts, "%d dep%s declared",
+	for _, d := range py.Dependencies {
+		phaseDetail(opts, PhaseImportScan, "declared %s", d)
+	}
+	phaseDone(opts, PhaseImportScan, "%d dep%s declared",
 		len(py.Dependencies), plural(len(py.Dependencies), "", "s"))
 
 	// ---- Phase 2: resolve-and-fetch (only when deps declared) ---------
@@ -58,18 +61,31 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	// All the policy lives inside the wasm component; the host just
 	// passes the declared dep list.
 	var wheels []wacogo.PipResolvedWheel
+	var depsFiles map[string][]byte
 	if py.HasBlock && len(py.Dependencies) > 0 {
-		reportPhaseStart(opts, PhaseResolveAndFetch)
+		phaseStart(opts, PhaseResolveAndFetch)
 		pr, err := comps.PipResolveAndFetch(ctx, py.Dependencies, pythonRuntimeVersion)
 		logs = appendLog(logs, PhaseResolveAndFetch, pr)
 		if err != nil {
 			return nil, &Error{Phase: PhaseResolveAndFetch, Logs: logs, Cause: err}
 		}
 		wheels = append(wheels, pr.Wheels...)
+		for _, w := range wheels {
+			phaseDetail(opts, PhaseResolveAndFetch, "resolved %s %s (%s)",
+				w.Name, w.Version, humanBytes(len(w.WheelBytes)))
+		}
+		// Unpack into the artifact layout while we're still in the
+		// resolve-and-fetch phase — the unpack is the dominant
+		// wall-time component for large dep sets, so the per-wheel
+		// progress and detail events naturally belong here.
+		depsFiles, err = unpackWheels(opts, wheels)
+		if err != nil {
+			return nil, &Error{Phase: PhaseResolveAndFetch, Logs: logs, Cause: fmt.Errorf("unpack wheels: %w", err)}
+		}
 		// Headline pinned versions inline — useful for spotting an
 		// unexpected resolution at a glance. Cap the list at a small
 		// number; full set lands in build-info.json + Particle.lock.
-		reportPhaseDetail(opts, "%d wheel%s: %s",
+		phaseDone(opts, PhaseResolveAndFetch, "%d wheel%s: %s",
 			len(wheels), plural(len(wheels), "", "s"),
 			summarizeWheels(wheels, 6))
 	}
@@ -79,23 +95,13 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	// v1. Note for callers: opts.NoTypeCheck has no effect here.
 
 	// ---- Phase 4: bundle (read source as bytes; no JS-style bundling) -
-	reportPhaseStart(opts, PhaseBundle)
+	phaseStart(opts, PhaseBundle)
 	bundlePy, err := fs.ReadFile(opts.Source, entry)
 	if err != nil {
 		return nil, &Error{Phase: PhaseBundle, Logs: logs, Cause: fmt.Errorf("read %s: %w", entry, err)}
 	}
-	reportPhaseDetail(opts, "%s", humanBytes(len(bundlePy)))
-
-	// Unpack wheels into the artifact layout *before* introspect.
-	// The user's bundle.py may `import httpx` at module scope; for
-	// introspect to load the bundle successfully, those imports
-	// have to resolve. We mount the same _deps/site-packages tree
-	// the artifact will ship, and the runtime's bootstrap appends
-	// that path to sys.path on load.
-	depsFiles, err := unpackWheels(wheels)
-	if err != nil {
-		return nil, &Error{Phase: PhaseAssemble, Logs: logs, Cause: fmt.Errorf("unpack wheels: %w", err)}
-	}
+	phaseDetail(opts, PhaseBundle, "read %s (%s)", entry, humanBytes(len(bundlePy)))
+	phaseDone(opts, PhaseBundle, "%s", humanBytes(len(bundlePy)))
 
 	// Build the artifact-shaped FS once and share it: introspect
 	// mounts it (under /particle/), the final Result returns it.
@@ -112,7 +118,7 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	// ExtractManifest invokes the runtime's
 	// particle:runtime/manifest export — same call shape and typed
 	// result as the JS path.
-	reportPhaseStart(opts, PhaseManifestExtract)
+	phaseStart(opts, PhaseManifestExtract)
 	extracted, err := comps.ExtractManifest(ctx, runtime.RuntimePython, stagingFS)
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
@@ -128,13 +134,14 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: fmt.Errorf("marshal manifest: %w", err)}
 	}
-	reportPhaseDetail(opts, "%s %s — %d tool%s, %d credential%s",
+	emitManifestDetails(opts, extracted)
+	phaseDone(opts, PhaseManifestExtract, "%s %s — %d tool%s, %d credential%s",
 		extracted.Name, extracted.Version,
 		len(extracted.Tools), plural(len(extracted.Tools), "", "s"),
 		len(extracted.Credentials), plural(len(extracted.Credentials), "", "s"))
 
 	// ---- Phase 6: assemble --------------------------------------------
-	reportPhaseStart(opts, PhaseAssemble)
+	phaseStart(opts, PhaseAssemble)
 	buildInfo, err := encodePythonBuildInfo(py, wheels)
 	if err != nil {
 		return nil, &Error{Phase: PhaseAssemble, Logs: logs, Cause: fmt.Errorf("encode build-info: %w", err)}
@@ -158,9 +165,11 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 		Particle: stagingFS,
 		Logs:     logs,
 	}
-	reportPhaseDetail(opts, "%s", artifactSummary(result.Particle))
+	emitArtifactDetails(opts, PhaseAssemble, result.Particle)
+	phaseDone(opts, PhaseAssemble, "%s", artifactSummary(result.Particle))
 	return result, nil
 }
+
 
 // summarizeWheels formats a short "<name> <ver>, <name> <ver>, …"
 // preview of the resolved wheel set, capping at `limit` entries so a
@@ -199,14 +208,20 @@ const pythonRuntimeVersion = "3.12"
 // site-packages root — a wheel for `httpx` contributes both `httpx/`
 // (the package) and `httpx-0.27.0.dist-info/` (the metadata) at the
 // same level, matching what pip itself produces.
-func unpackWheels(wheels []wacogo.PipResolvedWheel) (map[string][]byte, error) {
+//
+// Emits one PhaseProgress event per wheel and one PhaseDetail event
+// per wheel so the CLI's pretty/verbose reporters can render a bar
+// or a per-wheel log line during this loop (it dominates wall time
+// for particles with many transitive deps).
+func unpackWheels(opts Options, wheels []wacogo.PipResolvedWheel) (map[string][]byte, error) {
 	const prefix = "_deps/site-packages/"
 	out := make(map[string][]byte)
-	for _, w := range wheels {
+	for i, w := range wheels {
 		zr, err := zip.NewReader(bytes.NewReader(w.WheelBytes), int64(len(w.WheelBytes)))
 		if err != nil {
 			return nil, fmt.Errorf("%s: open zip: %w", w.Filename, err)
 		}
+		var fileCount int
 		for _, f := range zr.File {
 			if f.FileInfo().IsDir() {
 				continue
@@ -231,7 +246,10 @@ func unpackWheels(wheels []wacogo.PipResolvedWheel) (map[string][]byte, error) {
 				continue
 			}
 			out[prefix+f.Name] = data
+			fileCount++
 		}
+		phaseDetail(opts, PhaseResolveAndFetch, "unpacked %s (%d files)", w.Filename, fileCount)
+		phaseProgress(opts, PhaseResolveAndFetch, i+1, len(wheels), "unpacking wheels")
 	}
 	return out, nil
 }

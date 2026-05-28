@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/zip"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -26,6 +25,7 @@ func newBuildCmd() *cobra.Command {
 		acceptPerms  bool
 		confirmPerms bool
 		component    string
+		verbose      bool
 	)
 	cmd := &cobra.Command{
 		Use:   "build",
@@ -42,13 +42,16 @@ doesn't enforce a convention.
 By default the result is registered in the local state DB. Pass
 --pack to write a <name>-<version>.particle archive to CWD instead.
 
+Pass -v / --verbose to swap the spinner UI for a timestamped log
+line per phase event — useful in CI or when piping output.
+
 Registration prompts to confirm the particle's declared capabilities
 when they differ from the previously-registered version (or on a
 fresh install) and walks credential setup for any unconfigured
 authentication method.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runBuild(cmd, pack, dbPath, component, permissionModeFromFlags(acceptPerms, confirmPerms))
+			return runBuild(cmd, pack, dbPath, component, verbose, permissionModeFromFlags(acceptPerms, confirmPerms))
 		},
 	}
 	cmd.Flags().BoolVar(&pack, "pack", false, "Write <name>-<version>.particle to CWD instead of registering")
@@ -56,11 +59,12 @@ authentication method.`,
 	cmd.Flags().StringVar(&component, "component", "", "Package an already-built wasi:p2 component (.wasm) as a particle")
 	cmd.Flags().BoolVarP(&acceptPerms, "yes", "y", false, "Auto-accept the permission summary (does not skip credential prompts)")
 	cmd.Flags().BoolVar(&confirmPerms, "confirm-permissions", false, "Force the permission prompt even when capabilities match the prior version")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Emit a timestamped log line per phase event instead of the spinner UI")
 	cmd.MarkFlagsMutuallyExclusive("yes", "confirm-permissions")
 	return cmd
 }
 
-func runBuild(cmd *cobra.Command, pack bool, dbPath, component string, permMode importer.PermissionMode) error {
+func runBuild(cmd *cobra.Command, pack bool, dbPath, component string, verbose bool, permMode importer.PermissionMode) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getwd: %w", err)
@@ -78,7 +82,7 @@ func runBuild(cmd *cobra.Command, pack bool, dbPath, component string, permMode 
 	res, err := build.Build(cmd.Context(), build.Options{
 		Source:           os.DirFS(cwd),
 		Component:        component,
-		Progress:         cmd.ErrOrStderr(),
+		Reporter:         newBuildReporter(cmd.ErrOrStderr(), verbose),
 		CompilationCache: cache,
 	})
 	if err != nil {
@@ -126,9 +130,9 @@ func runRegister(cmd *cobra.Command, res *build.Result, dbPath string, permMode 
 		return err
 	}
 
-	db, err := sql.Open("sqlite", "file:"+dbPath)
+	db, err := openStateDB(dbPath)
 	if err != nil {
-		return fmt.Errorf("open db: %w", err)
+		return err
 	}
 	defer db.Close()
 

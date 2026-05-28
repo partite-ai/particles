@@ -28,18 +28,19 @@ import (
 // Native build chains pick how they name their wasm; the build
 // just takes whatever path the caller hands over.
 func buildWasm(ctx context.Context, opts Options, comps *wacogo.Components) (*Result, error) {
-	reportPhaseStart(opts, PhaseBundle)
+	phaseStart(opts, PhaseBundle)
 	componentBytes, err := fs.ReadFile(opts.Source, opts.Component)
 	if err != nil {
 		return nil, &Error{Phase: PhaseBundle, Cause: fmt.Errorf("read component %s: %w", opts.Component, err)}
 	}
-	reportPhaseDetail(opts, "%s (%s)", opts.Component, humanBytes(len(componentBytes)))
+	phaseDetail(opts, PhaseBundle, "read %s (%s)", opts.Component, humanBytes(len(componentBytes)))
+	phaseDone(opts, PhaseBundle, "%s (%s)", opts.Component, humanBytes(len(componentBytes)))
 
 	stagingFS := memfs.FS{
 		"particle.wasm": &memfs.File{Data: componentBytes, Mode: 0o644},
 	}
 
-	reportPhaseStart(opts, PhaseManifestExtract)
+	phaseStart(opts, PhaseManifestExtract)
 	extracted, err := comps.ExtractManifest(ctx, runtime.RuntimeWasm, stagingFS)
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Cause: err}
@@ -55,12 +56,13 @@ func buildWasm(ctx context.Context, opts Options, comps *wacogo.Components) (*Re
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Cause: fmt.Errorf("marshal manifest: %w", err)}
 	}
-	reportPhaseDetail(opts, "%s %s — %d tool%s, %d credential%s",
+	emitManifestDetails(opts, extracted)
+	phaseDone(opts, PhaseManifestExtract, "%s %s — %d tool%s, %d credential%s",
 		extracted.Name, extracted.Version,
 		len(extracted.Tools), plural(len(extracted.Tools), "", "s"),
 		len(extracted.Credentials), plural(len(extracted.Credentials), "", "s"))
 
-	reportPhaseStart(opts, PhaseAssemble)
+	phaseStart(opts, PhaseAssemble)
 	buildInfo, err := encodeWasmBuildInfo(opts.Component, len(componentBytes))
 	if err != nil {
 		return nil, &Error{Phase: PhaseAssemble, Cause: fmt.Errorf("encode build-info: %w", err)}
@@ -70,7 +72,8 @@ func buildWasm(ctx context.Context, opts Options, comps *wacogo.Components) (*Re
 	stagingFS["build-info.json"] = &memfs.File{Data: buildInfo, Mode: 0o644}
 
 	result := &Result{Particle: stagingFS}
-	reportPhaseDetail(opts, "%s", artifactSummary(result.Particle))
+	emitArtifactDetails(opts, PhaseAssemble, result.Particle)
+	phaseDone(opts, PhaseAssemble, "%s", artifactSummary(result.Particle))
 	return result, nil
 }
 

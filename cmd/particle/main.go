@@ -25,6 +25,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"os/signal"
@@ -178,4 +179,60 @@ func resolveDBPath(dbPath string) (string, error) {
 		return "", fmt.Errorf("chmod state db: %w", err)
 	}
 	return dbPath, nil
+}
+
+// openStateDB opens the state DB with PRAGMAs tuned for the runtime's
+// hot read path:
+//
+//   - journal_mode=WAL — readers and writers don't fcntl-block each
+//     other; readers acquire cheap wal-index shared-memory locks
+//     instead of per-query fcntl(F_SETLK) calls. By far the biggest
+//     win for Python's stat-storm/import phase.
+//   - synchronous=NORMAL — safe with WAL, ~half the fsyncs.
+//   - mmap_size=256 MB — page reads become memory accesses instead
+//     of pread() syscalls. Particularly good for blob fetches.
+//   - cache_size=-64000 — 64 MB page cache keeps working-set hot.
+//   - temp_store=MEMORY — sort/temp space in RAM.
+//   - busy_timeout=5000 — retry on lock contention before erroring.
+//
+// Pragmas are passed as DSN params so every connection in the
+// database/sql pool inherits them. Setting them via a post-Open
+// "PRAGMA ..." statement would only affect whichever pooled
+// connection happened to serve it.
+//
+// WAL mode creates two sidecar files alongside the DB:
+//
+//	<dbPath>-wal   the write-ahead log
+//	<dbPath>-shm   the shared-memory index
+//
+// Both temporarily hold the same data as the main DB (in-flight
+// transactions for `-wal`, page-cache metadata for `-shm`), so we
+// chmod them to 0600 to match the main file's hardening against
+// co-tenant reads.
+func openStateDB(dbPath string) (*sql.DB, error) {
+	dsn := "file:" + dbPath +
+		"?_pragma=journal_mode(WAL)" +
+		"&_pragma=synchronous(NORMAL)" +
+		"&_pragma=busy_timeout(5000)" +
+		"&_pragma=cache_size(-64000)" +
+		"&_pragma=mmap_size(268435456)" +
+		"&_pragma=temp_store(MEMORY)" +
+		"&_pragma=foreign_keys(ON)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open db: %w", err)
+	}
+	// Force a connection so the journal_mode=WAL pragma fires and
+	// the -wal / -shm sidecar files are created before we chmod.
+	if err := db.PingContext(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open db: %w", err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		// Best-effort: chmod fails with ENOENT on the sidecars when
+		// they haven't been materialized yet (e.g. read-only access
+		// to an empty DB). Not fatal.
+		_ = os.Chmod(dbPath+suffix, 0o600)
+	}
+	return db, nil
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,9 +54,9 @@ func runServeMCP(cmd *cobra.Command, target, dbPath string, includes, excludes [
 	ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	db, err := sql.Open("sqlite", "file:"+dbPath)
+	db, err := openStateDB(dbPath)
 	if err != nil {
-		return fmt.Errorf("open db: %w", err)
+		return err
 	}
 	defer db.Close()
 

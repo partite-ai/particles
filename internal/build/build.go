@@ -25,9 +25,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -41,31 +41,6 @@ import (
 	"github.com/partite-ai/particles/internal/semver"
 	"github.com/partite-ai/particles/runtime"
 )
-
-// reportPhaseStart writes a "phase starting" line to the configured
-// progress writer. No-op when Options.Progress is nil — library
-// callers expect silent builds. The line is intentionally short:
-// just the phase name + a colon, so the more interesting details
-// (number of deps fetched, etc.) can land on a subsequent indented
-// `reportPhaseDetail` line once known.
-func reportPhaseStart(opts Options, phase Phase) {
-	if opts.Progress == nil {
-		return
-	}
-	fmt.Fprintf(opts.Progress, "%s:\n", phase)
-}
-
-// reportPhaseDetail writes one indented detail line under the
-// already-printed phase header. Use after the phase completes
-// (or to report intermediate progress within a long phase) — the
-// phase header announces "we're working on X", the detail explains
-// "and the result is Y".
-func reportPhaseDetail(opts Options, format string, args ...any) {
-	if opts.Progress == nil {
-		return
-	}
-	fmt.Fprintf(opts.Progress, "  "+format+"\n", args...)
-}
 
 // withShadowDeps appends every entry in `nodebuiltins.ShadowNpmDeps`
 // to a copy of `deps`. If a user already declared one explicitly
@@ -116,17 +91,12 @@ type Options struct {
 	// want; the build doesn't enforce a convention.
 	Component string
 
-	// Progress receives one line per pipeline phase entry and one
-	// indented summary line per phase exit, in real time as the
-	// build runs. Build is otherwise silent, so the CLI wires
-	// `os.Stderr` (or `cmd.ErrOrStderr()`) here to make builds
-	// visibly progress; library callers leave this nil to keep
-	// builds silent, or pass any `io.Writer` (an `io.MultiWriter`,
-	// a buffer, a structured logger's writer adapter, …) to capture.
-	// Lines are pre-formatted plain text; we don't expose a
-	// structured event API yet — keep this dumb until a user has a
-	// concrete need.
-	Progress io.Writer
+	// Reporter receives structured phase events (start, progress,
+	// detail, done) in real time as the build runs. Build is
+	// otherwise silent. The CLI wires a TTY-aware pretty reporter or
+	// a verbose log-line reporter here; library callers leave it
+	// nil to keep builds silent. See [Reporter] for the protocol.
+	Reporter Reporter
 
 	// CompilationCache, when non-nil, persists compiled wasm
 	// modules across Build invocations. Pluggable on purpose: the
@@ -298,7 +268,7 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 	)
 
 	// ---- Phase 1: import-scan -----------------------------------------
-	reportPhaseStart(opts, PhaseImportScan)
+	phaseStart(opts, PhaseImportScan)
 	scan, err := importscan.Scan(opts.Source)
 	if err != nil {
 		return nil, &Error{Phase: PhaseImportScan, Logs: logs, Cause: err}
@@ -306,7 +276,13 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 	if len(scan.Errors) > 0 {
 		return nil, scanErrorsAsBuildError(scan.Errors, logs)
 	}
-	reportPhaseDetail(opts, "%d npm dep%s declared, %d capabilit%s",
+	for _, d := range scan.NpmDeps {
+		phaseDetail(opts, PhaseImportScan, "declared %s@%s (from %s)", d.Name, d.VersionRange, d.Importer)
+	}
+	for _, c := range scan.Capabilities {
+		phaseDetail(opts, PhaseImportScan, "capability %s", c)
+	}
+	phaseDone(opts, PhaseImportScan, "%d npm dep%s declared, %d capabilit%s",
 		len(scan.NpmDeps), plural(len(scan.NpmDeps), "", "s"),
 		len(scan.Capabilities), plural(len(scan.Capabilities), "y", "ies"))
 
@@ -322,21 +298,31 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 	var nodeModules fs.FS
 	var resolvedPkgs []wacogo.ResolvedPackage
 	if len(npmDeps) > 0 {
-		reportPhaseStart(opts, PhaseResolveAndFetch)
-		rr, err := comps.ResolveAndFetch(ctx, npmDeps)
+		phaseStart(opts, PhaseResolveAndFetch)
+		// onPackage fires per package as the deno-npm component's
+		// post-resolve unpack loop runs. The wasm call itself is
+		// opaque (a single host->guest call), so this is the only
+		// in-phase progress signal we have — drives the spinner's
+		// progress bar in pretty mode and a stream of detail lines
+		// in verbose mode.
+		onPackage := func(current, total int, name, version string) {
+			phaseDetail(opts, PhaseResolveAndFetch, "unpacked %s@%s", name, version)
+			phaseProgress(opts, PhaseResolveAndFetch, current, total, "unpacking packages")
+		}
+		rr, err := comps.ResolveAndFetch(ctx, npmDeps, onPackage)
 		logs = appendLog(logs, PhaseResolveAndFetch, rr)
 		if err != nil {
 			return nil, &Error{Phase: PhaseResolveAndFetch, Logs: logs, Cause: err}
 		}
 		nodeModules = rr.NodeModules
 		resolvedPkgs = rr.Packages
-		reportPhaseDetail(opts, "%d package%s resolved",
+		phaseDone(opts, PhaseResolveAndFetch, "%d package%s resolved",
 			len(resolvedPkgs), plural(len(resolvedPkgs), "", "s"))
 	}
 
 	// ---- Phase 3: typecheck (optional) --------------------------------
 	if !opts.NoTypeCheck {
-		reportPhaseStart(opts, PhaseTypecheck)
+		phaseStart(opts, PhaseTypecheck)
 		cr, err := comps.TypeCheck(ctx, opts.Source, nodeModules)
 		logs = appendLog(logs, PhaseTypecheck, cr)
 		if err != nil {
@@ -350,17 +336,18 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 				fatal = append(fatal, lifted)
 			} else {
 				warnings = append(warnings, lifted)
+				phaseDetail(opts, PhaseTypecheck, "%s", lifted.Error())
 			}
 		}
 		if len(fatal) > 0 {
 			return nil, &Error{Phase: PhaseTypecheck, Diagnostics: fatal, Logs: logs}
 		}
-		reportPhaseDetail(opts, "%d diagnostic%s",
+		phaseDone(opts, PhaseTypecheck, "%d diagnostic%s",
 			len(cr.Diagnostics), plural(len(cr.Diagnostics), "", "s"))
 	}
 
 	// ---- Phase 4: bundle ----------------------------------------------
-	reportPhaseStart(opts, PhaseBundle)
+	phaseStart(opts, PhaseBundle)
 	bundleFS := opts.Source
 	if nodeModules != nil {
 		bundleFS = mountedSourceFS{base: opts.Source, overlayName: "node_modules", overlay: nodeModules}
@@ -375,17 +362,19 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 		return nil, wrapBundleError(err, logs)
 	}
 	for _, w := range bundleResult.Warnings {
-		warnings = append(warnings, Diagnostic{
+		d := Diagnostic{
 			Phase: PhaseBundle, File: w.File, Line: w.Line, Column: w.Column, Message: w.Message,
-		})
+		}
+		warnings = append(warnings, d)
+		phaseDetail(opts, PhaseBundle, "%s", d.Error())
 	}
-	reportPhaseDetail(opts, "%s", humanBytes(len(bundleResult.JS)))
+	phaseDone(opts, PhaseBundle, "%s", humanBytes(len(bundleResult.JS)))
 
 	// ---- Phase 5: manifest-extract ------------------------------------
 	// The runtime's particle:runtime/manifest export is the uniform
 	// way every particle answers "describe yourself" — current
 	// bundle-loading runtimes and future fully-WASM particles alike.
-	reportPhaseStart(opts, PhaseManifestExtract)
+	phaseStart(opts, PhaseManifestExtract)
 	sourceFS := memfs.FS{"bundle.mjs": &memfs.File{Data: bundleResult.JS}}
 	extracted, err := comps.ExtractManifest(ctx, runtime.RuntimeJS, sourceFS)
 	if err != nil {
@@ -404,13 +393,14 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 	if err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: fmt.Errorf("marshal manifest: %w", err)}
 	}
-	reportPhaseDetail(opts, "%s %s — %d tool%s, %d credential%s",
+	emitManifestDetails(opts, extracted)
+	phaseDone(opts, PhaseManifestExtract, "%s %s — %d tool%s, %d credential%s",
 		extracted.Name, extracted.Version,
 		len(extracted.Tools), plural(len(extracted.Tools), "", "s"),
 		len(extracted.Credentials), plural(len(extracted.Credentials), "", "s"))
 
 	// ---- Phase 6: assemble --------------------------------------------
-	reportPhaseStart(opts, PhaseAssemble)
+	phaseStart(opts, PhaseAssemble)
 	buildInfo, err := encodeBuildInfo(scan, resolvedPkgs)
 	if err != nil {
 		return nil, &Error{Phase: PhaseAssemble, Logs: logs, Cause: fmt.Errorf("encode build-info: %w", err)}
@@ -422,7 +412,8 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 		Sourcemap: bundleResult.Sourcemap,
 		BuildInfo: buildInfo,
 	})
-	reportPhaseDetail(opts, "%s", artifactSummary(particle))
+	emitArtifactDetails(opts, PhaseAssemble, particle)
+	phaseDone(opts, PhaseAssemble, "%s", artifactSummary(particle))
 
 	return &Result{
 		Particle: particle,
@@ -636,6 +627,77 @@ func artifactSummary(particle fs.FS) string {
 	})
 	return fmt.Sprintf("%d file%s, %s",
 		files, plural(files, "", "s"), humanBytes(bytes))
+}
+
+// emitManifestDetails fans out per-tool / per-credential detail events
+// for verbose reporters. No-op when the reporter discards detail
+// events (pretty mode).
+func emitManifestDetails(opts Options, m *runtime.Manifest) {
+	for _, t := range m.Tools {
+		phaseDetail(opts, PhaseManifestExtract, "tool %s", t.Name)
+	}
+	for name := range m.Credentials {
+		phaseDetail(opts, PhaseManifestExtract, "credential %s", name)
+	}
+}
+
+// emitArtifactDetails fans out one detail event per top-level path in
+// the artifact, du -sh-style. Top-level files report their own size;
+// top-level directories report aggregate (file count, total size) so
+// the wheel-of-the-month Python artifact with 1500 nested files
+// doesn't drown out the actually-interesting top-level entries.
+func emitArtifactDetails(opts Options, phase Phase, particle fs.FS) {
+	r := reporterFor(opts)
+	if _, ok := r.(nopReporter); ok {
+		return
+	}
+	type group struct {
+		files int
+		size  int64
+		isDir bool
+	}
+	groups := map[string]*group{}
+	_ = fs.WalkDir(particle, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || path == "." || d.IsDir() {
+			return nil
+		}
+		var size int64
+		if info, ierr := d.Info(); ierr == nil {
+			size = info.Size()
+		}
+		// Bucket by first path segment. Single-segment paths are
+		// files at the root (manifest.json, bundle.mjs, ...); paths
+		// with a slash live under a top-level directory.
+		head := path
+		isDir := false
+		if i := strings.IndexByte(path, '/'); i >= 0 {
+			head = path[:i]
+			isDir = true
+		}
+		g, ok := groups[head]
+		if !ok {
+			g = &group{isDir: isDir}
+			groups[head] = g
+		}
+		g.files++
+		g.size += size
+		return nil
+	})
+	// Stable order so the log is reproducible across runs.
+	names := make([]string, 0, len(groups))
+	for name := range groups {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for i, name := range names {
+		g := groups[name]
+		if g.isDir {
+			phaseDetail(opts, phase, "%s/ (%d files, %s)", name, g.files, humanBytes(int(g.size)))
+		} else {
+			phaseDetail(opts, phase, "%s (%s)", name, humanBytes(int(g.size)))
+		}
+		phaseProgress(opts, phase, i+1, len(names), "assembling")
+	}
 }
 
 // -----------------------------------------------------------------------------

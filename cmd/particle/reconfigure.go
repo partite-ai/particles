@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -54,9 +53,9 @@ func runReconfigure(cmd *cobra.Command, particleName, credName, dbPath string) e
 	}
 	ctx := cmd.Context()
 
-	db, err := sql.Open("sqlite", "file:"+dbPath)
+	db, err := openStateDB(dbPath)
 	if err != nil {
-		return fmt.Errorf("open db: %w", err)
+		return err
 	}
 	defer db.Close()
 

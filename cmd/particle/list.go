@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -40,9 +39,9 @@ func runList(cmd *cobra.Command, dbPath string) error {
 	}
 	ctx := cmd.Context()
 
-	db, err := sql.Open("sqlite", "file:"+dbPath)
+	db, err := openStateDB(dbPath)
 	if err != nil {
-		return fmt.Errorf("open db: %w", err)
+		return err
 	}
 	defer db.Close()
 
