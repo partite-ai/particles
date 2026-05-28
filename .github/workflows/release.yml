@@ -1,0 +1,98 @@
+# Release workflow: builds cross-platform binaries and publishes
+# a GitHub release whenever a SemVer tag (v0.1.0, v1.2.3-rc.1) is
+# pushed. No third-party release actions — `gh release create`
+# does the upload with one fewer dependency to keep pinned.
+#
+# The wasm components are committed under runtime/embed and
+# internal/build/wacogo/embed; the release picks them up from the
+# tagged tree. Always rebuild & commit those (`make` from the
+# repo root) BEFORE tagging.
+#
+# Pinning + upgrade procedure: see test.yml header.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'      # v1.2.3
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'    # v1.2.3-rc.1
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      # Required for `gh release create` to upload the binaries
+      # and write the release body.
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # actions/checkout@v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # actions/setup-go@v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build cross-platform binaries
+        env:
+          # Tag name (e.g., v1.2.3) — GitHub strips refs/tags/.
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Each line is "<goos> <goarch> <archive-ext>". Extend
+          # by adding rows; the build loop below is shape-driven.
+          while read -r GOOS GOARCH EXT; do
+            BIN=particle
+            [ "$GOOS" = "windows" ] && BIN=particle.exe
+            STAGE="dist/staging/particle-${VERSION}-${GOOS}-${GOARCH}"
+            mkdir -p "$STAGE"
+            echo "==> building ${GOOS}/${GOARCH}"
+            # -trimpath strips local filesystem paths; -s -w drops
+            # the symbol & DWARF tables (smaller binary, no debug
+            # info — fine for a release artifact).
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath -ldflags "-s -w" \
+              -o "$STAGE/$BIN" ./cmd/particle
+            cp README.md "$STAGE/"
+            cp LICENSE  "$STAGE/" 2>/dev/null || true
+            cd dist
+            if [ "$EXT" = "zip" ]; then
+              (cd staging && zip -r "../particle-${VERSION}-${GOOS}-${GOARCH}.zip" "particle-${VERSION}-${GOOS}-${GOARCH}")
+            else
+              tar -czf "particle-${VERSION}-${GOOS}-${GOARCH}.tar.gz" -C staging "particle-${VERSION}-${GOOS}-${GOARCH}"
+            fi
+            cd ..
+          done <<'PLATFORMS'
+          linux   amd64 tar.gz
+          linux   arm64 tar.gz
+          darwin  amd64 tar.gz
+          darwin  arm64 tar.gz
+          windows amd64 zip
+          PLATFORMS
+          rm -rf dist/staging
+          # Single SHA256SUMS file alongside the archives — what
+          # users verify against; no per-archive sidecars to lose.
+          (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS)
+          ls -la dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Mark anything with a "-" suffix (v1.2.3-rc.1) as a
+          # prerelease so it doesn't become "latest".
+          PRERELEASE_FLAG=""
+          case "$VERSION" in
+            *-*) PRERELEASE_FLAG="--prerelease" ;;
+          esac
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --generate-notes \
+            $PRERELEASE_FLAG \
+            dist/*.tar.gz dist/*.zip dist/SHA256SUMS

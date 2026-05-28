@@ -1,0 +1,23 @@
+# Dependabot config — keeps the SHA-pinned actions in
+# .github/workflows/ current. Dependabot reads the
+# `# owner/repo@vX.Y.Z` trailing comment on each `uses:` line to
+# decide which tag to track; when a newer release lands it
+# opens a PR that updates BOTH the commit SHA and the version
+# comment.
+#
+# Adding a new ecosystem (Go modules, npm, etc.) is a matter of
+# appending another `updates:` entry — Dependabot will discover
+# the manifest automatically once it's enabled.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    # Group all action bumps into a single PR per week — keeps
+    # the review queue manageable; a separate PR per action
+    # would be noisy and these all flow through the same vetting
+    # process anyway.
+    groups:
+      actions:
+        patterns: ["*"]
