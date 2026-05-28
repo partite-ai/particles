@@ -42,30 +42,6 @@ import (
 	"github.com/partite-ai/particles/runtime"
 )
 
-// withShadowDeps appends every entry in `nodebuiltins.ShadowNpmDeps`
-// to a copy of `deps`. If a user already declared one explicitly
-// (via `npm:<name>@<range>`), their declaration wins — the shadow
-// gets skipped. The returned slice is fresh; the input is not
-// mutated.
-func withShadowDeps(deps []importscan.NpmSpec) []importscan.NpmSpec {
-	declared := make(map[string]bool, len(deps))
-	for _, d := range deps {
-		declared[d.Name] = true
-	}
-	out := append([]importscan.NpmSpec(nil), deps...)
-	for name, version := range nodebuiltins.ShadowNpmDeps {
-		if declared[name] {
-			continue
-		}
-		out = append(out, importscan.NpmSpec{
-			Name:         name,
-			VersionRange: version,
-			Importer:     "<shadow>",
-		})
-	}
-	return out
-}
-
 // Options configure a single build invocation.
 type Options struct {
 	// Source is the particle source tree (typically `os.DirFS(srcDir)`).
@@ -286,15 +262,14 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 		len(scan.NpmDeps), plural(len(scan.NpmDeps), "", "s"),
 		len(scan.Capabilities), plural(len(scan.Capabilities), "y", "ies"))
 
-	// ---- Phase 2: resolve-and-fetch (only when needed) ----------------
+	// ---- Phase 2: resolve-and-fetch (only when the source declares
+	// npm deps) --------------------------------------------------------
 	//
-	// `withShadowDeps` injects any `nodebuiltins.ShadowNpmDeps` (e.g.
-	// `punycode`) into the resolver input so transitive
-	// `require(...)` calls in bundled packages find a real npm
-	// package in node_modules rather than failing against a
-	// runtime-builtin gap. The shadow deps go through the regular
-	// fetch path; this isn't a fast-path or a stub.
-	npmDeps := withShadowDeps(scan.NpmDeps)
+	// A source with no `npm:` imports skips this phase entirely, so a
+	// dependency-free particle builds fully offline. Node-shaped bare
+	// imports (`punycode`, `buffer`, …) are satisfied by the runtime
+	// builtins — see internal/nodebuiltins — not fetched here.
+	npmDeps := scan.NpmDeps
 	var nodeModules fs.FS
 	var resolvedPkgs []wacogo.ResolvedPackage
 	if len(npmDeps) > 0 {
@@ -316,6 +291,10 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 		}
 		nodeModules = rr.NodeModules
 		resolvedPkgs = rr.Packages
+		// Overlay vendored compatibility packages (e.g. punycode)
+		// into the fetched tree so transitive CJS `require(...)` calls
+		// the runtime can't satisfy resolve at bundle time, offline.
+		overlayVendoredPackages(nodeModules)
 		phaseDone(opts, PhaseResolveAndFetch, "%d package%s resolved",
 			len(resolvedPkgs), plural(len(resolvedPkgs), "", "s"))
 	}
@@ -420,6 +399,49 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 		Warnings: warnings,
 		Logs:     logs,
 	}, nil
+}
+
+// overlayVendoredPackages merges nodebuiltins.VendoredPackages() into
+// the resolved node_modules tree in place. A package the resolver
+// already fetched wins — so an explicitly declared `npm:<pkg>` is
+// never shadowed by the vendored copy. Mutates the memfs map directly
+// (it's a reference type); no-op for any other fs.FS shape.
+//
+// This is the offline replacement for the old shadow-fetch: instead
+// of adding punycode to every JS build's resolver input (a network
+// round-trip), we carry it in the binary and drop it into node_modules
+// only when a build already has a node_modules tree. esbuild tree-
+// shakes it out if nothing imports it.
+func overlayVendoredPackages(nodeModules fs.FS) {
+	nm, ok := nodeModules.(memfs.FS)
+	if !ok {
+		return
+	}
+	fetched := make(map[string]bool)
+	for key := range nm {
+		if i := strings.IndexByte(key, '/'); i >= 0 {
+			fetched[key[:i]] = true
+		}
+	}
+	vendored := nodebuiltins.VendoredPackages()
+	_ = fs.WalkDir(vendored, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || p == "." {
+			return nil
+		}
+		pkg := p
+		if i := strings.IndexByte(p, '/'); i >= 0 {
+			pkg = p[:i]
+		}
+		if fetched[pkg] {
+			return nil
+		}
+		data, rerr := fs.ReadFile(vendored, p)
+		if rerr != nil {
+			return nil
+		}
+		nm[p] = &memfs.File{Data: data, Mode: 0o644}
+		return nil
+	})
 }
 
 // validateExtractedManifest runs the Go-side cross-field gates on

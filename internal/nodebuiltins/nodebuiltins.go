@@ -1,9 +1,5 @@
 // Package nodebuiltins is the canonical list of Node-shaped modules
-// wasm-rquickjs (the JS runtime) provides at execution time, plus
-// the small list of npm packages we transparently shadow-fetch so
-// that transitive `require(...)` calls resolve to a real package
-// rather than relying on a runtime builtin that may be missing or
-// the wrong shape.
+// wasm-rquickjs (the JS runtime) provides at execution time.
 //
 // The build pipeline consults `Names` / `Is` in two places:
 //
@@ -12,14 +8,6 @@
 //   - bundle (Phase 4): imports of these names are marked external,
 //     so esbuild leaves the import statement alone instead of walking
 //     into node_modules/.
-//
-// `ShadowNpmDeps` is consulted by the build orchestrator: every JS
-// build appends these to the resolver input so the corresponding
-// real npm package lands in node_modules. See `whatwg-url` v5's
-// `require("punycode")` (the canonical case): the package's own
-// metadata doesn't declare punycode as a dep because it expects
-// Node's built-in, but we don't ship a CJS-shape-correct punycode
-// to the runtime, so the shadow makes the npm package the answer.
 //
 // Keep `Names` in sync with components/js-runtime/build/crate/src/builtin/*.rs
 // — those are the modules the runtime knows how to satisfy. Adding
@@ -72,27 +60,6 @@ var Names = map[string]struct{}{
 	"vm":                  {},
 	"worker_threads":      {},
 	"zlib":                {},
-}
-
-// ShadowNpmDeps maps a (bare) module name to the npm version range
-// the build orchestrator transparently adds to every JS build's
-// resolver input. Each entry is a Node-shaped module that the
-// runtime either doesn't satisfy correctly (CJS shape mismatch,
-// missing from the CJS builtinModuleMap, ...) and that the npm
-// ecosystem ships as a real package. Adding to the resolver input
-// makes the npm package land in `node_modules` so transitive
-// `require(...)` calls find a real, correctly-shaped implementation.
-//
-// Order-of-magnitude small: each entry costs the package's bytes in
-// every bundle that pulls it in transitively. Reserve for cases
-// where shadow-fetching is genuinely cheaper than fixing the
-// runtime.
-var ShadowNpmDeps = map[string]string{
-	// whatwg-url v5 (transitive via node-fetch / googleapis) does
-	// `require("punycode")` without declaring it as a dep; in
-	// modern Node setups this is shadow-installed at the top
-	// level for the same reason.
-	"punycode": "^2.3.0",
 }
 
 // Is reports whether spec names a runtime-provided module. Accepts:
