@@ -44,7 +44,7 @@ func TestWasmParticle_EndToEnd(t *testing.T) {
 	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
 
-	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
+	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
 	if err != nil {
 		t.Fatalf("NewParticle: %v", err)
 	}

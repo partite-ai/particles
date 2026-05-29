@@ -18,19 +18,23 @@ import (
 
 func newServeMCPCmd() *cobra.Command {
 	var (
-		dbPath   string
-		includes []string
-		excludes []string
+		dbPath     string
+		includes   []string
+		excludes   []string
+		mountFlags []string
 	)
 	cmd := &cobra.Command{
 		Use:   "serve-mcp <name>[@version]",
 		Short: "Run a stdio MCP server backed by a registered particle",
 		Long: `Run a stdio MCP server backed by the registered particle.
 Exposes every tool the particle defines to any MCP client, unless
---only-tools or --exclude-tools narrows the set.`,
+--only-tools or --exclude-tools narrows the set.
+
+Use --mount name=host/path to map a declared filesystem mount for the
+session (overriding any saved mapping); repeat for multiple mounts.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServeMCP(cmd, args[0], dbPath, includes, excludes)
+			return runServeMCP(cmd, args[0], dbPath, includes, excludes, mountFlags)
 		},
 	}
 	cmd.Flags().StringVar(&dbPath, "db", "", dbFlagUsage())
@@ -38,12 +42,19 @@ Exposes every tool the particle defines to any MCP client, unless
 		"Comma-separated allowlist: expose only the named tools. Mutually exclusive with --exclude-tools.")
 	cmd.Flags().StringSliceVar(&excludes, "exclude-tools", nil,
 		"Comma-separated denylist: expose every tool except the named ones.")
+	cmd.Flags().StringArrayVar(&mountFlags, "mount", nil,
+		"Map a declared mount as name=host/path (repeatable; overrides saved mappings)")
 	cmd.MarkFlagsMutuallyExclusive("only-tools", "exclude-tools")
 	return cmd
 }
 
-func runServeMCP(cmd *cobra.Command, target, dbPath string, includes, excludes []string) error {
-	dbPath, err := resolveDBPath(dbPath)
+func runServeMCP(cmd *cobra.Command, target, dbPath string, includes, excludes, mountFlags []string) error {
+	cliMounts, err := parseMountFlags(mountFlags)
+	if err != nil {
+		return err
+	}
+
+	dbPath, err = resolveDBPath(dbPath)
 	if err != nil {
 		return err
 	}
@@ -69,7 +80,7 @@ func runServeMCP(cmd *cobra.Command, target, dbPath string, includes, excludes [
 		return err
 	}
 
-	p, teardown, err := bootParticle(ctx, db, entry, cmd.ErrOrStderr())
+	p, teardown, err := bootParticle(ctx, db, entry, cliMounts, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}

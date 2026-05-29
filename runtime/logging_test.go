@@ -300,7 +300,7 @@ func (h *testRuntime) NewParticle(ctx context.Context, particleFS fs.FS, extra .
 	merged := make([]runtime.ParticleOption, 0, len(h.opts)+len(extra))
 	merged = append(merged, h.opts...)
 	merged = append(merged, extra...)
-	return h.rt.NewParticle(ctx, particleFS, h.credStore, h.kvStore, merged...)
+	return h.rt.NewParticle(ctx, particleFS, h.credStore, h.kvStore, nil, merged...)
 }
 
 func newRuntimeWithLog(t *testing.T, ctx context.Context, cb runtime.LogCallback) (*testRuntime, func()) {

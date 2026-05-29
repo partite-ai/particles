@@ -167,6 +167,13 @@ type Particle struct {
 	// layer's resources release cleanly.
 	hostInsts []*host.ComponentInstance
 
+	// mountClosers are the per-mount trackingFS wrappers. Closing
+	// them after the wasm instance tears down reclaims any file
+	// handles the guest left open — wacogo's teardown doesn't drop
+	// outstanding wasi descriptors, so this is what prevents leaked
+	// host fds when a guest terminates without closing its files.
+	mountClosers []io.Closer
+
 	// Captured wasi:cli/stderr — surfaced when a wasm trap
 	// hides the actual diagnostic. Reset by readStderr.
 	stderr *bytes.Buffer
@@ -190,6 +197,17 @@ type Particle struct {
 // are required — every particle imports the credentials and kv
 // host shims unconditionally.
 //
+// mounts maps each declared filesystem mount's NAME (the key in
+// `capabilities.filesystem.mounts` / `.temp`) to the backing
+// fs.FS the host supplies for it. Pass an empty or nil map when
+// the particle declares no mounts. The runtime validates the map
+// against the manifest: a supplied name the manifest didn't
+// declare is rejected, a required mount or any temp mount that's
+// absent is an error, and a mount declared `readonly` has its FS
+// wrapped so writes are refused regardless of what the host
+// handed in. A writable mount's FS reaches wasi:filesystem as-is,
+// so write capability flows from the fs.File implementations.
+//
 // Failure modes:
 //
 //   - missing or invalid manifest.json
@@ -197,8 +215,9 @@ type Particle struct {
 //   - particle declares a capability the [Runtime] wasn't
 //     configured with (the runtime requires every declared
 //     capability to be backed by a real Manager, never a stub)
+//   - a required mount is missing, or a supplied mount isn't declared
 //   - wasm instantiation failure
-func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, credStore credentials.Store, kvStore kv.Store, opts ...ParticleOption) (*Particle, error) {
+func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, credStore credentials.Store, kvStore kv.Store, mounts map[string]fs.FS, opts ...ParticleOption) (*Particle, error) {
 	if particleFS == nil {
 		return nil, errors.New("runtime: NewParticle: particleFS is required")
 	}
@@ -208,7 +227,7 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, credStore c
 	if kvStore == nil {
 		return nil, errors.New("runtime: NewParticle: kvStore is required")
 	}
-	return r.newParticleInternal(ctx, particleFS, credStore, kvStore, applyParticleOptions(opts))
+	return r.newParticleInternal(ctx, particleFS, credStore, kvStore, mounts, applyParticleOptions(opts))
 }
 
 // newParticleInternal is the un-validated, no-options-parsing core
@@ -218,7 +237,7 @@ func (r *Runtime) NewParticle(ctx context.Context, particleFS fs.FS, credStore c
 // one directly with `introspectMode: true` so the trap-mode wiring
 // is a private concern, not a public option that callers could
 // pass alongside the wrong stores.
-func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, credStore credentials.Store, kvStore kv.Store, cfg particleConfig) (*Particle, error) {
+func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, credStore credentials.Store, kvStore kv.Store, mounts map[string]fs.FS, cfg particleConfig) (*Particle, error) {
 	manifest, err := LoadManifest(particleFS)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
@@ -244,33 +263,19 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
 	}
 
-	// Build the in-memory FS the runtime sees through
-	// wasi:filesystem. JS / Python read their bundle from
-	// `/particle/bundle.{js,py}`; the artifact FS is mounted at
-	// `particle` so the wasi guest sees those paths. Wasm
-	// particles don't read any bundle from the FS — the component
-	// is fully self-contained — but we still mount the artifact so
-	// authors can ship per-particle data files alongside.
-	//
-	// For Python particles we mount the entire artifact (not just
-	// bundle.py) so `_deps/site-packages` comes along for the ride
-	// and `import httpx` finds the wheels resolved at build time.
-	// For JS particles the artifact also contains manifest.json /
-	// build-info.json — visible at /particle/manifest.json inside
-	// the sandbox but never read by the runtime; harmless.
+	// Built-in runtime files live under a single read-only "/" preopen
+	// — the merged view the JS / Python / wasm runtimes have always
+	// seen. JS / Python read their bundle from `/particle/bundle.{mjs,py}`
+	// (the JS module loader resolves `import("/particle/bundle.mjs")`
+	// against this "/" root, so the artifact must stay reachable there);
+	// the rest of the artifact rides along (Python's `_deps/site-packages`
+	// wheels, author data files). Python additionally needs the embedded
+	// CPython stdlib at /usr/local/lib/python3.14 and the runtime
+	// bootstrap at /runtime.
 	if err := validateParticleBundle(particleFS, bundleFilename); err != nil {
 		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
 	}
-
-	// Python particles need the embedded CPython stdlib (loaded at
-	// import time by /usr/local/lib/python3.14/..., etc.) and the
-	// runtime-side bootstrap (bootstrap.py + the particle/ helper
-	// package) on top of the bundle. Both ride as zip-backed fs.FSs
-	// mounted into the same wasi preopen tree alongside the
-	// particle bundle. The artifact FS itself is mounted in-place
-	// at "particle/" — no byte copy, mountedFS rewrites paths on
-	// the fly.
-	mounts := map[string]fs.FS{"particle": particleFS}
+	builtins := map[string]fs.FS{"particle": particleFS}
 	wasiEnv := [][2]string(nil)
 	if selectedRuntime == RuntimePython {
 		stdlibFS, err := pythonStdlibFS()
@@ -281,14 +286,37 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 		if err != nil {
 			return nil, fmt.Errorf("runtime: load embedded python bootstrap: %w", err)
 		}
-		mounts[pythonStdlibMountPath] = stdlibFS
-		mounts["runtime"] = bootstrapFS
+		builtins[pythonStdlibMountPath] = stdlibFS
+		builtins["runtime"] = bootstrapFS
 		wasiEnv = [][2]string{
 			{"PYTHONHOME", "/usr/local"},
 			{"PYTHONNOUSERSITE", "1"},
 		}
 	}
-	rootFS := fs.FS(newMountedFS(mounts))
+	builtinFS := newMountedFS(builtins)
+
+	// User-declared mounts each get their own preopen at their guest
+	// path; the guest's libc resolves an absolute open against the
+	// longest-matching preopen, so "/data" wins over the catch-all "/".
+	// buildMountPreopens validates against the manifest (required
+	// present, undeclared rejected, read-only enforced; each wrapped in
+	// a trackingFS whose closer reclaims leaked guest handles).
+	entries := []*preopens.PreopenEntry{
+		{Path: "/", Root: ".", FS: preopens.ImmutableFS{FS: builtinFS}},
+	}
+	userEntries, mountClosers, err := buildMountPreopens(manifest, mounts)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
+	}
+	reserved := builtinGuestPaths(selectedRuntime)
+	for _, e := range userEntries {
+		for _, r := range reserved {
+			if pathsOverlap(e.Path, r) {
+				return nil, fmt.Errorf("runtime: NewParticle: mount path %q overlaps the runtime-reserved path %q", e.Path, r)
+			}
+		}
+	}
+	entries = append(entries, userEntries...)
 
 	allowedHosts := manifest.Capabilities.HTTP.AllowedHosts
 
@@ -322,7 +350,7 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	w, err := wasi.NewWorld(ctx, r.cfg.Engine, &wasi.Config{
 		Args:         []string{"particle-runtime"},
 		Env:          wasiEnv,
-		Preopens:     preopens.NewFSPreopens(preopens.ImmutableFS{FS: rootFS}),
+		Preopens:     preopens.NewMultiFSPreopens(entries),
 		Stdin:        strings.NewReader(""),
 		Stdout:       io.Discard,
 		Stderr:       stderr,
@@ -421,15 +449,16 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 
 	// Python runtime imports particle:host/dyld@0.1.0 unconditionally
 	// (its libpython.so + .so extensions resolve through this host
-	// adapter). Build a per-particle dyld instance; the FS argument
-	// is the same wasi-namespace view CPython sees — so dlopen("/
-	// particle/_deps/site-packages/foo.abi3.so") strips the leading
-	// "/" and resolves against the same mountedFS layout that
-	// wasi:filesystem serves.
+	// adapter). The dyld adapter resolves an absolute dlopen path
+	// (e.g. "/particle/_deps/site-packages/foo.abi3.so") against a
+	// single fs.FS by stripping the leading "/", so we hand it a
+	// mountedFS that overlays the same preopens wasi:filesystem serves,
+	// keyed by guest path. dlopen only reads, so RO-wrapped mounts are
+	// fine here.
 	if selectedRuntime == RuntimePython {
 		dyldAdapter, err := dyld.NewAdapter(dyld.AdapterConfig{
 			Engine: r.cfg.Engine,
-			FS:     rootFS,
+			FS:     builtinFS,
 		})
 		if err != nil {
 			closeAll()
@@ -482,11 +511,12 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	// is unsafe.
 
 	return &Particle{
-		manifest:  manifest,
-		inst:      inst,
-		wasi:      w,
-		hostInsts: hostInsts,
-		stderr:    stderr,
+		manifest:     manifest,
+		inst:         inst,
+		wasi:         w,
+		hostInsts:    hostInsts,
+		mountClosers: mountClosers,
+		stderr:       stderr,
 	}, nil
 }
 
@@ -518,6 +548,14 @@ func (p *Particle) Close(ctx context.Context) error {
 		}
 		p.wasi = nil
 	}
+	// Reclaim any mount file handles the guest left open, now that the
+	// instance is fully torn down and can't reference them.
+	for _, c := range p.mountClosers {
+		if err := c.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	p.mountClosers = nil
 	return first
 }
 

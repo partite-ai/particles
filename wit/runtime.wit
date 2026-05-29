@@ -123,9 +123,35 @@ interface manifest {
   record capability-set {
     /// Outbound HTTP capability. None = no HTTP at all.
     http: option<http-capability>,
+    /// Host filesystem mounts. None = no mounts declared.
+    filesystem: option<filesystem-capability>,
   }
   record http-capability {
     allowed-hosts: list<string>,
+  }
+
+  /// Declared filesystem mounts. WIT has no map type, so each map is
+  /// modeled as `list<entry>` with the map key inlined as `name`.
+  record filesystem-capability {
+    mounts: list<mount-decl>,
+    temp: list<temp-mount-decl>,
+  }
+  record mount-decl {
+    name: string,
+    description: string,
+    path: string,
+    access: mount-access,
+    required: bool,
+  }
+  enum mount-access {
+    readonly,
+    readwrite,
+  }
+  record temp-mount-decl {
+    name: string,
+    description: string,
+    path: string,
+    max-size: string,
   }
 
   /// One entry in the credentials map. WIT doesn't have map types,

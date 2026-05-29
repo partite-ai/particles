@@ -22,6 +22,7 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/partite-ai/particles/credentials"
+	"github.com/partite-ai/particles/mounts"
 	"github.com/partite-ai/particles/registry"
 )
 
@@ -34,6 +35,14 @@ type Options struct {
 	// top-level `credentials`. May be nil when the manifest
 	// declares none. Required otherwise.
 	Credentials credentials.Store
+
+	// Mounts is the per-particle store that records persistent
+	// filesystem mount mappings. When set (along with Prompter),
+	// Import offers to map each declared `capabilities.filesystem`
+	// mount to a host directory. May be nil when the manifest
+	// declares no mounts or the caller doesn't want to set them up
+	// at install time.
+	Mounts mounts.Store
 
 	// Prompter drives the per-credential setup conversation and
 	// the permission-confirmation prompt (see [PermissionMode]).
@@ -129,6 +138,18 @@ func Import(ctx context.Context, particleFS fs.FS, opts Options) (registry.Entry
 				return registry.Entry{}, err
 			}
 		}
+	}
+
+	// Offer to map declared filesystem mounts to host directories.
+	// Optional: a declined or absent mapping just defers to run time
+	// (--mount / `particle mount`); a missing required mount never
+	// blocks registration.
+	fsCap, err := parseFilesystemCap(manifest.CapabilitiesRaw)
+	if err != nil {
+		return registry.Entry{}, err
+	}
+	if err := setupMounts(ctx, opts, fsCap); err != nil {
+		return registry.Entry{}, err
 	}
 
 	if err := opts.Registry.Put(ctx, manifest.Name, manifest.Version, particleFS); err != nil {

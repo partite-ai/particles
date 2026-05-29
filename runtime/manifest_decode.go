@@ -61,7 +61,57 @@ func decodeCapabilitySet(rec *wc.ValRecord) Capabilities {
 			}
 		}
 	}
+	if opt, ok := rec.Field("filesystem").(*wc.ValOption); ok && !opt.IsNone() {
+		if fsRec, ok := opt.Val().(*wc.ValRecord); ok {
+			out.Filesystem = decodeFilesystemCapability(fsRec)
+		}
+	}
 	return out
+}
+
+// decodeFilesystemCapability lifts the WIT `filesystem-capability`
+// record (mounts + temp as lists with the map key inlined as `name`,
+// since WIT has no map type) into the map-keyed Go shape.
+func decodeFilesystemCapability(rec *wc.ValRecord) FilesystemCapability {
+	fc := FilesystemCapability{}
+	if list, ok := rec.Field("mounts").(*wc.ValList); ok && list.Len() > 0 {
+		fc.Mounts = make(map[string]MountDecl, list.Len())
+		for i := 0; i < list.Len(); i++ {
+			mrec, ok := list.Get(i).(*wc.ValRecord)
+			if !ok {
+				continue
+			}
+			decl := MountDecl{
+				Description: stringField(mrec, "description"),
+				Path:        stringField(mrec, "path"),
+				Required:    boolField(mrec, "required"),
+			}
+			if e, ok := mrec.Field("access").(*wc.ValEnum); ok {
+				switch e.Discriminant() {
+				case 0:
+					decl.Access = MountReadOnly
+				case 1:
+					decl.Access = MountReadWrite
+				}
+			}
+			fc.Mounts[stringField(mrec, "name")] = decl
+		}
+	}
+	if list, ok := rec.Field("temp").(*wc.ValList); ok && list.Len() > 0 {
+		fc.Temp = make(map[string]TempMountDecl, list.Len())
+		for i := 0; i < list.Len(); i++ {
+			trec, ok := list.Get(i).(*wc.ValRecord)
+			if !ok {
+				continue
+			}
+			fc.Temp[stringField(trec, "name")] = TempMountDecl{
+				Description: stringField(trec, "description"),
+				Path:        stringField(trec, "path"),
+				MaxSize:     stringField(trec, "max-size"),
+			}
+		}
+	}
+	return fc
 }
 
 func decodeCredentialList(list *wc.ValList) (map[string]Credential, error) {

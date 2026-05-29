@@ -71,7 +71,7 @@ func run() error {
 
 	credStore := credmem.New().Scoped("aiohttp-test")
 	kvStore := kvmem.New().Scoped("aiohttp-test")
-	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
+	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
 	if err != nil {
 		return fmt.Errorf("NewParticle: %w", err)
 	}

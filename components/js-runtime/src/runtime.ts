@@ -314,7 +314,25 @@ export const manifest = {
 // -----------------------------------------------------------------------------
 
 type HttpCapability = { allowedHosts: string[] };
-type CapabilitySet = { http: HttpCapability | undefined };
+type MountAccess = "readonly" | "readwrite";
+type MountDecl = {
+  name: string;
+  description: string;
+  path: string;
+  access: MountAccess;
+  required: boolean;
+};
+type TempMountDecl = {
+  name: string;
+  description: string;
+  path: string;
+  maxSize: string;
+};
+type FilesystemCapability = { mounts: MountDecl[]; temp: TempMountDecl[] };
+type CapabilitySet = {
+  http: HttpCapability | undefined;
+  filesystem: FilesystemCapability | undefined;
+};
 
 type Oauth2Flow = "authorization-code" | "authorization-code-pkce" | "device-code";
 type Oauth2Method = {
@@ -405,13 +423,65 @@ function buildManifestRecord(p: UserParticle): ParticleManifestRecord {
 }
 
 function buildCapabilitySet(raw: Record<string, unknown>): CapabilitySet {
-  const http = raw.http as RawObject | undefined;
-  if (!http) return { http: undefined };
+  return {
+    http: buildHttpCapability(raw.http as RawObject | undefined),
+    filesystem: buildFilesystemCapability(raw.filesystem as RawObject | undefined),
+  };
+}
+
+function buildHttpCapability(http: RawObject | undefined): HttpCapability | undefined {
+  if (!http) return undefined;
   const allowed = (http.allowedHosts as unknown[] | undefined) ?? [];
   if (!Array.isArray(allowed) || !allowed.every((h) => typeof h === "string")) {
     throw new Error("capabilities.http.allowedHosts must be a list of strings");
   }
-  return { http: { allowedHosts: allowed as string[] } };
+  return { allowedHosts: allowed as string[] };
+}
+
+// Lifts capabilities.filesystem (mounts/temp keyed by name) into the
+// WIT list-shape, with the map key inlined as `name`. Mirrors the
+// validation the Go runtime enforces at load time so an invalid
+// declaration fails at build, not first run.
+function buildFilesystemCapability(fsRaw: RawObject | undefined): FilesystemCapability | undefined {
+  if (!fsRaw) return undefined;
+
+  const mounts: MountDecl[] = [];
+  const mountsRaw = (fsRaw.mounts as Record<string, RawObject> | undefined) ?? {};
+  for (const [name, m] of Object.entries(mountsRaw)) {
+    if (typeof m.description !== "string" || !m.description) {
+      throw new Error(`capabilities.filesystem.mounts.${name}.description is required`);
+    }
+    if (typeof m.path !== "string" || !m.path) {
+      throw new Error(`capabilities.filesystem.mounts.${name}.path must be a non-empty string`);
+    }
+    if (m.access !== "readonly" && m.access !== "readwrite") {
+      throw new Error(`capabilities.filesystem.mounts.${name}.access must be "readonly" or "readwrite"`);
+    }
+    mounts.push({
+      name,
+      description: m.description,
+      path: m.path,
+      access: m.access,
+      required: m.required === true,
+    });
+  }
+
+  const temp: TempMountDecl[] = [];
+  const tempRaw = (fsRaw.temp as Record<string, RawObject> | undefined) ?? {};
+  for (const [name, t] of Object.entries(tempRaw)) {
+    if (typeof t.description !== "string" || !t.description) {
+      throw new Error(`capabilities.filesystem.temp.${name}.description is required`);
+    }
+    if (typeof t.path !== "string" || !t.path) {
+      throw new Error(`capabilities.filesystem.temp.${name}.path must be a non-empty string`);
+    }
+    if (typeof t.maxSize !== "string" || !t.maxSize) {
+      throw new Error(`capabilities.filesystem.temp.${name}.maxSize must be a non-empty string`);
+    }
+    temp.push({ name, description: t.description, path: t.path, maxSize: t.maxSize });
+  }
+
+  return { mounts, temp };
 }
 
 function buildCredentials(raw: Record<string, RawObject>): CredentialEntry[] {

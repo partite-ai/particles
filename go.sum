@@ -35,6 +35,12 @@ github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOF
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
 github.com/partite-ai/wacogo v0.0.0-20260527203917-55ff87190af3 h1:Mb2GSftlpLclJA/hd6RaWY5WPP2PxbMAsw6yT+uV6m0=
 github.com/partite-ai/wacogo v0.0.0-20260527203917-55ff87190af3/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
+github.com/partite-ai/wacogo v0.0.0-20260528222354-48d949c739e6 h1:Q42oo/jBSWTLoIcCHKc1KIbNadozFrms5ayzjuRNxmw=
+github.com/partite-ai/wacogo v0.0.0-20260528222354-48d949c739e6/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
+github.com/partite-ai/wacogo v0.0.0-20260529012318-e76a7028c200 h1:7GVGpwxycKYDJigvygTXO4Mhvc3R6RN46FzTVmRY1PY=
+github.com/partite-ai/wacogo v0.0.0-20260529012318-e76a7028c200/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
+github.com/partite-ai/wacogo v0.0.0-20260529012923-31211237ef20 h1:hm4DV1rOj2kN6sgKuPyB1yYXr4ekDRe/B3vHqpHBwAc=
+github.com/partite-ai/wacogo v0.0.0-20260529012923-31211237ef20/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=

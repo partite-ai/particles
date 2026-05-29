@@ -106,11 +106,41 @@ class HttpCapability:
         self.allowed_hosts = allowed_hosts
 
 
-class CapabilitySet:
-    __slots__ = ("http",)
+class MountDecl:
+    __slots__ = ("name", "description", "path", "access", "required")
 
-    def __init__(self, http: HttpCapability | None) -> None:
+    def __init__(self, name, description, path, access, required) -> None:
+        self.name = name
+        self.description = description
+        self.path = path
+        self.access = access
+        self.required = required
+
+
+class TempMountDecl:
+    __slots__ = ("name", "description", "path", "max_size")
+
+    def __init__(self, name, description, path, max_size) -> None:
+        self.name = name
+        self.description = description
+        self.path = path
+        self.max_size = max_size
+
+
+class FilesystemCapability:
+    __slots__ = ("mounts", "temp")
+
+    def __init__(self, mounts, temp) -> None:
+        self.mounts = mounts
+        self.temp = temp
+
+
+class CapabilitySet:
+    __slots__ = ("http", "filesystem")
+
+    def __init__(self, http: HttpCapability | None, filesystem: FilesystemCapability | None = None) -> None:
         self.http = http
+        self.filesystem = filesystem
 
 
 # Credential-method variants. Rust dispatches by `.kind` (a short
@@ -439,12 +469,35 @@ def _build_manifest_record(p) -> ParticleManifest:
     """Lift the user-facing `Particle` dataclass into a Particle-
     Manifest the Rust side can recursively marshal."""
     http = getattr(p, "http", None)
-    if http is None:
-        capabilities = CapabilitySet(http=None)
-    else:
-        capabilities = CapabilitySet(
-            http=HttpCapability(allowed_hosts=list(getattr(http, "allowed_hosts", []) or [])),
-        )
+    http_cap = None
+    if http is not None:
+        http_cap = HttpCapability(allowed_hosts=list(getattr(http, "allowed_hosts", []) or []))
+
+    fs = getattr(p, "filesystem", None)
+    fs_cap = None
+    if fs is not None:
+        mounts = [
+            MountDecl(
+                name=mname,
+                description=getattr(m, "description", "") or "",
+                path=getattr(m, "path", "") or "",
+                access=getattr(m, "access", "readonly") or "readonly",
+                required=bool(getattr(m, "required", False)),
+            )
+            for mname, m in (getattr(fs, "mounts", {}) or {}).items()
+        ]
+        temp = [
+            TempMountDecl(
+                name=tname,
+                description=getattr(t, "description", "") or "",
+                path=getattr(t, "path", "") or "",
+                max_size=getattr(t, "max_size", "") or "",
+            )
+            for tname, t in (getattr(fs, "temp", {}) or {}).items()
+        ]
+        fs_cap = FilesystemCapability(mounts=mounts, temp=temp)
+
+    capabilities = CapabilitySet(http=http_cap, filesystem=fs_cap)
 
     credentials = []
     creds_map = getattr(p, "credentials", {}) or {}

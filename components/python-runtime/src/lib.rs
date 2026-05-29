@@ -53,9 +53,10 @@ use exports::particle::runtime::health::{
 };
 use exports::particle::runtime::manifest::{
     ApikeyLocation, ApikeyLocationKind, ApikeyMethod, CapabilitySet, CredentialEntry,
-    CredentialMethod, CredentialMethodEntry, ErrorDetail as ManifestErrorDetail, Guest as
-    ManifestGuest, HttpCapability, ManifestError, Oauth2Flow, Oauth2Method, ParticleManifest,
-    SigningAlgorithm, SigningKeyMethod, ToolEntry,
+    CredentialMethod, CredentialMethodEntry, ErrorDetail as ManifestErrorDetail,
+    FilesystemCapability, Guest as ManifestGuest, HttpCapability, ManifestError, MountAccess,
+    MountDecl, Oauth2Flow, Oauth2Method, ParticleManifest, SigningAlgorithm, SigningKeyMethod,
+    TempMountDecl, ToolEntry,
 };
 use exports::particle::runtime::tools::{
     ErrorDetail as ToolErrorDetail, Guest as ToolsGuest, ToolDef, ToolError,
@@ -906,20 +907,20 @@ unsafe fn marshal_particle_manifest(obj: *mut pyo3_ffi::PyObject) -> Result<Part
 }
 
 unsafe fn marshal_capability_set(parent: *mut pyo3_ffi::PyObject) -> Result<CapabilitySet, String> {
-    // parent.capabilities — a CapabilitySet-like object with .http.
+    // parent.capabilities — a CapabilitySet-like object with .http and
+    // .filesystem.
     let cn = CString::new("capabilities").unwrap();
     let caps = pyo3_ffi::PyObject_GetAttrString(parent, cn.as_ptr());
     if caps.is_null() {
         pyo3_ffi::PyErr_Clear();
-        return Ok(CapabilitySet { http: None });
+        return Ok(CapabilitySet { http: None, filesystem: None });
     }
     if is_none(caps) {
         pyo3_ffi::Py_DecRef(caps);
-        return Ok(CapabilitySet { http: None });
+        return Ok(CapabilitySet { http: None, filesystem: None });
     }
     let http_name = CString::new("http").unwrap();
     let http_obj = pyo3_ffi::PyObject_GetAttrString(caps, http_name.as_ptr());
-    pyo3_ffi::Py_DecRef(caps);
     let http = if http_obj.is_null() {
         pyo3_ffi::PyErr_Clear();
         None
@@ -933,7 +934,51 @@ unsafe fn marshal_capability_set(parent: *mut pyo3_ffi::PyObject) -> Result<Capa
         pyo3_ffi::Py_DecRef(http_obj);
         Some(HttpCapability { allowed_hosts })
     };
-    Ok(CapabilitySet { http })
+    let filesystem = marshal_filesystem_capability(caps)?;
+    pyo3_ffi::Py_DecRef(caps);
+    Ok(CapabilitySet { http, filesystem })
+}
+
+// marshal_filesystem_capability reads `caps.filesystem` (a
+// FilesystemCapability-like object with `.mounts` / `.temp` lists whose
+// items carry the map key inlined as `.name`) into the WIT record, or
+// None when the particle declares no filesystem capability.
+unsafe fn marshal_filesystem_capability(
+    caps: *mut pyo3_ffi::PyObject,
+) -> Result<Option<FilesystemCapability>, String> {
+    let fs_name = CString::new("filesystem").unwrap();
+    let fs_obj = pyo3_ffi::PyObject_GetAttrString(caps, fs_name.as_ptr());
+    if fs_obj.is_null() {
+        pyo3_ffi::PyErr_Clear();
+        return Ok(None);
+    }
+    if is_none(fs_obj) {
+        pyo3_ffi::Py_DecRef(fs_obj);
+        return Ok(None);
+    }
+    let mounts = get_list_attr(fs_obj, "mounts", |item| {
+        let access = match get_string_attr(item, "access").unwrap_or_default().as_str() {
+            "readwrite" => MountAccess::Readwrite,
+            _ => MountAccess::Readonly,
+        };
+        Ok(MountDecl {
+            name: get_string_attr(item, "name").unwrap_or_default(),
+            description: get_string_attr(item, "description").unwrap_or_default(),
+            path: get_string_attr(item, "path").unwrap_or_default(),
+            access,
+            required: get_bool_attr(item, "required", false),
+        })
+    });
+    let temp = get_list_attr(fs_obj, "temp", |item| {
+        Ok(TempMountDecl {
+            name: get_string_attr(item, "name").unwrap_or_default(),
+            description: get_string_attr(item, "description").unwrap_or_default(),
+            path: get_string_attr(item, "path").unwrap_or_default(),
+            max_size: get_string_attr(item, "max_size").unwrap_or_default(),
+        })
+    });
+    pyo3_ffi::Py_DecRef(fs_obj);
+    Ok(Some(FilesystemCapability { mounts: mounts?, temp: temp? }))
 }
 
 unsafe fn marshal_tool_entry(obj: *mut pyo3_ffi::PyObject) -> Result<ToolEntry, String> {

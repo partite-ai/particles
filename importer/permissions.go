@@ -204,10 +204,57 @@ func writeCapability(b *strings.Builder, name string, raw json.RawMessage) {
 		for _, h := range v.AllowedHosts {
 			fmt.Fprintf(b, "    %s\n", h)
 		}
+	case "filesystem":
+		var v filesystemCap
+		_ = json.Unmarshal(raw, &v)
+		writeFilesystemCapability(b, v)
 	default:
 		// Unknown capability category — print as raw JSON so
 		// the user can still see what they're agreeing to.
 		fmt.Fprintf(b, "  %s — %s\n", name, string(raw))
+	}
+}
+
+// writeFilesystemCapability renders capabilities.filesystem in the
+// permission summary. Mounts lead with name + description (what the
+// user actually has to reason about), then access / required / path on
+// a detail line; temp mounts surface their size cap. Both are sorted so
+// the summary is stable across runs.
+func writeFilesystemCapability(b *strings.Builder, fc filesystemCap) {
+	fmt.Fprintf(b, "  Filesystem:\n")
+	if len(fc.Mounts) == 0 && len(fc.Temp) == 0 {
+		fmt.Fprintf(b, "    (none)\n")
+		return
+	}
+
+	names := make([]string, 0, len(fc.Mounts))
+	for n := range fc.Mounts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		m := fc.Mounts[n]
+		access := "read-write"
+		if m.Access == "readonly" {
+			access = "read-only"
+		}
+		req := "optional"
+		if m.Required {
+			req = "required"
+		}
+		fmt.Fprintf(b, "    %s — %s\n", n, m.Description)
+		fmt.Fprintf(b, "      %s, %s, at %s\n", access, req, m.Path)
+	}
+
+	tnames := make([]string, 0, len(fc.Temp))
+	for n := range fc.Temp {
+		tnames = append(tnames, n)
+	}
+	sort.Strings(tnames)
+	for _, n := range tnames {
+		t := fc.Temp[n]
+		fmt.Fprintf(b, "    %s (temp) — %s\n", n, t.Description)
+		fmt.Fprintf(b, "      up to %s, at %s\n", t.MaxSize, t.Path)
 	}
 }
 

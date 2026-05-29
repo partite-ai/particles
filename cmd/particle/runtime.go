@@ -16,6 +16,7 @@ import (
 	credsqlite "github.com/partite-ai/particles/credentials/sqlite"
 	"github.com/partite-ai/particles/kv"
 	kvsqlite "github.com/partite-ai/particles/kv/sqlite"
+	mountsqlite "github.com/partite-ai/particles/mounts/sqlite"
 	"github.com/partite-ai/particles/registry"
 	"github.com/partite-ai/particles/runtime"
 )
@@ -33,7 +34,7 @@ import (
 // closure (not a chain of `defer`s) so the two callers — `ping` and
 // `serve-mcp` — can share the bring-up without each carrying eight
 // `defer` lines.
-func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry, warnW io.Writer) (*runtime.Particle, func(), error) {
+func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry, cliMounts map[string]string, warnW io.Writer) (*runtime.Particle, func(), error) {
 	credBackend, err := credsqlite.New(ctx, db, openCredentialSealer(warnW))
 	if err != nil {
 		return nil, nil, fmt.Errorf("credentials store: %w", err)
@@ -41,6 +42,10 @@ func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry, warnW i
 	kvBackend, err := kvsqlite.New(ctx, db)
 	if err != nil {
 		return nil, nil, fmt.Errorf("kv store: %w", err)
+	}
+	mountBackend, err := mountsqlite.New(ctx, db)
+	if err != nil {
+		return nil, nil, fmt.Errorf("mounts store: %w", err)
 	}
 
 	// Persistent wasm compilation cache. Failure to open is non-
@@ -86,6 +91,23 @@ func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry, warnW i
 		return nil, nil, fmt.Errorf("runtime: %w", err)
 	}
 
+	// Resolve the particle's declared filesystem mounts into the
+	// name→FS map NewParticle wants: persistent mappings from the
+	// mounts store, --mount overrides on top, and temp scratch dirs
+	// provisioned fresh. mountCleanup releases os.Root handles and
+	// deletes the temp dirs.
+	mountMap, mountCleanup, err := resolveMounts(ctx, entry.Name, entry.Particle, mountBackend.Scoped(entry.Name), cliMounts)
+	if err != nil {
+		_ = rt.Close(ctx)
+		_ = kvMgr.Close(ctx)
+		_ = credMgr.Close(ctx)
+		_ = engine.Close(ctx)
+		if cache != nil {
+			_ = cache.Close(ctx)
+		}
+		return nil, nil, err
+	}
+
 	// Scope the multi-particle backends to this particle's
 	// name. The resulting per-particle Stores are what
 	// NewParticle reads through; the Managers themselves stay
@@ -93,17 +115,23 @@ func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry, warnW i
 	p, err := rt.NewParticle(ctx, entry.Particle,
 		credBackend.Scoped(entry.Name),
 		kvBackend.Scoped(entry.Name),
+		mountMap,
 	)
 	if err != nil {
+		mountCleanup()
 		_ = rt.Close(ctx)
 		_ = kvMgr.Close(ctx)
 		_ = credMgr.Close(ctx)
 		_ = engine.Close(ctx)
+		if cache != nil {
+			_ = cache.Close(ctx)
+		}
 		return nil, nil, fmt.Errorf("instantiate: %w", err)
 	}
 
 	teardown := func() {
 		_ = p.Close(ctx)
+		mountCleanup()
 		_ = rt.Close(ctx)
 		_ = kvMgr.Close(ctx)
 		_ = credMgr.Close(ctx)

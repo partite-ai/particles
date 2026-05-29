@@ -94,7 +94,7 @@ func TestRuntime_EchoTool_EndToEnd(t *testing.T) {
 	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
 
-	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
+	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
 	if err != nil {
 		t.Fatalf("NewParticle: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestRuntime_CallTool_NotFound(t *testing.T) {
 	res := buildParticle(t, src)
 	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
-	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
+	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestRuntime_CallTool_HandlerError(t *testing.T) {
 	res := buildParticle(t, src)
 	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
-	p, _ := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
+	p, _ := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
 	defer p.Close(ctx)
 
 	_, err := p.CallTool(ctx, "boom", []byte(`{}`))
@@ -236,7 +236,7 @@ func TestRuntime_CallTool_ValidatesAgainstSchema(t *testing.T) {
 	res := buildParticle(t, src)
 	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
-	p, _ := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
+	p, _ := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
 	defer p.Close(ctx)
 
 	t.Run("missing required", func(t *testing.T) {
@@ -294,7 +294,7 @@ func TestRuntime_CallTool_ValidationPrecedesHandler(t *testing.T) {
 	res := buildParticle(t, src)
 	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
-	p, _ := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
+	p, _ := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
 	defer p.Close(ctx)
 
 	_, err := p.CallTool(ctx, "setX", []byte(`{}`))
@@ -346,7 +346,7 @@ export default {
 	res := buildParticle(t, src)
 	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
-	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
+	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
 	if err != nil {
 		t.Fatalf("NewParticle: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestRuntime_Ping_NotImplemented(t *testing.T) {
 	res := buildParticle(t, src)
 	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
-	p, _ := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
+	p, _ := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
 	defer p.Close(ctx)
 
 	_, err := p.Ping(ctx)
@@ -411,7 +411,7 @@ func TestRuntime_Ping_Implemented(t *testing.T) {
 	res := buildParticle(t, src)
 	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
-	p, _ := rt.NewParticle(ctx, res.Particle, credStore, kvStore)
+	p, _ := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
 	defer p.Close(ctx)
 
 	pr, err := p.Ping(ctx)
@@ -453,11 +453,11 @@ func TestRuntime_NewParticle_RejectsBadFS(t *testing.T) {
 	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
 	defer cleanup()
 
-	if _, err := rt.NewParticle(ctx, nil, credStore, kvStore); err == nil {
+	if _, err := rt.NewParticle(ctx, nil, credStore, kvStore, nil); err == nil {
 		t.Error("expected error for nil FS")
 	}
 	// FS without manifest.json
-	if _, err := rt.NewParticle(ctx, fstest.MapFS{"bundle.mjs": &fstest.MapFile{Data: []byte("export default {};")}}, credStore, kvStore); err == nil {
+	if _, err := rt.NewParticle(ctx, fstest.MapFS{"bundle.mjs": &fstest.MapFile{Data: []byte("export default {};")}}, credStore, kvStore, nil); err == nil {
 		t.Error("expected error for FS without manifest.json")
 	}
 }

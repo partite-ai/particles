@@ -20,6 +20,7 @@ import (
 	"github.com/partite-ai/particles/credentials"
 	credsqlite "github.com/partite-ai/particles/credentials/sqlite"
 	"github.com/partite-ai/particles/importer"
+	mountsqlite "github.com/partite-ai/particles/mounts/sqlite"
 	regsqlite "github.com/partite-ai/particles/registry/sqlite"
 )
 
@@ -100,9 +101,15 @@ func runImport(cmd *cobra.Command, src, dbPath string, permMode importer.Permiss
 		credStore = backend.Scoped(name)
 	}
 
+	mountBackend, err := mountsqlite.New(ctx, db)
+	if err != nil {
+		return fmt.Errorf("mounts store: %w", err)
+	}
+
 	entry, err := importer.Import(ctx, particleFS, importer.Options{
 		Registry:       reg,
 		Credentials:    credStore,
+		Mounts:         mountBackend.Scoped(name),
 		Prompter:       prompter,
 		PermissionMode: permMode,
 	})

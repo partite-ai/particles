@@ -185,3 +185,58 @@ particle = Particle(name="x", description="", version="0.1.0")
 		t.Fatal("expected error for malformed PEP 723 block")
 	}
 }
+
+// Python build that declares filesystem mounts via the author DSL
+// (Filesystem/Mount/TempMount). Confirms the capability survives the
+// dataclass → bootstrap → Rust marshal → WIT get-manifest → Go decode
+// → manifest.json round-trip.
+func TestBuild_Python_FilesystemCapability(t *testing.T) {
+	source := `from particle.manifest import Particle, Tool, Filesystem, Mount, TempMount
+
+def _noop(args):
+    return {"ok": True}
+
+particle = Particle(
+    name="py-fs",
+    description="python filesystem mounts",
+    version="0.1.0",
+    filesystem=Filesystem(
+        mounts={
+            "data": Mount(description="report output", path="/data", access="readwrite", required=True),
+            "config": Mount(description="config files", path="/etc/app", access="readonly"),
+        },
+        temp={
+            "scratch": TempMount(description="scratch space", path="/tmp/work", max_size="1MB"),
+        },
+    ),
+    tools={
+        "noop": Tool(
+            description="no-op",
+            input_schema={"type": "object", "properties": {}},
+            handler=_noop,
+        ),
+    },
+)
+`
+	src := fstest.MapFS{"Particlefile.py": &fstest.MapFile{Data: []byte(source)}}
+	res, err := build.Build(context.Background(), build.Options{Source: src, NoTypeCheck: true})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	manifest := string(readFile(t, res.Particle, "manifest.json"))
+	for _, want := range []string{
+		`"runtime":"python"`,
+		`"filesystem"`,
+		`"path":"/data"`,
+		`"access":"readwrite"`,
+		`"required":true`,
+		`"path":"/etc/app"`,
+		`"access":"readonly"`,
+		`"path":"/tmp/work"`,
+		`"maxSize":"1MB"`,
+	} {
+		if !strings.Contains(manifest, want) {
+			t.Errorf("manifest missing %q; full payload:\n%s", want, manifest)
+		}
+	}
+}

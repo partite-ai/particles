@@ -14,7 +14,10 @@ import (
 )
 
 func newRunCmd() *cobra.Command {
-	var dbPath string
+	var (
+		dbPath     string
+		mountFlags []string
+	)
 	cmd := &cobra.Command{
 		Use:   "run <name>[@version] [tool] [tool-flags]",
 		Short: "Call a tool on a registered particle",
@@ -24,14 +27,17 @@ from the tool's input schema.
 Without a tool name, lists the available tools. Run
 "particle run <name>[@version] <tool> --help" for tool-specific flags.
 
-The --db flag must precede the particle name; everything after
-the name is forwarded to the tool.`,
+The --db and --mount flags must precede the particle name; everything
+after the name is forwarded to the tool. Use --mount name=host/path to
+map a declared filesystem mount for this run (overriding any saved
+mapping); repeat for multiple mounts.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRun(cmd, args, dbPath)
+			return runRun(cmd, args, dbPath, mountFlags)
 		},
 	}
 	cmd.Flags().StringVar(&dbPath, "db", "", dbFlagUsage())
+	cmd.Flags().StringArrayVar(&mountFlags, "mount", nil, "Map a declared mount as name=host/path (repeatable; overrides saved mappings)")
 	// SetInterspersed(false) tells pflag (cobra's parser) to stop
 	// processing flags at the first positional arg, so tool flags
 	// like `--input` aren't intercepted as unknown.
@@ -39,11 +45,16 @@ the name is forwarded to the tool.`,
 	return cmd
 }
 
-func runRun(cmd *cobra.Command, args []string, dbPath string) error {
+func runRun(cmd *cobra.Command, args []string, dbPath string, mountFlags []string) error {
 	target := args[0]
 	rest := args[1:]
 
-	dbPath, err := resolveDBPath(dbPath)
+	cliMounts, err := parseMountFlags(mountFlags)
+	if err != nil {
+		return err
+	}
+
+	dbPath, err = resolveDBPath(dbPath)
 	if err != nil {
 		return err
 	}
@@ -64,7 +75,7 @@ func runRun(cmd *cobra.Command, args []string, dbPath string) error {
 		return err
 	}
 
-	p, teardown, err := bootParticle(ctx, db, entry, cmd.ErrOrStderr())
+	p, teardown, err := bootParticle(ctx, db, entry, cliMounts, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}

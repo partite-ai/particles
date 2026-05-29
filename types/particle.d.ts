@@ -189,6 +189,15 @@ export interface Capabilities {
    * leaving `allowedHosts` empty) denies everything.
    */
   http?: HTTPCapability;
+
+  /**
+   * Host filesystem access. Declares named mounts (host
+   * directories the user maps in at install / run time) and temp
+   * mounts (scratch space the host provisions fresh each run).
+   * Omitting `filesystem` grants no filesystem access beyond the
+   * particle's own bundle.
+   */
+  filesystem?: FilesystemCapability;
 }
 
 export interface HTTPCapability {
@@ -197,6 +206,85 @@ export interface HTTPCapability {
    * supported in v1; list each host literally.
    */
   allowedHosts?: string[];
+}
+
+// -----------------------------------------------------------------------------
+// Filesystem
+//
+// Mounts and temp mounts are keyed by a stable mount *name* — the
+// identifier the `particle mount <particle> <name> <host-path>`
+// command and the `--mount name=path` run flag refer to. The handler
+// opens files at the declared `path`; the name itself never appears
+// inside the sandbox.
+//
+// From a UX standpoint the user mapping a directory cares about the
+// name and description, not the path — so lead with those. The path
+// is an implementation detail the author picks and the handler reads.
+// -----------------------------------------------------------------------------
+
+export interface FilesystemCapability {
+  /**
+   * Host directories the particle reads (and, when `access` is
+   * `"readwrite"`, writes). Each is mapped to a real directory by
+   * the user — persistently via `particle mount`, or per-run via
+   * `--mount name=path`. A `required` mount must be mapped before
+   * the particle will run (enforced at run time, not install).
+   */
+  mounts?: Record<string, MountDecl>;
+
+  /**
+   * Scratch areas the host provisions automatically: a fresh empty
+   * directory each run, capped at `maxSize`, cleared when the
+   * particle exits. Always read-write; the user never maps these.
+   */
+  temp?: Record<string, TempMountDecl>;
+}
+
+export interface MountDecl {
+  /**
+   * Human-readable explanation of what this mount is for. Shown in
+   * the install permission prompt and `particle mount` listings.
+   */
+  description: string;
+
+  /**
+   * Absolute path the mount appears at inside the sandbox. The
+   * handler opens files here (e.g. `/data/report.json`).
+   */
+  path: string;
+
+  /**
+   * `"readonly"` exposes the directory for reading only; the
+   * runtime rejects writes. `"readwrite"` permits create / write /
+   * delete within the mount.
+   */
+  access: "readonly" | "readwrite";
+
+  /**
+   * Refuse to run the particle until the user maps a host
+   * directory for this mount. Defaults to `false`. Does NOT block
+   * install — a required mount left unmapped fails at run time.
+   */
+  required?: boolean;
+}
+
+export interface TempMountDecl {
+  /**
+   * Human-readable explanation of what the scratch space is for.
+   * Shown in the install permission prompt.
+   */
+  description: string;
+
+  /** Absolute path the scratch directory appears at inside the sandbox. */
+  path: string;
+
+  /**
+   * Maximum total file-content bytes. A bare integer is bytes; a
+   * unit suffix multiplies by 1024ⁿ — `"10000"` is 10000 bytes,
+   * `"10KB"` is 10240, and `"MB"` / `"GB"` scale further. Writes
+   * that would exceed it fail. Required.
+   */
+  maxSize: string;
 }
 
 // -----------------------------------------------------------------------------

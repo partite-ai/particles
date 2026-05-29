@@ -55,6 +55,37 @@ class Http:
     allowed_hosts: list[str] = field(default_factory=list)
 
 
+# ---- Filesystem capability --------------------------------------------------
+
+@dataclass
+class Mount:
+    """One declared host-directory mount. The user maps `name` to a
+    real directory at install / run time; the handler reads files at
+    `path` inside the sandbox. `access` is "readonly" or "readwrite"."""
+    description: str
+    path: str
+    access: Literal["readonly", "readwrite"] = "readonly"
+    required: bool = False
+
+
+@dataclass
+class TempMount:
+    """One scratch mount the host provisions fresh each run and clears
+    on exit. Always read-write. `max_size` caps total file bytes
+    ("10000", "10KB", "1MB", ...)."""
+    description: str
+    path: str
+    max_size: str = ""
+
+
+@dataclass
+class Filesystem:
+    """Filesystem mounts, flattened out of the WIT `capability-set`
+    wrapper like `http`. `mounts` and `temp` are keyed by mount name."""
+    mounts: dict[str, Mount] = field(default_factory=dict)
+    temp: dict[str, TempMount] = field(default_factory=dict)
+
+
 # ---- Credential methods -----------------------------------------------------
 #
 # Each class is one variant of the WIT `credential-method` union. The
@@ -200,6 +231,7 @@ class Particle:
     description: str
     version: str
     http: Optional[Http] = None
+    filesystem: Optional[Filesystem] = None
     credentials: dict[str, Credential] = field(default_factory=dict)
     tools: dict[str, Tool] = field(default_factory=dict)
     ping: Optional[Callable[[], Any]] = None

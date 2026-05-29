@@ -119,10 +119,12 @@ func newRootCmd() (*cobra.Command, func() func()) {
 		newImportCmd(),
 		newLinkCmd(),
 		newListCmd(),
+		newMountCmd(),
 		newPingCmd(),
 		newReconfigureCmd(),
 		newRunCmd(),
 		newServeMCPCmd(),
+		newUnmountCmd(),
 	)
 	return root, func() func() { return profileFlush }
 }

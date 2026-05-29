@@ -15,6 +15,7 @@ import (
 	credsqlite "github.com/partite-ai/particles/credentials/sqlite"
 	"github.com/partite-ai/particles/importer"
 	"github.com/partite-ai/particles/internal/build"
+	mountsqlite "github.com/partite-ai/particles/mounts/sqlite"
 	regsqlite "github.com/partite-ai/particles/registry/sqlite"
 )
 
@@ -167,9 +168,15 @@ func runRegister(cmd *cobra.Command, res *build.Result, dbPath string, permMode 
 		return fmt.Errorf("registry: %w", err)
 	}
 
+	mountBackend, err := mountsqlite.New(ctx, db)
+	if err != nil {
+		return fmt.Errorf("mounts store: %w", err)
+	}
+
 	entry, err := importer.Import(ctx, res.Particle, importer.Options{
 		Registry:       reg,
 		Credentials:    credStore,
+		Mounts:         mountBackend.Scoped(name),
 		Prompter:       prompter,
 		PermissionMode: permMode,
 	})

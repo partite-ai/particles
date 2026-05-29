@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"io/fs"
 	"os"
 	"strings"
 	"testing"
@@ -186,12 +185,6 @@ particle = Particle(
 	bundleFS := fstest.MapFS{
 		"bundle.py": &fstest.MapFile{Data: []byte(bundleSource)},
 	}
-	rootFS := newMountedFS(map[string]fs.FS{
-		pythonStdlibMountPath: stdlibFS,
-		"runtime":             bootstrapFS,
-		"particle":            bundleFS,
-	})
-
 	stderr := &bytes.Buffer{}
 	w, err := wasi.NewWorld(ctx, engine, &wasi.Config{
 		Args: []string{"particle-python-runtime"},
@@ -202,10 +195,14 @@ particle = Particle(
 			// the bootstrap controls sys.path explicitly.
 			{"PYTHONNOUSERSITE", "1"},
 		},
-		Stdin:    strings.NewReader(""),
-		Stdout:   io.Discard,
-		Stderr:   stderr,
-		Preopens: preopens.NewFSPreopens(preopens.ImmutableFS{FS: rootFS}),
+		Stdin:  strings.NewReader(""),
+		Stdout: io.Discard,
+		Stderr: stderr,
+		Preopens: preopens.NewMultiFSPreopens([]*preopens.PreopenEntry{
+			{Path: "/" + pythonStdlibMountPath, Root: ".", FS: preopens.ImmutableFS{FS: stdlibFS}},
+			{Path: "/runtime", Root: ".", FS: preopens.ImmutableFS{FS: bootstrapFS}},
+			{Path: "/particle", Root: ".", FS: preopens.ImmutableFS{FS: bundleFS}},
+		}),
 	})
 	if err != nil {
 		t.Fatalf("wasi.NewWorld: %v", err)

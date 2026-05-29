@@ -70,6 +70,58 @@ func TestBuild_HappyPath(t *testing.T) {
 	}
 }
 
+func TestBuild_FilesystemCapability(t *testing.T) {
+	src := fstest.MapFS{
+		"Particlefile.ts": &fstest.MapFile{
+			Data: []byte(`export default {
+  name: "fs-tools",
+  description: "Filesystem mounts.",
+  version: "0.1.0",
+  capabilities: {
+    filesystem: {
+      mounts: {
+        data: { description: "report output", path: "/data", access: "readwrite", required: true },
+        config: { description: "config files", path: "/etc/app", access: "readonly" },
+      },
+      temp: {
+        scratch: { description: "scratch space", path: "/tmp/work", maxSize: "1MB" },
+      },
+    },
+  },
+  tools: {
+    noop: {
+      description: "no-op",
+      inputSchema: { type: "object", properties: {} },
+      handler: async () => ({ ok: true }),
+    },
+  },
+};
+`),
+		},
+	}
+
+	res, err := build.Build(context.Background(), build.Options{Source: src, NoTypeCheck: true})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	manifest := string(readFile(t, res.Particle, "manifest.json"))
+	for _, want := range []string{
+		`"filesystem"`,
+		`"path":"/data"`,
+		`"access":"readwrite"`,
+		`"required":true`,
+		`"description":"report output"`,
+		`"path":"/etc/app"`,
+		`"access":"readonly"`,
+		`"path":"/tmp/work"`,
+		`"maxSize":"1MB"`,
+	} {
+		if !strings.Contains(manifest, want) {
+			t.Errorf("manifest missing %q; full payload:\n%s", want, manifest)
+		}
+	}
+}
+
 func TestBuild_RejectsBareSpecifier(t *testing.T) {
 	src := fstest.MapFS{
 		"Particlefile.ts": &fstest.MapFile{

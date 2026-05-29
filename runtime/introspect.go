@@ -59,7 +59,7 @@ func (r *Runtime) IntrospectParticle(ctx context.Context, kind RuntimeKind, sour
 		introspectMode: true,
 	}
 
-	p, err := r.newParticleInternal(ctx, particleFS, credStore, kvStore, cfg)
+	p, err := r.newParticleInternal(ctx, particleFS, credStore, kvStore, nil, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: IntrospectParticle: instantiate: %w", err)
 	}
