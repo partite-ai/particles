@@ -13,10 +13,10 @@ import (
 
 // TestMounts_EndToEnd drives a real Python guest against two host-backed
 // mounts — one read-write, one read-only — to validate the whole path:
-// preopen wiring → trackingFS (Unwrap-resolved capabilities) → readOnlyFS
-// enforcement → osmount → host disk. It proves a guest write lands on the
-// host through a read-write mount, a guest read works through a read-only
-// mount, and a guest write is refused on the read-only mount.
+// preopen wiring → readOnlyFS enforcement → osmount → host disk. It proves
+// a guest write lands on the host through a read-write mount, a guest read
+// works through a read-only mount, and a guest write is refused on the
+// read-only mount.
 func TestMounts_EndToEnd(t *testing.T) {
 	ctx := context.Background()
 

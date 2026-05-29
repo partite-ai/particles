@@ -119,7 +119,7 @@ func TestBuildMountPreopens(t *testing.T) {
 	tempFS := &fstest.MapFS{}
 
 	t.Run("happy path", func(t *testing.T) {
-		entries, _, err := buildMountPreopens(m, map[string]fs.FS{
+		entries, err := buildMountPreopens(m, map[string]fs.FS{
 			"data":    dataFS,
 			"config":  configFS,
 			"scratch": tempFS,
@@ -131,53 +131,49 @@ func TestBuildMountPreopens(t *testing.T) {
 		for _, e := range entries {
 			byPath[e.Path] = e
 		}
-		// trackingFS is outermost on every mount. A read-write mount
-		// wraps the provided FS directly.
+		// A read-write mount exposes the provided FS directly.
 		if got := byPath["/data"]; got == nil {
 			t.Fatalf("/data missing")
-		} else if tf, ok := got.FS.(*trackingFS); !ok || tf.fsys != fs.FS(dataFS) {
-			t.Errorf("/data should be trackingFS over the provided FS, got %T", got.FS)
+		} else if got.FS != fs.FS(dataFS) {
+			t.Errorf("/data should be the provided FS, got %T", got.FS)
 		}
-		// A read-only mount is trackingFS over readOnlyFS over the
-		// provided FS (so readOnlyFS sits directly on the real mount).
+		// A read-only mount is a readOnlyFS over the provided FS.
 		if got := byPath["/etc/app"]; got == nil {
 			t.Fatalf("/etc/app missing")
-		} else if tf, ok := got.FS.(*trackingFS); !ok {
-			t.Errorf("/etc/app should be trackingFS-wrapped, got %T", got.FS)
-		} else if ro, ok := tf.fsys.(readOnlyFS); !ok || ro.fsys != fs.FS(configFS) {
-			t.Errorf("/etc/app trackingFS should wrap a readOnlyFS over the provided FS, got %T", tf.fsys)
+		} else if ro, ok := got.FS.(readOnlyFS); !ok || ro.fsys != fs.FS(configFS) {
+			t.Errorf("/etc/app should be a readOnlyFS over the provided FS, got %T", got.FS)
 		}
-		// temp is wrapped in a trackingFS over the provided FS.
+		// temp exposes the provided FS directly.
 		if got := byPath["/tmp/work"]; got == nil {
 			t.Fatalf("/tmp/work missing")
-		} else if tf, ok := got.FS.(*trackingFS); !ok || tf.fsys != fs.FS(tempFS) {
-			t.Errorf("/tmp/work should be trackingFS over the provided FS, got %T", got.FS)
+		} else if got.FS != fs.FS(tempFS) {
+			t.Errorf("/tmp/work should be the provided FS, got %T", got.FS)
 		}
 	})
 
 	t.Run("undeclared rejected", func(t *testing.T) {
-		_, _, err := buildMountPreopens(m, map[string]fs.FS{"data": dataFS, "scratch": tempFS, "bogus": dataFS})
+		_, err := buildMountPreopens(m, map[string]fs.FS{"data": dataFS, "scratch": tempFS, "bogus": dataFS})
 		if err == nil {
 			t.Fatal("want error for undeclared mount")
 		}
 	})
 
 	t.Run("required missing", func(t *testing.T) {
-		_, _, err := buildMountPreopens(m, map[string]fs.FS{"scratch": tempFS})
+		_, err := buildMountPreopens(m, map[string]fs.FS{"scratch": tempFS})
 		if err == nil {
 			t.Fatal("want error for missing required mount")
 		}
 	})
 
 	t.Run("temp missing", func(t *testing.T) {
-		_, _, err := buildMountPreopens(m, map[string]fs.FS{"data": dataFS})
+		_, err := buildMountPreopens(m, map[string]fs.FS{"data": dataFS})
 		if err == nil {
 			t.Fatal("want error for missing temp mount")
 		}
 	})
 
 	t.Run("optional omitted is skipped", func(t *testing.T) {
-		entries, _, err := buildMountPreopens(m, map[string]fs.FS{"data": dataFS, "scratch": tempFS})
+		entries, err := buildMountPreopens(m, map[string]fs.FS{"data": dataFS, "scratch": tempFS})
 		if err != nil {
 			t.Fatalf("buildMountPreopens: %v", err)
 		}

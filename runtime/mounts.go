@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"fmt"
-	"io"
 	"io/fs"
 	"strings"
 
@@ -44,59 +43,51 @@ func pathsOverlap(a, b string) bool {
 //   - A read-only mount is wrapped in readOnlyFS (refusing writes
 //     regardless of what the host handed in); a read-write mount and
 //     every temp mount are exposed writable.
-//   - That is then wrapped in a trackingFS (outermost) so handles the
-//     guest leaves open are reclaimed at teardown; the returned closers
-//     are those wrappers, for [Particle.Close] to close. trackingFS is
-//     outermost so readOnlyFS sits directly over the real mount and its
-//     As-based capability delegation reaches the actual fs.File.
-func buildMountPreopens(m Manifest, mounts map[string]fs.FS) ([]*preopens.PreopenEntry, []io.Closer, error) {
+//
+// File handles the guest leaves open are reclaimed by wacogo at instance
+// teardown — ComponentInstance.Close drops every outstanding descriptor,
+// closing the underlying fs.File — so no per-mount cleanup is needed here.
+func buildMountPreopens(m Manifest, mounts map[string]fs.FS) ([]*preopens.PreopenEntry, error) {
 	fsCap := m.Capabilities.Filesystem
 
 	for name := range mounts {
 		_, isMount := fsCap.Mounts[name]
 		_, isTemp := fsCap.Temp[name]
 		if !isMount && !isTemp {
-			return nil, nil, fmt.Errorf("mount %q is not declared in capabilities.filesystem", name)
+			return nil, fmt.Errorf("mount %q is not declared in capabilities.filesystem", name)
 		}
 	}
 
-	var (
-		entries []*preopens.PreopenEntry
-		closers []io.Closer
-	)
+	var entries []*preopens.PreopenEntry
 
 	for name, decl := range fsCap.Mounts {
 		sub, ok := mounts[name]
 		if !ok {
 			if decl.Required {
-				return nil, nil, fmt.Errorf("mount %q is required but was not provided", name)
+				return nil, fmt.Errorf("mount %q is required but was not provided", name)
 			}
 			continue
 		}
 		if sub == nil {
-			return nil, nil, fmt.Errorf("mount %q: provided fs.FS is nil", name)
+			return nil, fmt.Errorf("mount %q: provided fs.FS is nil", name)
 		}
 		var inner fs.FS = sub
 		if decl.Access == MountReadOnly {
 			inner = readOnlyFS{fsys: sub}
 		}
-		tracked := newTrackingFS(inner)
-		closers = append(closers, tracked)
-		entries = append(entries, &preopens.PreopenEntry{Path: decl.Path, Root: ".", FS: tracked})
+		entries = append(entries, &preopens.PreopenEntry{Path: decl.Path, Root: ".", FS: inner})
 	}
 
 	for name, decl := range fsCap.Temp {
 		sub, ok := mounts[name]
 		if !ok {
-			return nil, nil, fmt.Errorf("temp mount %q was not provided", name)
+			return nil, fmt.Errorf("temp mount %q was not provided", name)
 		}
 		if sub == nil {
-			return nil, nil, fmt.Errorf("temp mount %q: provided fs.FS is nil", name)
+			return nil, fmt.Errorf("temp mount %q: provided fs.FS is nil", name)
 		}
-		tracked := newTrackingFS(sub)
-		closers = append(closers, tracked)
-		entries = append(entries, &preopens.PreopenEntry{Path: decl.Path, Root: ".", FS: tracked})
+		entries = append(entries, &preopens.PreopenEntry{Path: decl.Path, Root: ".", FS: sub})
 	}
 
-	return entries, closers, nil
+	return entries, nil
 }

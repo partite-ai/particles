@@ -167,13 +167,6 @@ type Particle struct {
 	// layer's resources release cleanly.
 	hostInsts []*host.ComponentInstance
 
-	// mountClosers are the per-mount trackingFS wrappers. Closing
-	// them after the wasm instance tears down reclaims any file
-	// handles the guest left open — wacogo's teardown doesn't drop
-	// outstanding wasi descriptors, so this is what prevents leaked
-	// host fds when a guest terminates without closing its files.
-	mountClosers []io.Closer
-
 	// Captured wasi:cli/stderr — surfaced when a wasm trap
 	// hides the actual diagnostic. Reset by readStderr.
 	stderr *bytes.Buffer
@@ -299,12 +292,11 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	// path; the guest's libc resolves an absolute open against the
 	// longest-matching preopen, so "/data" wins over the catch-all "/".
 	// buildMountPreopens validates against the manifest (required
-	// present, undeclared rejected, read-only enforced; each wrapped in
-	// a trackingFS whose closer reclaims leaked guest handles).
+	// present, undeclared rejected, read-only enforced).
 	entries := []*preopens.PreopenEntry{
 		{Path: "/", Root: ".", FS: preopens.ImmutableFS{FS: builtinFS}},
 	}
-	userEntries, mountClosers, err := buildMountPreopens(manifest, mounts)
+	userEntries, err := buildMountPreopens(manifest, mounts)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
 	}
@@ -511,12 +503,11 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	// is unsafe.
 
 	return &Particle{
-		manifest:     manifest,
-		inst:         inst,
-		wasi:         w,
-		hostInsts:    hostInsts,
-		mountClosers: mountClosers,
-		stderr:       stderr,
+		manifest:  manifest,
+		inst:      inst,
+		wasi:      w,
+		hostInsts: hostInsts,
+		stderr:    stderr,
 	}, nil
 }
 
@@ -548,14 +539,6 @@ func (p *Particle) Close(ctx context.Context) error {
 		}
 		p.wasi = nil
 	}
-	// Reclaim any mount file handles the guest left open, now that the
-	// instance is fully torn down and can't reference them.
-	for _, c := range p.mountClosers {
-		if err := c.Close(); err != nil && first == nil {
-			first = err
-		}
-	}
-	p.mountClosers = nil
 	return first
 }
 

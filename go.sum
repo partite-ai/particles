@@ -41,6 +41,10 @@ github.com/partite-ai/wacogo v0.0.0-20260529012318-e76a7028c200 h1:7GVGpwxycKYDJ
 github.com/partite-ai/wacogo v0.0.0-20260529012318-e76a7028c200/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
 github.com/partite-ai/wacogo v0.0.0-20260529012923-31211237ef20 h1:hm4DV1rOj2kN6sgKuPyB1yYXr4ekDRe/B3vHqpHBwAc=
 github.com/partite-ai/wacogo v0.0.0-20260529012923-31211237ef20/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
+github.com/partite-ai/wacogo v0.0.0-20260529143534-ca453150746a h1:d38IeojjlDMTqtGvwCyVvABx5+ZG6/iWT1Qt50fWHyo=
+github.com/partite-ai/wacogo v0.0.0-20260529143534-ca453150746a/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
+github.com/partite-ai/wacogo v0.0.0-20260529151406-f887466cbe60 h1:RzMvUB/UjI4ray+HrU9gYtnszz0ZyfgVuYKybmF4WIM=
+github.com/partite-ai/wacogo v0.0.0-20260529151406-f887466cbe60/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
