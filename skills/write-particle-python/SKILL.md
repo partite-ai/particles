@@ -34,7 +34,7 @@ the handlers off it on every tool call.
 
 ```python
 from particle.manifest import (
-    Particle, Tool, Http,
+    Particle, Tool, Http, Filesystem, Mount, TempMount,
     Credential, OAuth2, ApiKey, ApiKeyLocation, SigningKey, Basic, Raw,
 )
 from particle import http, credentials, kv, oauth, signing
@@ -54,6 +54,9 @@ particle = Particle(
     # the wire boundary. Omit `http=` entirely if the particle makes
     # no outbound requests.
     http=Http(allowed_hosts=["api.example.com"]),
+
+    # Host-directory access, off by default. See "Filesystem" below.
+    # filesystem=Filesystem(mounts={...}, temp={...}),
 
     # Optional. Declared per name; user picks a method at setup.
     credentials={
@@ -169,6 +172,52 @@ r = httpx.get("https://api.example.com/x")
 ```
 
 **Raw sockets are not available.** `socket.socket()` raises `OSError`.
+
+### Filesystem
+
+Off by default — a handler sees only its own bundle. Declare a
+`Filesystem` capability to get host-directory access, then read and
+write with ordinary `open()` / `pathlib` (the runtime routes them
+through `wasi:filesystem`).
+
+```python
+from particle.manifest import Filesystem, Mount, TempMount
+
+filesystem=Filesystem(
+    # Host directories the *user* maps to real paths — persistently
+    # with `particle mount <particle> <name> <host-path>`, or per run
+    # with `--mount <name>=<host-path>`.
+    mounts={
+        "data": Mount(
+            description="Where reports are written",  # shown in the install prompt
+            path="/mnt/data",                          # absolute path inside the sandbox
+            access="readwrite",                        # "readonly" | "readwrite"
+            required=True,                             # refuse to run until mapped (default False)
+        ),
+    },
+    # Scratch space the host provisions fresh each run and clears on
+    # exit. Always read-write; the user never maps these.
+    temp={
+        "work": TempMount(description="Scratch space", path="/tmp/work", max_size="10MB"),
+    },
+),
+```
+
+```python
+with open("/mnt/data/in.json") as f:
+    data = f.read()
+with open("/mnt/data/out.json", "w") as f:
+    f.write(result)
+```
+
+- The handler opens the declared `path` directly; the mount *name*
+  never appears inside the sandbox.
+- Writing to a `readonly` mount, or reading/writing any path outside a
+  declared mount, raises `OSError`.
+- A `required` mount the user never maps fails at **run** time, not
+  build/install.
+- `max_size` is a byte count with an optional `KB`/`MB`/`GB` suffix
+  (`"10MB"`); writes past it fail.
 
 ### Credentials
 
@@ -310,8 +359,10 @@ Constraints:
 - Standard library is largely available — `json`, `re`, `hashlib`,
   `hmac`, `base64`, `secrets`, `datetime`, `urllib.parse`, `asyncio`,
   `email`, etc. all work.
-- `ssl`, raw `socket`, `subprocess`, filesystem `open()` for paths
-  outside `/particle/` — not available.
+- `ssl`, raw `socket`, `subprocess` — not available.
+- `open()` / `pathlib` work only for paths inside a declared
+  filesystem mount (see "Filesystem" above) and the particle's own
+  `/particle/` bundle; arbitrary host paths are denied.
 
 ## 6. Critical rules
 
@@ -366,6 +417,18 @@ particle run  <name> <tool> --foo=bar   # invoke it
 the first time. If the build fails, the error names the phase
 (`import-scan`, `resolve-and-fetch`, `manifest-extract`) and the
 specific problem.
+
+If the particle declares filesystem mounts, map them before running
+(or pass `--mount name=path` on `particle run` for a one-off):
+
+```sh
+particle mount <name> <mount-name> <host-path>   # save a persistent mapping
+particle mount <name>                            # list mounts + current mappings
+```
+
+To expose the particle as a standalone executable (handy for Claude
+Code skills and shell use), `particle link <name> ./<name>` writes a
+launcher that forwards its args to `particle run <name>`.
 
 ## 8. Worked example
 
@@ -437,12 +500,13 @@ particle = Particle(
 | Use urllib | `urllib.request.urlopen(url)` — works, no credential applied |
 | Use requests | `requests.get(url)` — works, no credential applied |
 | Use httpx | `httpx.get(url)` — works, sync + async |
+| Read/write a mounted dir | `open()` / `pathlib` on the declared `path` (needs `Filesystem` capability) |
 | Per-particle state | `kv.get / kv.set / kv.delete / kv.list` |
 | Force OAuth refresh | `oauth.refresh(name)` |
 | HMAC sign / verify | `signing.sign(name, bytes) / signing.verify(name, bytes, sig)` |
 | Which method picked at setup | `credentials.get_configured_method(name)` |
 | Raw credential value | `credentials.get_raw(name)` |
-| Manifest declarations | `from particle.manifest import Particle, Tool, Http, Credential, OAuth2, ApiKey, ApiKeyLocation, SigningKey, Basic, Raw` |
+| Manifest declarations | `from particle.manifest import Particle, Tool, Http, Filesystem, Mount, TempMount, Credential, OAuth2, ApiKey, ApiKeyLocation, SigningKey, Basic, Raw` |
 
 Imports always come from `particle` or `particle.manifest` — do not
 invent other names.

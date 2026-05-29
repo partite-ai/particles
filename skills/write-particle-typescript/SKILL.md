@@ -36,6 +36,9 @@ export default {
     // at the wire boundary. Omit `http` entirely if the particle
     // makes no outbound requests.
     http: { allowedHosts: ["api.example.com"] },
+
+    // Host-directory access, off by default. See "Filesystem" below.
+    // filesystem: { mounts: { ... }, temp: { ... } },
   },
 
   // Optional. Declared per name; the user picks a method at setup.
@@ -116,6 +119,52 @@ const data = await res.json();
 Hosts not in `capabilities.http.allowedHosts` are denied. Plain
 `fetch` does not apply credentials — use `credentials.fetcher` for
 that.
+
+### Filesystem
+
+Off by default — a handler sees only its own bundle. Declare
+`capabilities.filesystem` to get host-directory access, then read and
+write with ordinary `node:fs` APIs (the runtime routes them through
+`wasi:filesystem`). No capability module to import.
+
+```ts
+capabilities: {
+  filesystem: {
+    // Host directories the *user* maps to real paths — persistently
+    // with `particle mount <particle> <name> <host-path>`, or per run
+    // with `--mount <name>=<host-path>`.
+    mounts: {
+      data: {
+        description: "Where reports are written",  // shown in the install prompt
+        path: "/mnt/data",                          // absolute path inside the sandbox
+        access: "readwrite",                        // "readonly" | "readwrite"
+        required: true,                             // refuse to run until mapped (default false)
+      },
+    },
+    // Scratch space the host provisions fresh each run and clears on
+    // exit. Always read-write; the user never maps these.
+    temp: {
+      work: { description: "Scratch space", path: "/tmp/work", maxSize: "10MB" },
+    },
+  },
+},
+```
+
+```ts
+import { readFile, writeFile } from "node:fs/promises";
+
+const input = await readFile("/mnt/data/in.json", "utf8");
+await writeFile("/mnt/data/out.json", JSON.stringify(result));
+```
+
+- The handler opens the declared `path` directly; the mount *name*
+  never appears inside the sandbox.
+- Writing to a `readonly` mount, or reading/writing any path outside a
+  declared mount, throws.
+- A `required` mount the user never maps fails at **run** time, not
+  build/install.
+- `maxSize` is a byte count with an optional `KB`/`MB`/`GB` suffix
+  (`"10MB"`); writes past it fail.
 
 ### Credentials
 
@@ -313,6 +362,18 @@ the first time. If the build fails, the error names the phase
 (`import-scan`, `typecheck`, `bundle`, `manifest-extract`) and the
 specific problem.
 
+If the particle declares filesystem mounts, map them before running
+(or pass `--mount name=path` on `particle run` for a one-off):
+
+```sh
+particle mount <name> <mount-name> <host-path>   # save a persistent mapping
+particle mount <name>                            # list mounts + current mappings
+```
+
+To expose the particle as a standalone executable (handy for Claude
+Code skills and shell use), `particle link <name> ./<name>` writes a
+launcher that forwards its args to `particle run <name>`.
+
 ## 8. Worked example
 
 A minimal particle exposing a GitHub repo-lookup tool:
@@ -376,6 +437,7 @@ export default {
 |---|---|
 | HTTP request | `await fetch(url, init)` |
 | Authenticated HTTP | `const f = await credentials.fetcher(name); await f(url, init)` |
+| Read/write a mounted dir | `node:fs/promises` on the declared `path` (needs `capabilities.filesystem`) |
 | Per-particle state | `kv.get / set / delete / list` |
 | Force OAuth refresh | `oauth.refresh(name)` |
 | HMAC sign / verify | `signing.sign(name, data) / signing.verify(name, data, sig)` |
