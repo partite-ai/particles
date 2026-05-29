@@ -44,7 +44,7 @@ type credentialMethod struct {
 }
 
 // applyLocation mirrors APIKeyApplyLocation in
-// types/particle.d.ts: a discriminated union over `kind`. Name is
+// js-types/particle/index.d.ts: a discriminated union over `kind`. Name is
 // for `header` / `query-param`; Scheme is for `auth-scheme`.
 type applyLocation struct {
 	Kind   string `json:"kind"`

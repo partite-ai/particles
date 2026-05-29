@@ -4,7 +4,7 @@
  * Use it to get type-checking on your particle definition:
  *
  * ```ts
- * import type { Particle } from "particle";
+ * import type { Particle } from "@partite-ai/particle";
  *
  * export default {
  *   name: "yaml-tools",

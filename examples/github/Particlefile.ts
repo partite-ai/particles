@@ -12,6 +12,7 @@
  *   particle run  github-tools create_issue --owner=me --repo=mine --title="Bug"
  */
 
+import type { Particle } from "@partite-ai/particle";
 import { credentials } from "@partite-ai/particle-credentials";
 
 // Convenience wrapper: every tool reuses the same fetcher, sets the
@@ -188,4 +189,4 @@ export default {
       message: `GitHub /user returned ${res.status}`,
     };
   },
-};
+} satisfies Particle;

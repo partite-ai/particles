@@ -1,13 +1,13 @@
 {
-  "name": "@partite-ai/particle-kv",
+  "name": "@partite-ai/particle-oauth",
   "version": "0.1.0",
-  "description": "TypeScript types for `@partite-ai/particle-kv` — per-particle persistent key/value store for Particle particles.",
+  "description": "TypeScript types for `@partite-ai/particle-oauth` — OAuth-specific operations (refresh) for Particle particles.",
   "license": "MIT",
   "homepage": "https://github.com/partite-ai/particles",
   "repository": {
     "type": "git",
     "url": "https://github.com/partite-ai/particles.git",
-    "directory": "packages/particle-kv"
+    "directory": "js-types/particle-oauth"
   },
   "main": "index.js",
   "types": "index.d.ts",
@@ -16,7 +16,7 @@
     "index.d.ts",
     "README.md"
   ],
-  "keywords": ["particle", "wasm", "kv", "storage", "mcp"],
+  "keywords": ["particle", "wasm", "oauth", "credentials", "mcp"],
   "publishConfig": {
     "access": "public"
   },

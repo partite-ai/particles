@@ -1,13 +1,13 @@
 {
-  "name": "@partite-ai/particle-oauth",
+  "name": "@partite-ai/particle-signing",
   "version": "0.1.0",
-  "description": "TypeScript types for `@partite-ai/particle-oauth` — OAuth-specific operations (refresh) for Particle particles.",
+  "description": "TypeScript types for `@partite-ai/particle-signing` — host-side cryptographic sign/verify for Particle particles.",
   "license": "MIT",
   "homepage": "https://github.com/partite-ai/particles",
   "repository": {
     "type": "git",
     "url": "https://github.com/partite-ai/particles.git",
-    "directory": "packages/particle-oauth"
+    "directory": "js-types/particle-signing"
   },
   "main": "index.js",
   "types": "index.d.ts",
@@ -16,7 +16,7 @@
     "index.d.ts",
     "README.md"
   ],
-  "keywords": ["particle", "wasm", "oauth", "credentials", "mcp"],
+  "keywords": ["particle", "wasm", "signing", "hmac", "credentials", "mcp"],
   "publishConfig": {
     "access": "public"
   },

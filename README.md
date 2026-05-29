@@ -167,10 +167,10 @@ Secrets are encrypted at rest with a key in the OS keychain. When no keychain is
 
 ## TypeScript types
 
-`types/particle.d.ts` defines the shape of the default export. To get type-checking on your particle:
+`js-types/particle/index.d.ts` defines the shape of the default export. To get type-checking on your particle:
 
 ```ts
-import type { Particle } from "particle";
+import type { Particle } from "@partite-ai/particle";
 
 export default {
   // ...
@@ -187,7 +187,7 @@ handler: async ({ owner, repo }: { owner: string; repo: string }) => { /* ... */
 
 - `docs/initial-design.md` — full design spec for the runtime, build pipeline, capability model, and credential types.
 - `examples/` — runnable particles: `is-odd` (no capabilities), `github` / `github-py` (HTTP + credentials, TS and Python), `file-copy` (filesystem mounts), `sheets-analytics`.
-- `types/particle.d.ts` — the `Particle` type plus every capability and credential variant.
+- `js-types/particle/index.d.ts` — the `Particle` type plus every capability and credential variant.
 
 ## How this compares
 

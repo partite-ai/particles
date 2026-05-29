@@ -1,0 +1,22 @@
+{
+  "name": "@partite-ai/particle",
+  "version": "0.1.0",
+  "description": "TypeScript types for the Particlefile manifest — the `Particle` default-export authored by Particle particles.",
+  "license": "MIT",
+  "homepage": "https://github.com/partite-ai/particles",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/partite-ai/particles.git",
+    "directory": "js-types/particle"
+  },
+  "types": "index.d.ts",
+  "files": [
+    "index.d.ts",
+    "README.md"
+  ],
+  "keywords": ["particle", "wasm", "mcp", "manifest", "types"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false
+}

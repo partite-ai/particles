@@ -1,22 +1,32 @@
-# Release workflow: builds cross-platform binaries and publishes
-# a GitHub release whenever a SemVer tag (v0.1.0, v1.2.3-rc.1) is
-# pushed. No third-party release actions — `gh release create`
-# does the upload with one fewer dependency to keep pinned.
+# Release workflow: builds cross-platform binaries and creates a
+# DRAFT GitHub release with the archives attached. Trigger it
+# manually (Actions → Release → Run workflow) with a SemVer version
+# like v0.1.0; review the draft + generated notes, then click
+# Publish. Publishing is what creates the git tag — drafts don't —
+# so CI is the sole release creator and the tag is born at publish,
+# which is why there's no tag/release "already exists" collision.
+# No third-party release actions — `gh release create` does the
+# upload with one fewer dependency to keep pinned.
 #
-# The embedded artifacts are committed and picked up from the tagged
-# tree: the wasm components under runtime/embed and
+# The release is built from the commit the workflow runs against
+# (the branch picked in the Run-workflow dialog; the default branch
+# otherwise) and the tag is pinned to that commit on publish via
+# --target. The embedded artifacts are committed and picked up from
+# that tree: the wasm components under runtime/embed and
 # internal/build/wacogo/embed, and the Windows `particle link`
 # launcher stubs under cmd/particle/winstub. Always rebuild & commit
-# those (`make` + `make win-trampoline`) BEFORE tagging.
+# those (`make` + `make win-trampoline`) BEFORE running this.
 #
 # Pinning + upgrade procedure: see test.yml header.
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'      # v1.2.3
-      - 'v[0-9]+.[0-9]+.[0-9]+-*'    # v1.2.3-rc.1
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, SemVer tag form (e.g. v0.1.0 or v1.2.3-rc.1)'
+        required: true
+        type: string
 
 permissions: {}
 
@@ -24,12 +34,25 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      # Required for `gh release create` to upload the binaries
-      # and write the release body.
+      # Required for `gh release create` to create the draft,
+      # upload the binaries, and write the release body.
       contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # actions/checkout@v6.0.2
+
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # The trigger no longer enforces the tag shape (it did when
+          # this ran on tag push), so validate the free-form input
+          # against the same SemVer pattern before it becomes a tag.
+          if ! printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-.+)?$'; then
+            echo "::error::version '$VERSION' is not a SemVer tag (expected v1.2.3 or v1.2.3-rc.1)"
+            exit 1
+          fi
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # actions/setup-go@v6.4.0
@@ -39,8 +62,8 @@ jobs:
 
       - name: Build cross-platform binaries
         env:
-          # Tag name (e.g., v1.2.3) — GitHub strips refs/tags/.
-          VERSION: ${{ github.ref_name }}
+          # Version label baked into archive names (e.g. v1.2.3).
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -81,20 +104,34 @@ jobs:
           (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS)
           ls -la dist
 
-      - name: Create release
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ inputs.version }}
+          # Pin the eventual tag to the exact commit we built from.
+          TARGET: ${{ github.sha }}
         run: |
           set -euo pipefail
           # Mark anything with a "-" suffix (v1.2.3-rc.1) as a
-          # prerelease so it doesn't become "latest".
+          # prerelease so it doesn't become "latest" on publish.
           PRERELEASE_FLAG=""
           case "$VERSION" in
             *-*) PRERELEASE_FLAG="--prerelease" ;;
           esac
-          gh release create "$VERSION" \
-            --title "$VERSION" \
-            --generate-notes \
-            $PRERELEASE_FLAG \
-            dist/*.tar.gz dist/*.zip dist/SHA256SUMS
+          # Idempotent: a re-run for the same version refreshes the
+          # draft's assets instead of failing on "already exists".
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "release $VERSION already exists — refreshing its assets"
+            gh release upload "$VERSION" \
+              dist/*.tar.gz dist/*.zip dist/SHA256SUMS --clobber
+          else
+            # --draft: no git tag is created until you click Publish.
+            # --target: pins that tag to the built commit on publish.
+            gh release create "$VERSION" \
+              --draft \
+              --target "$TARGET" \
+              --title "$VERSION" \
+              --generate-notes \
+              $PRERELEASE_FLAG \
+              dist/*.tar.gz dist/*.zip dist/SHA256SUMS
+          fi

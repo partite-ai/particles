@@ -7,7 +7,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/partite-ai/particles.git",
-    "directory": "packages/particle-credentials"
+    "directory": "js-types/particle-credentials"
   },
   "main": "index.js",
   "types": "index.d.ts",

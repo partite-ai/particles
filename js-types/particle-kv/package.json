@@ -1,13 +1,13 @@
 {
-  "name": "@partite-ai/particle-signing",
+  "name": "@partite-ai/particle-kv",
   "version": "0.1.0",
-  "description": "TypeScript types for `@partite-ai/particle-signing` — host-side cryptographic sign/verify for Particle particles.",
+  "description": "TypeScript types for `@partite-ai/particle-kv` — per-particle persistent key/value store for Particle particles.",
   "license": "MIT",
   "homepage": "https://github.com/partite-ai/particles",
   "repository": {
     "type": "git",
     "url": "https://github.com/partite-ai/particles.git",
-    "directory": "packages/particle-signing"
+    "directory": "js-types/particle-kv"
   },
   "main": "index.js",
   "types": "index.d.ts",
@@ -16,7 +16,7 @@
     "index.d.ts",
     "README.md"
   ],
-  "keywords": ["particle", "wasm", "signing", "hmac", "credentials", "mcp"],
+  "keywords": ["particle", "wasm", "kv", "storage", "mcp"],
   "publishConfig": {
     "access": "public"
   },

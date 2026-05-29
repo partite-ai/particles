@@ -9,7 +9,7 @@ import (
 	"github.com/partite-ai/particles/credentials"
 )
 
-// flow constants — also surfaced in types/particle.d.ts as the
+// flow constants — also surfaced in js-types/particle/index.d.ts as the
 // values a manifest may list under `credentials.<name>.methods.<method>.flows`.
 const (
 	flowAuthCode     = "authorization-code"

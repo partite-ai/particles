@@ -224,8 +224,8 @@ typecheck:
 	@test -d components/typecheck/node_modules/typescript || \
 	  (cd components/typecheck && $(NPM_INSTALL))
 	@echo '[1/4] generate src/lib-bundle.ts and src/particle-globals.d.ts'
-	cd components/typecheck && node build-lib-bundle.mjs
 	cd components/typecheck && node build-particle-globals.mjs
+	cd components/typecheck && node build-lib-bundle.mjs
 	@echo '[2/4] esbuild  src/typecheck.ts  →  build/typecheck.js  (bundles typescript)'
 	cd components/typecheck && esbuild src/typecheck.ts \
 	  --bundle --format=esm --platform=node --target=es2022 \
