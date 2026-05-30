@@ -33,6 +33,7 @@
  */
 
 import { sheets } from "npm:@googleapis/sheets@^9.0.0";
+import { request as gaxiosRequest } from "npm:gaxios@^6.0.3";
 import { credentials } from "@partite-ai/particle-credentials";
 
 const SCRATCH_SHEET = "__particle_scratch";
@@ -41,11 +42,35 @@ const SCRATCH_SHEET = "__particle_scratch";
 // Build a configured Sheets client. Called once per tool invocation —
 // the placeholder is fixed for the particle's lifetime so re-creating
 // the client is fine.
+//
+// We must implement BOTH getRequestHeaders and request: googleapis-
+// common@7.2.0 (apirequest.js:296-304) dispatches based on whether
+// options.http2 is set — http2 calls getRequestHeaders and runs its
+// own h2 transport, but the default non-http2 path calls
+// authClient.request(options) directly and never consults
+// getRequestHeaders. Sheets always takes the non-http2 path, so an
+// auth shim with only getRequestHeaders silently sends unauthenticated
+// requests. We delegate request() to gaxios (the same transport
+// google-auth-library's DefaultTransporter uses) so the response shape
+// matches what apirequest expects.
 // -----------------------------------------------------------------------------
 
 function client(): ReturnType<typeof sheets> {
   const info = credentials.getPlaceholder("google");
-  return sheets({ version: "v4", auth: info.placeholder });
+  const bearer = `Bearer ${info.placeholder}`;
+  const auth = {
+    getRequestHeaders: async () => ({ Authorization: bearer }),
+    request: async (opts: Parameters<typeof gaxiosRequest>[0]) =>
+      gaxiosRequest({
+        ...opts,
+        headers: { ...opts.headers, Authorization: bearer },
+      }),
+  };
+  // The @googleapis/sheets `auth` parameter is typed against
+  // google-auth-library's AuthClient, which has many more methods
+  // than we use. Cast through unknown to satisfy the structural-
+  // shaped surface without dragging the full SDK in.
+  return sheets({ version: "v4", auth: auth as unknown as Parameters<typeof sheets>[0]["auth"] });
 }
 
 // -----------------------------------------------------------------------------
@@ -299,19 +324,31 @@ export default {
   version: "0.1.0",
 
   capabilities: {
-    http: { allowedHosts: ["sheets.googleapis.com"] },
+    // www.googleapis.com is added so ping can call Drive's
+    // /about endpoint as a live "is the OAuth token actually
+    // valid" probe — see the ping handler below.
+    http: { allowedHosts: ["sheets.googleapis.com", "www.googleapis.com"] },
   },
 
   credentials: {
     google: {
-      hosts: ["sheets.googleapis.com"],
+      hosts: ["sheets.googleapis.com", "www.googleapis.com"],
       required: true,
       methods: {
         oauth: {
           type: "oauth2",
           description: "Sign in with Google",
           flows: ["authorization-code-pkce", "device-code"],
-          scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+          scopes: [
+            "https://www.googleapis.com/auth/spreadsheets",
+            // drive.metadata.readonly is the narrowest scope
+            // that authorizes /drive/v3/about; the ping
+            // handler reads `user.emailAddress` from the
+            // response to surface *which* account is signed
+            // in, which is the most common "wrong account"
+            // failure mode for this particle.
+            "https://www.googleapis.com/auth/drive.metadata.readonly",
+          ],
           authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
           tokenUrl:         "https://oauth2.googleapis.com/token",
           deviceAuthUrl:    "https://oauth2.googleapis.com/device/code",
@@ -648,16 +685,52 @@ export default {
     },
   },
 
-  // Cheap liveness probe — confirms a credential is configured. We
-  // don't fire a Sheets call here because a healthy ping shouldn't
-  // need to know any specific spreadsheet ID; the configured-method
-  // check covers the common failure mode (user ran build but never
-  // finished OAuth setup).
+  // Liveness probe — fires an unauthenticated-shaped request at
+  // Drive's /about endpoint so a successful ping actually exercises
+  // the OAuth round-trip end-to-end: the host substitutes the bearer
+  // token, Google validates it, and we read back the signed-in
+  // account. A 401/403 surfaces as unhealthy (token absent, expired,
+  // or missing the drive.metadata.readonly scope); any other non-2xx
+  // is degraded with the status text. We pick /about over a Sheets
+  // call because Sheets has no scope-less liveness endpoint —
+  // everything needs a real spreadsheet ID — and /about's response
+  // ("which account am I?") is itself useful diagnostic output.
   ping: async () => {
-    const method = credentials.getConfiguredMethod("google");
-    if (method === null) {
-      return { status: "unhealthy" as const, message: "no Google credential configured" };
+    const fetcher = await credentials.fetcher("google");
+    const url = "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName)";
+    let res: Response;
+    try {
+      res = await fetcher(url);
+    } catch (err) {
+      return {
+        status: "unhealthy" as const,
+        message: "request to Drive failed",
+        details: String(err),
+      };
     }
-    return { status: "ok" as const, message: `Google credential configured via ${method}` };
+    if (res.status === 401 || res.status === 403) {
+      const body = await res.text();
+      return {
+        status: "unhealthy" as const,
+        message: `Google rejected the token (${res.status} ${res.statusText})`,
+        details: body.length > 240 ? body.slice(0, 240) + "..." : body,
+      };
+    }
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        status: "degraded" as const,
+        message: `Drive /about returned ${res.status} ${res.statusText}`,
+        details: body.length > 240 ? body.slice(0, 240) + "..." : body,
+      };
+    }
+    const body = await res.json() as {
+      user?: { emailAddress?: string; displayName?: string };
+    };
+    const who = body.user?.emailAddress ?? body.user?.displayName ?? "(unknown account)";
+    return {
+      status: "ok" as const,
+      message: `authenticated as ${who}`,
+    };
   },
 };
