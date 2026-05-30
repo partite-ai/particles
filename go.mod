@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/andybalholm/brotli v1.2.1
 	github.com/evanw/esbuild v0.28.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/klauspost/compress v1.18.6
@@ -21,7 +22,6 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
