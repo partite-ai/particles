@@ -1,0 +1,99 @@
+# Publish-JS-types workflow: publishes the five @partite-ai/* type
+# packages under js-types/ to the public npm registry. Manually
+# triggered (Actions → Publish JS Types → Run workflow); no inputs.
+#
+# Source of truth for the version is each package's package.json on
+# the branch the workflow runs against — bump and commit those
+# locally first, then trigger. The job iterates the packages, asks
+# npm whether name@version is already published, and skips ones
+# that are. That makes re-runs idempotent: if publishing a later
+# package in the list fails, fixing the cause and re-running just
+# picks up where it left off instead of erroring on "cannot
+# publish over a previously published version."
+#
+# Auth model: npm trusted publishing (OIDC). No NPM_TOKEN secret —
+# `npm publish` exchanges the workflow's GitHub OIDC token for a
+# short-lived publish token at the moment it publishes. The
+# exchange is gated by per-package "Trusted Publisher" config on
+# npmjs.com, which has to match:
+#   - GitHub repository: partite-ai/particles
+#   - Workflow filename: publish-js-types.yml
+#   - (Environment: leave empty — this workflow doesn't use one)
+# Each of the five packages needs that config added once, on its
+# npm "Settings → Publishing access" page. Until it's set up,
+# `npm publish` for that package errors with a 401 about a missing
+# trusted publisher.
+#
+# Trusted publishing also requires the package to already exist on
+# npm (you cannot bootstrap a brand-new package this way). The
+# initial 0.1.0 publishes were done manually; subsequent versions
+# go through this workflow.
+#
+# Provenance attestations (`--provenance`) are mandatory under
+# trusted publishing — the OIDC token only authorizes a publish
+# that records provenance. The attestation shows up on the npm
+# package page and proves the tarball was built by this workflow
+# against this commit.
+#
+# Pinning + upgrade procedure: see test.yml header.
+name: Publish JS Types
+
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # Required for OIDC: both the trusted-publishing token
+      # exchange and the provenance attestation read this token.
+      id-token: write
+      # Read access to the repo contents for the checkout step.
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # actions/checkout@v6.0.2
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # actions/setup-node@v6.4.0
+        with:
+          node-version: '20'
+
+      - name: Upgrade npm
+        # Node 20 ships npm 10.x; trusted publishing needs >=
+        # 11.5.1 for the OIDC exchange in `npm publish`. Pin to
+        # the 11.x line so a future npm 12 doesn't silently land.
+        run: npm install -g npm@^11.5.1
+
+      - name: Publish packages
+        run: |
+          set -euo pipefail
+          # Lockstep set — order doesn't matter (no inter-package
+          # deps); add new js-types/* packages here.
+          PACKAGES=(
+            js-types/particle
+            js-types/particle-credentials
+            js-types/particle-kv
+            js-types/particle-oauth
+            js-types/particle-signing
+          )
+          for pkg in "${PACKAGES[@]}"; do
+            name=$(node -p "require('./$pkg/package.json').name")
+            version=$(node -p "require('./$pkg/package.json').version")
+            echo "==> $name@$version"
+            # `npm view name@version version` prints the version
+            # string if it's published and exits non-zero (E404)
+            # if not. The `|| true` swallows the 404 so the empty
+            # stdout becomes the not-published signal.
+            published=$(npm view "$name@$version" version 2>/dev/null || true)
+            if [ -n "$published" ]; then
+              echo "    already on npm — skipping"
+              continue
+            fi
+            # --access public is redundant with publishConfig in
+            # package.json but harmless, and makes the intent
+            # obvious if someone reads just this workflow.
+            (cd "$pkg" && npm publish --provenance --access public)
+          done

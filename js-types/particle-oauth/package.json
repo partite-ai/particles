@@ -1,6 +1,6 @@
 {
   "name": "@partite-ai/particle-oauth",
-  "version": "0.1.0",
+  "version": "1.0.0-rc.1",
   "description": "TypeScript types for `@partite-ai/particle-oauth` — OAuth-specific operations (refresh) for Particle particles.",
   "license": "MIT",
   "homepage": "https://github.com/partite-ai/particles",
