@@ -92,8 +92,17 @@ jobs:
               echo "    already on npm — skipping"
               continue
             fi
+            # Prereleases (semver: anything after a hyphen, e.g.
+            # 1.0.0-rc.1) go under the `next` dist-tag so the
+            # default `latest` keeps pointing at the last GA. npm
+            # refuses to publish a prerelease without an explicit
+            # --tag for exactly this reason.
+            tag_flag=""
+            case "$version" in
+              *-*) tag_flag="--tag next" ;;
+            esac
             # --access public is redundant with publishConfig in
             # package.json but harmless, and makes the intent
             # obvious if someone reads just this workflow.
-            (cd "$pkg" && npm publish --provenance --access public)
+            (cd "$pkg" && npm publish --provenance --access public $tag_flag)
           done

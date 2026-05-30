@@ -6,7 +6,7 @@
   "homepage": "https://github.com/partite-ai/particles",
   "repository": {
     "type": "git",
-    "url": "https://github.com/partite-ai/particles.git",
+    "url": "git+https://github.com/partite-ai/particles.git",
     "directory": "js-types/particle"
   },
   "types": "index.d.ts",
