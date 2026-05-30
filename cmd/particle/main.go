@@ -115,6 +115,7 @@ func newRootCmd() (*cobra.Command, func() func()) {
 
 	root.AddCommand(
 		newBuildCmd(),
+		newBuilderMCPCmd(),
 		newDeleteCmd(),
 		newImportCmd(),
 		newLinkCmd(),
