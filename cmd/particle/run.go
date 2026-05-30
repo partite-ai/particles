@@ -17,6 +17,7 @@ func newRunCmd() *cobra.Command {
 	var (
 		dbPath     string
 		mountFlags []string
+		traceLevel runtime.TraceLevel
 	)
 	cmd := &cobra.Command{
 		Use:   "run <name>[@version] [tool] [tool-flags]",
@@ -33,11 +34,12 @@ map a declared filesystem mount for this run (overriding any saved
 mapping); repeat for multiple mounts.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRun(cmd, args, dbPath, mountFlags)
+			return runRun(cmd, args, dbPath, mountFlags, traceLevel)
 		},
 	}
 	cmd.Flags().StringVar(&dbPath, "db", "", dbFlagUsage())
 	cmd.Flags().StringArrayVar(&mountFlags, "mount", nil, "Map a declared mount as name=host/path (repeatable; overrides saved mappings)")
+	addHTTPTraceFlag(cmd, &traceLevel)
 	// SetInterspersed(false) tells pflag (cobra's parser) to stop
 	// processing flags at the first positional arg, so tool flags
 	// like `--input` aren't intercepted as unknown.
@@ -45,7 +47,7 @@ mapping); repeat for multiple mounts.`,
 	return cmd
 }
 
-func runRun(cmd *cobra.Command, args []string, dbPath string, mountFlags []string) error {
+func runRun(cmd *cobra.Command, args []string, dbPath string, mountFlags []string, traceLevel runtime.TraceLevel) error {
 	target := args[0]
 	rest := args[1:]
 
@@ -75,7 +77,10 @@ func runRun(cmd *cobra.Command, args []string, dbPath string, mountFlags []strin
 		return err
 	}
 
-	p, teardown, err := bootParticle(ctx, db, entry, cliMounts, cmd.ErrOrStderr())
+	p, teardown, err := bootParticle(ctx, db, entry, cliMounts, cmd.ErrOrStderr(), bootOptions{
+		HTTPTraceLevel:  traceLevel,
+		HTTPTraceWriter: cmd.ErrOrStderr(),
+	})
 	if err != nil {
 		return err
 	}

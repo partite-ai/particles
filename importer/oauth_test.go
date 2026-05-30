@@ -20,6 +20,7 @@ func (p *fakePrompter) String(question, _ string) (string, error) {
 	return p.stringAnswer, p.stringErr
 }
 func (p *fakePrompter) Secret(string) (string, error)                          { return "", nil }
+func (p *fakePrompter) SecretWithKeep(string) (string, SecretChoice, error)    { return "", SecretKept, nil }
 func (p *fakePrompter) Choice(string, []ChoiceOption) (string, error)          { return "", nil }
 func (p *fakePrompter) Confirm(string, bool) (bool, error)                     { return false, nil }
 func (p *fakePrompter) Warn(string)                                            {}

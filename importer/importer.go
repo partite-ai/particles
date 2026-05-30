@@ -68,6 +68,23 @@ type Prompter interface {
 	// the screen.
 	Secret(question string) (string, error)
 
+	// SecretWithKeep is like Secret, but exposes three outcomes
+	// for a reconfigure-style flow:
+	//
+	//   SecretKept    — user pressed Enter; preserve the stored
+	//                   value. The caller should omit that role
+	//                   from Store.Put / WriteSecrets.
+	//   SecretSet     — user typed a new value; rotate.
+	//   SecretCleared — user asked to remove the stored value
+	//                   (e.g. dropping the client_secret from a
+	//                   PKCE public client). The caller should
+	//                   call Store.DeleteSecret for that role.
+	//
+	// Use only in reconfigure-style flows where an existing
+	// secret is known to be present; in fresh-setup flows where
+	// the user MUST supply a value, call Secret instead.
+	SecretWithKeep(question string) (value string, choice SecretChoice, err error)
+
 	// Choice prompts the user to pick one of the given options.
 	// Returns the option's Value.
 	Choice(question string, options []ChoiceOption) (string, error)
@@ -90,6 +107,23 @@ type ChoiceOption struct {
 	Label       string // shown next to the index
 	Description string // optional second line
 }
+
+// SecretChoice is the outcome of a [Prompter.SecretWithKeep]
+// call — see its docstring for the meaning of each value.
+type SecretChoice int
+
+const (
+	// SecretKept means the user pressed Enter to keep the
+	// existing stored secret.
+	SecretKept SecretChoice = iota
+	// SecretSet means the user typed a new value to rotate
+	// the stored secret.
+	SecretSet
+	// SecretCleared means the user explicitly asked to
+	// remove the stored secret (e.g. via a sentinel + confirm
+	// in the prompter's UI).
+	SecretCleared
+)
 
 // Import the particle at particleFS into opts.Registry, prompting
 // for credentials when the manifest declares them. On success
@@ -228,12 +262,29 @@ func Reconfigure(ctx context.Context, particleName, credName string, opts Option
 		opts.Prompter.Info(fmt.Sprintf("Currently configured: %s.%s", cred.Name, previous))
 	}
 
+	// Load the prior descriptor so dispatchSetup can default
+	// matching-method prompts to the existing values (and let
+	// the user press Enter to keep stored secrets). When the
+	// user switches method, the prior descriptor's metadata
+	// shape won't match the new helper's typed `existing`
+	// parameter — each helper guards by checking
+	// prev.Method == method.Name itself.
+	var prev *credentials.Descriptor
+	if previous != "" {
+		desc, derr := opts.Credentials.GetByName(ctx, cred.Name)
+		if derr == nil {
+			prev = &desc
+		} else if !errors.Is(derr, credentials.ErrNotFound) {
+			return registry.Entry{}, "", fmt.Errorf("look up current credential for %s: %w", cred.Name, derr)
+		}
+	}
+
 	chosen, err := chooseAuthMethod(opts.Prompter, cred)
 	if err != nil {
 		return registry.Entry{}, "", err
 	}
 	opts.Prompter.Info(fmt.Sprintf("→ %s.%s (%s) — %s", cred.Name, chosen.Name, chosen.Type, chosen.Description))
-	if err := dispatchSetup(ctx, opts, cred.Name, chosen); err != nil {
+	if err := dispatchSetup(ctx, opts, cred.Name, chosen, prev); err != nil {
 		return registry.Entry{}, "", err
 	}
 	return entry, chosen.Name, nil
@@ -321,7 +372,7 @@ func setupOneCredential(ctx context.Context, opts Options, cred credentialDecl) 
 		return "", err
 	}
 	opts.Prompter.Info(fmt.Sprintf("→ %s.%s (%s) — %s", cred.Name, chosen.Name, chosen.Type, chosen.Description))
-	if err := dispatchSetup(ctx, opts, cred.Name, chosen); err != nil {
+	if err := dispatchSetup(ctx, opts, cred.Name, chosen, nil); err != nil {
 		return "", err
 	}
 	return chosen.Name, nil
@@ -358,20 +409,43 @@ func chooseAuthMethod(p Prompter, cred credentialDecl) (credentialMethod, error)
 // and method.Name as the method discriminator. The Store is
 // already pre-bound to the right particle (opts.Credentials), so
 // the particle name doesn't appear here.
-func dispatchSetup(ctx context.Context, opts Options, credName string, method credentialMethod) error {
+//
+// prev, when non-nil, is the credential's prior descriptor —
+// used by helpers to default visible-field prompts and to enable
+// "press Enter to keep current" on secret prompts. When the
+// chosen method differs from prev.Method the helper sees no
+// usable prior state (typed metadata won't match) and behaves
+// like a fresh setup.
+func dispatchSetup(ctx context.Context, opts Options, credName string, method credentialMethod, prev *credentials.Descriptor) error {
 	switch method.Type {
 	case "basic":
-		return setupBasic(ctx, opts, credName, method)
+		return setupBasic(ctx, opts, credName, method, sameMethodMeta[credentials.BasicMeta](prev, method))
 	case "apikey":
-		return setupAPIKey(ctx, opts, credName, method)
+		return setupAPIKey(ctx, opts, credName, method, sameMethodMeta[credentials.APIKeyMeta](prev, method))
 	case "signing-key":
-		return setupSigningKey(ctx, opts, credName, method)
+		return setupSigningKey(ctx, opts, credName, method, sameMethodMeta[credentials.SigningKeyMeta](prev, method))
 	case "raw":
-		return setupRaw(ctx, opts, credName, method)
+		return setupRaw(ctx, opts, credName, method, sameMethodMeta[credentials.RawMeta](prev, method))
 	case "oauth2":
-		return setupOAuth2(ctx, opts, credName, method)
+		return setupOAuth2(ctx, opts, credName, method, sameMethodMeta[credentials.OAuth2Meta](prev, method))
 	}
 	return fmt.Errorf("unknown credential type %q", method.Type)
+}
+
+// sameMethodMeta returns prev's typed metadata when the chosen
+// method matches the stored one, otherwise nil. The generic
+// parameter pins the metadata type per dispatch arm, so each
+// helper's signature stays strongly typed and a mismatched
+// method type is a nil — i.e., "behave like a fresh setup".
+func sameMethodMeta[M credentials.Metadata](prev *credentials.Descriptor, method credentialMethod) *M {
+	if prev == nil || prev.Method != method.Name {
+		return nil
+	}
+	typed, ok := prev.Meta.(M)
+	if !ok {
+		return nil
+	}
+	return &typed
 }
 
 // readManifest pulls manifest.json off the particle FS and decodes

@@ -52,6 +52,25 @@ func (p *scriptedPrompter) Secret(question string) (string, error) {
 	return v, nil
 }
 
+// SecretWithKeep consumes one scripted secret. Sentinels:
+//   "__keep__"  → SecretKept (preserve existing)
+//   "__clear__" → SecretCleared (remove existing)
+// anything else → SecretSet with that value.
+func (p *scriptedPrompter) SecretWithKeep(question string) (string, importer.SecretChoice, error) {
+	if len(p.secrets) == 0 {
+		p.t.Fatalf("prompter: out of Secret answers (asked: %q)", question)
+	}
+	v := p.secrets[0]
+	p.secrets = p.secrets[1:]
+	switch v {
+	case "__keep__":
+		return "", importer.SecretKept, nil
+	case "__clear__":
+		return "", importer.SecretCleared, nil
+	}
+	return v, importer.SecretSet, nil
+}
+
 func (p *scriptedPrompter) Choice(question string, _ []importer.ChoiceOption) (string, error) {
 	if len(p.choices) == 0 {
 		p.t.Fatalf("prompter: out of Choice answers (asked: %q)", question)
@@ -799,5 +818,257 @@ func TestImport_StoreLookupError_Propagates(t *testing.T) {
 	})
 	if !errors.Is(err, boom) {
 		t.Errorf("err = %v, want chain containing %v", err, boom)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Keep-current affordance
+// -----------------------------------------------------------------------------
+
+// Reconfigure with the same method: pressing Enter on the secret
+// prompt (sentinel "__keep__") and on the visible field (empty
+// string → take default) leaves both fields exactly as they were.
+func TestReconfigure_SameMethod_KeepCurrent_PreservesAll(t *testing.T) {
+	caps := `{"auth":{"required":true,"methods":{"basic":{"type":"basic"}}}}`
+	reg, store, _ := reconfigureSetup(t, caps,
+		nil,                 // single method, no choice
+		[]string{"alice"},   // username
+		[]string{"hunter2"}, // password
+	)
+
+	// Reconfigure: keep both. "" with default → existing username;
+	// "__keep__" on SecretWithKeep → skip secret write.
+	prompter := &scriptedPrompter{
+		t:       t,
+		strings: []string{""},          // empty → default ("alice")
+		secrets: []string{"__keep__"},  // skip write
+	}
+	_, _, err := importer.Reconfigure(context.Background(), "p", "", importer.Options{
+		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
+	})
+	if err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+	desc, err := store.GetByName(context.Background(), "auth")
+	if err != nil {
+		t.Fatalf("GetByName: %v", err)
+	}
+	meta, ok := desc.Meta.(credentials.BasicMeta)
+	if !ok || meta.Username != "alice" {
+		t.Errorf("username = %+v, want BasicMeta{Username:\"alice\"}", desc.Meta)
+	}
+	pw, err := store.ReadSecret(context.Background(), desc.ID, credentials.SecretRolePassword)
+	if err != nil {
+		t.Fatalf("ReadSecret: %v", err)
+	}
+	if string(pw) != "hunter2" {
+		t.Errorf("password = %q, want hunter2 (preserved via keep-current)", pw)
+	}
+}
+
+// Mixing keep + change: keep the username, rotate the password.
+// Verifies that the kept field stays and the changed one
+// overwrites — i.e. keep-current is per-field, not all-or-nothing.
+func TestReconfigure_SameMethod_PartialKeep(t *testing.T) {
+	caps := `{"auth":{"required":true,"methods":{"basic":{"type":"basic"}}}}`
+	reg, store, _ := reconfigureSetup(t, caps,
+		nil,
+		[]string{"alice"},
+		[]string{"hunter2"},
+	)
+	prompter := &scriptedPrompter{
+		t:       t,
+		strings: []string{""},        // keep username
+		secrets: []string{"newpass"}, // rotate password
+	}
+	if _, _, err := importer.Reconfigure(context.Background(), "p", "", importer.Options{
+		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
+	}); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+	desc, _ := store.GetByName(context.Background(), "auth")
+	if got := desc.Meta.(credentials.BasicMeta).Username; got != "alice" {
+		t.Errorf("username = %q, want alice", got)
+	}
+	pw, _ := store.ReadSecret(context.Background(), desc.ID, credentials.SecretRolePassword)
+	if string(pw) != "newpass" {
+		t.Errorf("password = %q, want newpass", pw)
+	}
+}
+
+// Explicit "clear" sentinel removes the stored secret: after
+// reconfigure with "__clear__", ReadSecret on that role returns
+// ErrSecretNotSet.
+func TestReconfigure_SameMethod_ClearSecret(t *testing.T) {
+	caps := `{"auth":{"required":true,"methods":{"basic":{"type":"basic"}}}}`
+	reg, store, _ := reconfigureSetup(t, caps,
+		nil,
+		[]string{"alice"},
+		[]string{"hunter2"},
+	)
+	prompter := &scriptedPrompter{
+		t:       t,
+		strings: []string{""},          // keep username
+		secrets: []string{"__clear__"}, // explicit clear
+	}
+	if _, _, err := importer.Reconfigure(context.Background(), "p", "", importer.Options{
+		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
+	}); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+	desc, _ := store.GetByName(context.Background(), "auth")
+	if got := desc.Meta.(credentials.BasicMeta).Username; got != "alice" {
+		t.Errorf("username = %q, want alice (kept)", got)
+	}
+	if _, err := store.ReadSecret(context.Background(), desc.ID, credentials.SecretRolePassword); !errors.Is(err, credentials.ErrSecretNotSet) {
+		t.Errorf("password should be cleared; ReadSecret err = %v, want ErrSecretNotSet", err)
+	}
+}
+
+// API-key reconfigure with __keep__ preserves the stored key
+// even though it's a single-secret credential.
+func TestReconfigure_APIKey_KeepCurrent(t *testing.T) {
+	caps := `{"auth":{"required":true,"methods":{
+		"pat":{"type":"apikey","location":{"kind":"auth-scheme","scheme":"Bearer"}}
+	}}}`
+	reg, store, _ := reconfigureSetup(t, caps, nil, nil, []string{"orig-key"})
+	prompter := &scriptedPrompter{t: t, secrets: []string{"__keep__"}}
+	if _, _, err := importer.Reconfigure(context.Background(), "p", "", importer.Options{
+		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
+	}); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+	desc, _ := store.GetByName(context.Background(), "auth")
+	key, err := store.ReadSecret(context.Background(), desc.ID, credentials.SecretRoleKey)
+	if err != nil {
+		t.Fatalf("ReadSecret: %v", err)
+	}
+	if string(key) != "orig-key" {
+		t.Errorf("apikey = %q, want orig-key (preserved)", key)
+	}
+}
+
+// Switching method while a prior credential exists should NOT
+// trigger the keep-current path — the typed metadata doesn't
+// match, so the helper sees no existing state and asks for every
+// field fresh.
+func TestReconfigure_SwitchMethod_DoesNotKeepCurrent(t *testing.T) {
+	caps := `{"auth":{"required":true,"methods":{
+		"a":{"type":"basic"},
+		"b":{"type":"apikey","location":{"kind":"header","name":"X-K"}}
+	}}}`
+	reg, store, _ := reconfigureSetup(t, caps,
+		[]string{"a"},
+		[]string{"alice"},
+		[]string{"pw"},
+	)
+	// Reconfigure: pick "b", provide a real key. If sameMethodMeta
+	// returned the prior BasicMeta by mistake, setupAPIKey would
+	// take the keep-current branch and the scripted "real-key"
+	// would go unconsumed — t.Fatalf would fire.
+	prompter := &scriptedPrompter{
+		t:       t,
+		choices: []string{"b"},
+		secrets: []string{"real-key"},
+	}
+	if _, _, err := importer.Reconfigure(context.Background(), "p", "", importer.Options{
+		Registry: reg, Credentials: store, Prompter: prompter, PermissionMode: importer.PermissionSkip,
+	}); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+	if len(prompter.secrets) != 0 {
+		t.Errorf("scripted secret was kept-as-current instead of consumed: %v", prompter.secrets)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// ReauthOAuth
+// -----------------------------------------------------------------------------
+
+// Non-oauth2 credential → clear error pointing to the full
+// reconfigure path.
+func TestReauthOAuth_RejectsNonOAuth(t *testing.T) {
+	caps := `{"auth":{"required":true,"methods":{
+		"pat":{"type":"apikey","location":{"kind":"auth-scheme","scheme":"Bearer"}}
+	}}}`
+	reg, store, _ := reconfigureSetup(t, caps, nil, nil, []string{"k"})
+	_, _, err := importer.ReauthOAuth(context.Background(), "p", "", importer.Options{
+		Registry: reg, Credentials: store, Prompter: &scriptedPrompter{t: t},
+	})
+	if err == nil || !strings.Contains(err.Error(), "oauth2") {
+		t.Errorf("err = %v, want one mentioning oauth2", err)
+	}
+}
+
+// Credential not yet configured → message pointing user at full
+// reconfigure first.
+func TestReauthOAuth_NotConfigured(t *testing.T) {
+	reg := newRegistry(t)
+	store := credmem.New().Scoped("p")
+	caps := `{"auth":{"required":false,"methods":{"oauth":{"type":"oauth2","flows":["authorization-code-pkce"]}}}}`
+	if err := reg.Put(context.Background(), "p", "0.1.0", mkParticleFS("p", "0.1.0", "{}", caps)); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := importer.ReauthOAuth(context.Background(), "p", "", importer.Options{
+		Registry: reg, Credentials: store, Prompter: &scriptedPrompter{t: t},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("err = %v, want one mentioning 'not configured'", err)
+	}
+}
+
+// When the manifest no longer lists the stored flow (e.g. the
+// particle author removed device-code), reauth surfaces a clear
+// message rather than silently picking a different flow.
+func TestReauthOAuth_StoredFlowNoLongerDeclared(t *testing.T) {
+	// Hand-seed the store with an oauth2 descriptor whose Flow
+	// isn't in the registered manifest's flows list. We bypass
+	// the real OAuth setup (which would actually open a browser)
+	// by writing directly via Store.Put.
+	reg := newRegistry(t)
+	store := credmem.New().Scoped("p")
+	caps := `{"auth":{"required":true,"methods":{"oauth":{"type":"oauth2","flows":["authorization-code-pkce"]}}}}`
+	if err := reg.Put(context.Background(), "p", "0.1.0", mkParticleFS("p", "0.1.0", "{}", caps)); err != nil {
+		t.Fatal(err)
+	}
+	meta := credentials.OAuth2Meta{
+		AuthorizationURL: "https://example/auth",
+		TokenURL:         "https://example/token",
+		ClientID:         "cid",
+		Flow:             "device-code", // not in manifest's flows
+	}
+	bundle := credentials.AccessToken{Token: "stale"}
+	if _, err := store.Put(context.Background(), "auth", "oauth", meta,
+		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: bundle.Marshal()},
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := importer.ReauthOAuth(context.Background(), "p", "", importer.Options{
+		Registry: reg, Credentials: store, Prompter: &scriptedPrompter{t: t},
+	})
+	if err == nil || !strings.Contains(err.Error(), "no longer listed") {
+		t.Errorf("err = %v, want one mentioning 'no longer listed'", err)
+	}
+}
+
+// Method removed from the manifest entirely.
+func TestReauthOAuth_StoredMethodGone(t *testing.T) {
+	reg := newRegistry(t)
+	store := credmem.New().Scoped("p")
+	caps := `{"auth":{"required":true,"methods":{"oauth":{"type":"oauth2","flows":["authorization-code-pkce"]}}}}`
+	if err := reg.Put(context.Background(), "p", "0.1.0", mkParticleFS("p", "0.1.0", "{}", caps)); err != nil {
+		t.Fatal(err)
+	}
+	meta := credentials.OAuth2Meta{Flow: "authorization-code-pkce"}
+	if _, err := store.Put(context.Background(), "auth", "old-method-name", meta,
+		credentials.Secret{Role: credentials.SecretRoleAccessToken, Value: credentials.AccessToken{Token: "x"}.Marshal()},
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := importer.ReauthOAuth(context.Background(), "p", "", importer.Options{
+		Registry: reg, Credentials: store, Prompter: &scriptedPrompter{t: t},
+	})
+	if err == nil || !strings.Contains(err.Error(), "no longer declares") {
+		t.Errorf("err = %v, want one mentioning 'no longer declares'", err)
 	}
 }

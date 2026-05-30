@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/spf13/cobra"
+
 	"github.com/partite-ai/wacogo"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -21,6 +23,61 @@ import (
 	"github.com/partite-ai/particles/runtime"
 )
 
+// addHTTPTraceFlag registers `--trace-http[=basic|headers|full]`
+// on cmd, writing the parsed level into *level. The flag is
+// declared with NoOptDefVal="basic" so a bare `--trace-http` is
+// equivalent to `--trace-http=basic`. Passing the flag with an
+// invalid value defers the error to PreRunE, which runs after
+// cobra parsing.
+//
+// All three particle-running commands (run / serve-mcp / ping)
+// share this so the spelling, value set, and default behavior
+// stay identical across them.
+func addHTTPTraceFlag(cmd *cobra.Command, level *runtime.TraceLevel) {
+	var raw string
+	f := cmd.Flags().VarPF(&traceLevelValue{level: level, raw: &raw}, "trace-http", "",
+		"Trace outbound HTTP to stderr at level basic|headers|full (default basic; off when unset)")
+	// Bare `--trace-http` (no value) → basic.
+	f.NoOptDefVal = "basic"
+}
+
+// traceLevelValue is a pflag.Value that parses --trace-http's
+// argument into a runtime.TraceLevel.
+type traceLevelValue struct {
+	level *runtime.TraceLevel
+	raw   *string
+}
+
+func (v *traceLevelValue) String() string {
+	if v.raw == nil {
+		return ""
+	}
+	return *v.raw
+}
+func (v *traceLevelValue) Set(s string) error {
+	lvl, err := runtime.ParseTraceLevel(s)
+	if err != nil {
+		return err
+	}
+	*v.level = lvl
+	*v.raw = s
+	return nil
+}
+func (v *traceLevelValue) Type() string { return "level" }
+
+// bootOptions bundles the per-invocation knobs the CLI passes
+// down to bootParticle on top of the required db + entry +
+// mounts. Each command builds one of these from its own flags;
+// the zero value is a valid "no extras" configuration.
+type bootOptions struct {
+	// HTTPTraceLevel, when > TraceOff, wraps the per-particle
+	// HTTP doer in a [runtime.TracingHTTPDoer] writing to
+	// HTTPTraceWriter. The writer is required when the level
+	// is non-zero — callers default it to stderr.
+	HTTPTraceLevel  runtime.TraceLevel
+	HTTPTraceWriter io.Writer
+}
+
 // bootParticle brings up everything needed to talk to a registered
 // particle: keyring sealer, credentials store, kv store, wacogo
 // engine, managers, runtime, and the particle instance itself.
@@ -29,12 +86,15 @@ import (
 // setup issues (e.g. wasm-cache open failed → operation continues
 // without a cache). CLI commands pass `cmd.ErrOrStderr()`.
 //
+// `opts` carries optional per-invocation knobs (e.g. HTTP
+// tracing); the zero value is "no extras".
+//
 // Returns the live *runtime.Particle and a teardown function that
 // closes everything in reverse order. The teardown is a single
 // closure (not a chain of `defer`s) so the two callers — `ping` and
 // `serve-mcp` — can share the bring-up without each carrying eight
 // `defer` lines.
-func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry, cliMounts map[string]string, warnW io.Writer) (*runtime.Particle, func(), error) {
+func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry, cliMounts map[string]string, warnW io.Writer, opts bootOptions) (*runtime.Particle, func(), error) {
 	credBackend, err := credsqlite.New(ctx, db, openCredentialSealer(warnW))
 	if err != nil {
 		return nil, nil, fmt.Errorf("credentials store: %w", err)
@@ -108,6 +168,11 @@ func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry, cliMoun
 		return nil, nil, err
 	}
 
+	var particleOpts []runtime.ParticleOption
+	if opts.HTTPTraceLevel > runtime.TraceOff && opts.HTTPTraceWriter != nil {
+		particleOpts = append(particleOpts, runtime.WithHTTPTrace(opts.HTTPTraceLevel, opts.HTTPTraceWriter))
+	}
+
 	// Scope the multi-particle backends to this particle's
 	// name. The resulting per-particle Stores are what
 	// NewParticle reads through; the Managers themselves stay
@@ -116,6 +181,7 @@ func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry, cliMoun
 		credBackend.Scoped(entry.Name),
 		kvBackend.Scoped(entry.Name),
 		mountMap,
+		particleOpts...,
 	)
 	if err != nil {
 		mountCleanup()

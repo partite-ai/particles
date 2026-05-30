@@ -70,27 +70,80 @@ func (p *StdioPrompter) String(question, defaultValue string) (string, error) {
 
 func (p *StdioPrompter) Secret(question string) (string, error) {
 	for {
-		fmt.Fprintf(p.out, "%s: ", question)
-		var bytes []byte
-		var err error
-		if term.IsTerminal(p.stdinFd) {
-			bytes, err = term.ReadPassword(p.stdinFd)
-			fmt.Fprintln(p.out) // newline after the masked entry
-		} else {
-			line, lerr := p.in.ReadString('\n')
-			err = lerr
-			bytes = []byte(strings.TrimRight(line, "\r\n"))
+		s, err := p.readSecretLine(question)
+		if err != nil {
+			return "", err
 		}
-		if err != nil && len(bytes) == 0 {
-			return "", fmt.Errorf("read input: %w", err)
-		}
-		s := string(bytes)
 		if s == "" {
 			fmt.Fprintln(p.out, "  (value cannot be empty)")
 			continue
 		}
 		return s, nil
 	}
+}
+
+// clearSecretSentinel is the literal a user types at a
+// SecretWithKeep prompt to explicitly request removal of the
+// stored secret. We confirm before acting on it, so a user
+// whose real secret happens to be "-" still has a way out.
+const clearSecretSentinel = "-"
+
+// SecretWithKeep prompts for a secret with three possible
+// outcomes:
+//
+//   - Empty input → [SecretKept]: keep the stored value.
+//   - Sentinel "-" + confirm → [SecretCleared]: explicitly
+//     remove the stored value. The confirm guards against a
+//     user whose real secret happens to be "-": pressing N
+//     re-prompts.
+//   - Any other input → [SecretSet]: rotate to that value.
+func (p *StdioPrompter) SecretWithKeep(question string) (string, SecretChoice, error) {
+	full := question + ` (press Enter to keep current; "` + clearSecretSentinel + `" to clear)`
+	for {
+		s, err := p.readSecretLine(full)
+		if err != nil {
+			return "", SecretKept, err
+		}
+		if s == "" {
+			return "", SecretKept, nil
+		}
+		if s == clearSecretSentinel {
+			ok, err := p.Confirm("Clear the stored value?", false)
+			if err != nil {
+				return "", SecretKept, err
+			}
+			if !ok {
+				// Re-prompt — the user backed out, and we
+				// don't want to fall through to treating
+				// "-" as a literal value just because they
+				// hesitated.
+				continue
+			}
+			return "", SecretCleared, nil
+		}
+		return s, SecretSet, nil
+	}
+}
+
+// readSecretLine prints the prompt and reads one line, masking
+// the entry when stdin is a terminal. Empty result is allowed —
+// callers (Secret vs SecretWithKeep) interpret it differently.
+func (p *StdioPrompter) readSecretLine(question string) (string, error) {
+	fmt.Fprintf(p.out, "%s: ", question)
+	var bytes []byte
+	var err error
+	if term.IsTerminal(p.stdinFd) {
+		bytes, err = term.ReadPassword(p.stdinFd)
+		fmt.Fprintln(p.out) // newline after the masked entry
+	} else {
+		line, lerr := p.in.ReadString('\n')
+		err = lerr
+		bytes = []byte(strings.TrimRight(line, "\r\n"))
+	}
+	if err != nil && len(bytes) == 0 {
+		return "", fmt.Errorf("read input: %w", err)
+	}
+	return string(bytes), nil
 }
 
 func (p *StdioPrompter) Choice(question string, options []ChoiceOption) (string, error) {

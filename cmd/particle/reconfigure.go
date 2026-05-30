@@ -11,7 +11,10 @@ import (
 )
 
 func newReconfigureCmd() *cobra.Command {
-	var dbPath string
+	var (
+		dbPath     string
+		reauthOnly bool
+	)
 	cmd := &cobra.Command{
 		Use:   "reconfigure <particle> [credential]",
 		Short: "Re-run credential setup for a registered particle",
@@ -26,6 +29,16 @@ the credential name as the second argument to pick which one to
 reconfigure. With a single declared credential the argument may be
 omitted.
 
+When the chosen method matches the one already configured, every
+prompt defaults to the stored value — press Enter to keep it. Secret
+prompts show "(press Enter to keep current)" for the same reason.
+Switching to a different method always asks for every value fresh.
+
+With --reauth-only, skip every config prompt and only re-run the
+OAuth authorization flow, rotating the stored access (and refresh)
+token. The client ID, client secret, scopes, and URLs are preserved
+as-is. Only applies to oauth2 credentials.
+
 The chosen method applies to every registered version of the particle
 (credentials are per-name, not per-version). The latest registered
 version's manifest drives which methods are offered as choices.`,
@@ -36,14 +49,16 @@ version's manifest drives which methods are offered as choices.`,
 			if len(args) > 1 {
 				credName = args[1]
 			}
-			return runReconfigure(cmd, particleName, credName, dbPath)
+			return runReconfigure(cmd, particleName, credName, dbPath, reauthOnly)
 		},
 	}
 	cmd.Flags().StringVar(&dbPath, "db", "", dbFlagUsage())
+	cmd.Flags().BoolVar(&reauthOnly, "reauth-only", false,
+		"Re-run only the OAuth flow; preserve client ID, client secret, and other config. oauth2 credentials only.")
 	return cmd
 }
 
-func runReconfigure(cmd *cobra.Command, particleName, credName, dbPath string) error {
+func runReconfigure(cmd *cobra.Command, particleName, credName, dbPath string, reauthOnly bool) error {
 	if particleName == "" {
 		return fmt.Errorf("particle name is required")
 	}
@@ -74,11 +89,22 @@ func runReconfigure(cmd *cobra.Command, particleName, credName, dbPath string) e
 		return fmt.Errorf("reconfigure needs an interactive terminal")
 	}
 
-	entry, method, err := importer.Reconfigure(ctx, particleName, credName, importer.Options{
+	importerOpts := importer.Options{
 		Registry:    reg,
 		Credentials: credBackend.Scoped(particleName),
 		Prompter:    stdio,
-	})
+	}
+
+	if reauthOnly {
+		entry, method, err := importer.ReauthOAuth(ctx, particleName, credName, importerOpts)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "re-authenticated %s.%s\n", entry.Name, method)
+		return nil
+	}
+
+	entry, method, err := importer.Reconfigure(ctx, particleName, credName, importerOpts)
 	if err != nil {
 		return err
 	}

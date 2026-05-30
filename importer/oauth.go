@@ -2,6 +2,7 @@ package importer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"golang.org/x/oauth2"
@@ -23,14 +24,43 @@ const (
 //
 // The method's `flows` list constrains which flow runs. When
 // multiple are offered, the user picks one at the prompt.
-func setupOAuth2(ctx context.Context, opts Options, credName string, method credentialMethod) error {
+//
+// When existing is non-nil (reconfigure with same method),
+// visible fields default to the stored values and the client-
+// secret prompt offers "press Enter to keep current". The
+// OAuth flow itself always re-runs — token rotation is the
+// whole point of running setup again, and `--reauth-only` is
+// the path for the "I only want fresh tokens" case.
+func setupOAuth2(ctx context.Context, opts Options, credName string, method credentialMethod, existing *credentials.OAuth2Meta) error {
 	if len(method.Flows) == 0 {
 		return fmt.Errorf("manifest declares oauth2 %s.%s without flows", credName, method.Name)
 	}
 
-	cfg, flow, clientSecret, meta, err := promptOAuth2Config(opts.Prompter, method)
+	cfg, flow, clientSecret, clientSecretChoice, meta, err := promptOAuth2Config(opts.Prompter, method, existing)
 	if err != nil {
 		return err
+	}
+
+	// When the user kept the existing client secret, fold it
+	// back into the Config so the chosen flow can authenticate
+	// to the token endpoint. We re-resolve the descriptor to
+	// get the credential's ID, then read the secret directly —
+	// the prompter never surfaced its value. A Cleared choice
+	// leaves cfg.ClientSecret empty so the flow runs as a
+	// public client; the stored secret is removed below.
+	if clientSecretChoice == SecretKept {
+		desc, derr := opts.Credentials.GetByName(ctx, credName)
+		if derr != nil {
+			return fmt.Errorf("look up %s for kept client secret: %w", credName, derr)
+		}
+		stored, rerr := opts.Credentials.ReadSecret(ctx, desc.ID, credentials.SecretRoleClientSecret)
+		if rerr == nil {
+			cfg.ClientSecret = string(stored)
+		} else if !errors.Is(rerr, credentials.ErrNotFound) {
+			return fmt.Errorf("read stored client secret: %w", rerr)
+		}
+		// ErrNotFound: nothing stored under that role — leave
+		// ClientSecret empty (matches the public-client case).
 	}
 
 	var token *oauth2.Token
@@ -61,14 +91,24 @@ func setupOAuth2(ctx context.Context, opts Options, credName string, method cred
 			Role: credentials.SecretRoleRefreshToken, Value: []byte(token.RefreshToken),
 		})
 	}
-	if clientSecret != "" {
+	// Write the client secret only when the user provided a
+	// new one. SecretKept → Put with the same method preserves
+	// the prior value untouched. SecretCleared → run Put, then
+	// DeleteSecret below to remove the role entirely.
+	if clientSecretChoice == SecretSet && clientSecret != "" {
 		secrets = append(secrets, credentials.Secret{
 			Role: credentials.SecretRoleClientSecret, Value: []byte(clientSecret),
 		})
 	}
 
-	if _, err := opts.Credentials.Put(ctx, credName, method.Name, meta, secrets...); err != nil {
+	desc, err := opts.Credentials.Put(ctx, credName, method.Name, meta, secrets...)
+	if err != nil {
 		return fmt.Errorf("store: %w", err)
+	}
+	if clientSecretChoice == SecretCleared {
+		if err := opts.Credentials.DeleteSecret(ctx, desc.ID, credentials.SecretRoleClientSecret); err != nil {
+			return fmt.Errorf("clear client secret: %w", err)
+		}
 	}
 	opts.Prompter.Info(fmt.Sprintf("✓ %s.%s — OAuth complete (%s)", credName, method.Name, flow))
 	return nil
@@ -84,14 +124,25 @@ func setupOAuth2(ctx context.Context, opts Options, credName string, method cred
 //
 // Scopes come from the manifest itself — re-prompting would
 // invite drift between the schema and what's negotiated.
-func promptOAuth2Config(p Prompter, method credentialMethod) (*oauth2.Config, string, string, credentials.OAuth2Meta, error) {
+//
+// When existing is non-nil (reconfigure with same oauth method),
+// the Client ID prompt defaults to the stored value, and the
+// Client secret prompt offers keep/set/clear via
+// [Prompter.SecretWithKeep]. The returned clientSecretChoice
+// reports which branch ran so the caller can either fold the
+// stored secret back into the *oauth2.Config (Kept) or schedule
+// a DeleteSecret (Cleared).
+func promptOAuth2Config(p Prompter, method credentialMethod, existing *credentials.OAuth2Meta) (
+	cfg *oauth2.Config, flow string, clientSecret string, clientSecretChoice SecretChoice,
+	meta credentials.OAuth2Meta, err error,
+) {
 	authURL, err := resolveOAuthURL(p, "Authorization URL", method.AuthorizationURL)
 	if err != nil {
-		return nil, "", "", credentials.OAuth2Meta{}, err
+		return nil, "", "", SecretKept, credentials.OAuth2Meta{}, err
 	}
 	tokenURL, err := resolveOAuthURL(p, "Token URL", method.TokenURL)
 	if err != nil {
-		return nil, "", "", credentials.OAuth2Meta{}, err
+		return nil, "", "", SecretKept, credentials.OAuth2Meta{}, err
 	}
 	// Device-auth isn't prompted; if the manifest omits it and
 	// the device-code flow runs, the device-flow runner errors
@@ -99,36 +150,50 @@ func promptOAuth2Config(p Prompter, method credentialMethod) (*oauth2.Config, st
 	// thing.
 	deviceURL := method.DeviceAuthURL
 
-	clientID, err := p.String("Client ID", "")
+	defaultClientID := ""
+	if existing != nil {
+		defaultClientID = existing.ClientID
+	}
+	clientID, err := p.String("Client ID", defaultClientID)
 	if err != nil {
-		return nil, "", "", credentials.OAuth2Meta{}, err
+		return nil, "", "", SecretKept, credentials.OAuth2Meta{}, err
 	}
 
-	flow, err := chooseFlow(p, method.Flows)
+	flow, err = chooseFlow(p, method.Flows)
 	if err != nil {
-		return nil, "", "", credentials.OAuth2Meta{}, err
+		return nil, "", "", SecretKept, credentials.OAuth2Meta{}, err
 	}
 
 	// Auth-code (no PKCE) ALWAYS needs a client secret. PKCE may
 	// or may not — public clients omit it; some providers
 	// (GitHub, …) require it even with PKCE. Letting the user
-	// leave it blank for PKCE handles both.
-	var clientSecret string
+	// leave it blank for PKCE handles both, and the keep/clear
+	// affordance covers "I want this PKCE client to become
+	// public" (clear) and "leave my existing secret alone"
+	// (keep).
 	switch flow {
 	case flowAuthCode:
-		clientSecret, err = p.Secret("Client secret")
+		clientSecret, clientSecretChoice, err = secretFor(p, "Client secret", existing != nil)
 	case flowAuthCodePKCE:
-		clientSecret, err = p.String("Client secret (leave blank for public clients)", "")
+		if existing != nil {
+			clientSecret, clientSecretChoice, err = p.SecretWithKeep("Client secret (leave blank for public clients)")
+		} else {
+			// Fresh PKCE setup: blank is allowed, so use
+			// String. Map to SecretSet so the caller writes
+			// (or skips, if it's empty).
+			clientSecret, err = p.String("Client secret (leave blank for public clients)", "")
+			clientSecretChoice = SecretSet
+		}
 	}
 	if err != nil {
-		return nil, "", "", credentials.OAuth2Meta{}, err
+		return nil, "", "", SecretKept, credentials.OAuth2Meta{}, err
 	}
 
 	if len(method.Scopes) > 0 {
 		p.Info(fmt.Sprintf("Requesting scopes: %v", method.Scopes))
 	}
 
-	cfg := &oauth2.Config{
+	cfg = &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Scopes:       method.Scopes,
@@ -138,14 +203,14 @@ func promptOAuth2Config(p Prompter, method credentialMethod) (*oauth2.Config, st
 			DeviceAuthURL: deviceURL,
 		},
 	}
-	meta := credentials.OAuth2Meta{
+	meta = credentials.OAuth2Meta{
 		AuthorizationURL: authURL,
 		TokenURL:         tokenURL,
 		ClientID:         clientID,
 		Scopes:           method.Scopes,
 		Flow:             flow,
 	}
-	return cfg, flow, clientSecret, meta, nil
+	return cfg, flow, clientSecret, clientSecretChoice, meta, nil
 }
 
 // resolveOAuthURL applies the manifest-override > prompt

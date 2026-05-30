@@ -16,7 +16,10 @@ import (
 )
 
 func newPingCmd() *cobra.Command {
-	var dbPath string
+	var (
+		dbPath     string
+		traceLevel runtime.TraceLevel
+	)
 	cmd := &cobra.Command{
 		Use:   "ping <name>[@version]",
 		Short: "Call a registered particle's ping handler",
@@ -25,14 +28,15 @@ func newPingCmd() *cobra.Command {
 0 with the result on success, non-zero on handler error.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runPing(cmd, args[0], dbPath)
+			return runPing(cmd, args[0], dbPath, traceLevel)
 		},
 	}
 	cmd.Flags().StringVar(&dbPath, "db", "", dbFlagUsage())
+	addHTTPTraceFlag(cmd, &traceLevel)
 	return cmd
 }
 
-func runPing(cmd *cobra.Command, target, dbPath string) error {
+func runPing(cmd *cobra.Command, target, dbPath string, traceLevel runtime.TraceLevel) error {
 	dbPath, err := resolveDBPath(dbPath)
 	if err != nil {
 		return err
@@ -54,7 +58,10 @@ func runPing(cmd *cobra.Command, target, dbPath string) error {
 		return err
 	}
 
-	p, teardown, err := bootParticle(ctx, db, entry, nil, cmd.ErrOrStderr())
+	p, teardown, err := bootParticle(ctx, db, entry, nil, cmd.ErrOrStderr(), bootOptions{
+		HTTPTraceLevel:  traceLevel,
+		HTTPTraceWriter: cmd.ErrOrStderr(),
+	})
 	if err != nil {
 		return err
 	}

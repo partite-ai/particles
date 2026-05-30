@@ -22,6 +22,7 @@ func newServeMCPCmd() *cobra.Command {
 		includes   []string
 		excludes   []string
 		mountFlags []string
+		traceLevel runtime.TraceLevel
 	)
 	cmd := &cobra.Command{
 		Use:   "serve-mcp <name>[@version]",
@@ -34,7 +35,7 @@ Use --mount name=host/path to map a declared filesystem mount for the
 session (overriding any saved mapping); repeat for multiple mounts.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServeMCP(cmd, args[0], dbPath, includes, excludes, mountFlags)
+			return runServeMCP(cmd, args[0], dbPath, includes, excludes, mountFlags, traceLevel)
 		},
 	}
 	cmd.Flags().StringVar(&dbPath, "db", "", dbFlagUsage())
@@ -44,11 +45,12 @@ session (overriding any saved mapping); repeat for multiple mounts.`,
 		"Comma-separated denylist: expose every tool except the named ones.")
 	cmd.Flags().StringArrayVar(&mountFlags, "mount", nil,
 		"Map a declared mount as name=host/path (repeatable; overrides saved mappings)")
+	addHTTPTraceFlag(cmd, &traceLevel)
 	cmd.MarkFlagsMutuallyExclusive("only-tools", "exclude-tools")
 	return cmd
 }
 
-func runServeMCP(cmd *cobra.Command, target, dbPath string, includes, excludes, mountFlags []string) error {
+func runServeMCP(cmd *cobra.Command, target, dbPath string, includes, excludes, mountFlags []string, traceLevel runtime.TraceLevel) error {
 	cliMounts, err := parseMountFlags(mountFlags)
 	if err != nil {
 		return err
@@ -80,7 +82,10 @@ func runServeMCP(cmd *cobra.Command, target, dbPath string, includes, excludes, 
 		return err
 	}
 
-	p, teardown, err := bootParticle(ctx, db, entry, cliMounts, cmd.ErrOrStderr())
+	p, teardown, err := bootParticle(ctx, db, entry, cliMounts, cmd.ErrOrStderr(), bootOptions{
+		HTTPTraceLevel:  traceLevel,
+		HTTPTraceWriter: cmd.ErrOrStderr(),
+	})
 	if err != nil {
 		return err
 	}

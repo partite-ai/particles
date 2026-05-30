@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"io"
 	"net/http"
 	"time"
 )
@@ -19,6 +20,9 @@ type particleConfig struct {
 	httpClient     HTTPDoer
 	log            LogCallback
 	introspectMode bool
+
+	traceLevel  TraceLevel
+	traceWriter io.Writer
 }
 
 // WithHTTPClient overrides the [HTTPDoer] the per-particle wasi:http
@@ -29,6 +33,23 @@ type particleConfig struct {
 // outbound request.
 func WithHTTPClient(d HTTPDoer) ParticleOption {
 	return func(c *particleConfig) { c.httpClient = d }
+}
+
+// WithHTTPTrace wraps the per-particle HTTP doer with a
+// [TracingHTTPDoer] that writes a record of every request and
+// response to w at the given level. [TraceOff] (or a nil writer)
+// disables tracing.
+//
+// The wrap composes with [WithHTTPClient]: if both are supplied,
+// the tracer sits outside the user-supplied doer, so the user
+// doer sees the request as the wasi:http policy would issue it
+// and the tracer captures the same bytes. Order of WithHTTPClient
+// / WithHTTPTrace in the option list is irrelevant.
+func WithHTTPTrace(level TraceLevel, w io.Writer) ParticleOption {
+	return func(c *particleConfig) {
+		c.traceLevel = level
+		c.traceWriter = w
+	}
 }
 
 // WithLog routes every wasi:logging/log call this particle makes
@@ -54,6 +75,13 @@ func applyParticleOptions(opts []ParticleOption) particleConfig {
 	}
 	if cfg.httpClient == nil {
 		cfg.httpClient = http.DefaultClient
+	}
+	if cfg.traceLevel > TraceOff && cfg.traceWriter != nil {
+		cfg.httpClient = &TracingHTTPDoer{
+			Inner: cfg.httpClient,
+			W:     cfg.traceWriter,
+			Level: cfg.traceLevel,
+		}
 	}
 	return cfg
 }

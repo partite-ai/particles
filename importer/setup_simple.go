@@ -9,20 +9,58 @@ import (
 
 // setupBasic captures username + password for an HTTP Basic
 // credential. The password is masked at the terminal.
-func setupBasic(ctx context.Context, opts Options, credName string, method credentialMethod) error {
-	username, err := opts.Prompter.String("Username", "")
+//
+// When existing is non-nil (reconfigure, same method), the
+// username prompt defaults to the stored value and the password
+// prompt offers keep/set/clear via [Prompter.SecretWithKeep] —
+// Put preserves any secret role we don't include, so a kept
+// password stays; an explicit clear goes through DeleteSecret
+// after Put.
+func setupBasic(ctx context.Context, opts Options, credName string, method credentialMethod, existing *credentials.BasicMeta) error {
+	defaultUser := ""
+	if existing != nil {
+		defaultUser = existing.Username
+	}
+	username, err := opts.Prompter.String("Username", defaultUser)
 	if err != nil {
 		return err
 	}
-	password, err := opts.Prompter.Secret("Password")
+	password, choice, err := secretFor(opts.Prompter, "Password", existing != nil)
 	if err != nil {
 		return err
 	}
-	_, err = opts.Credentials.Put(ctx, credName, method.Name,
+	var secrets []credentials.Secret
+	if choice == SecretSet {
+		secrets = append(secrets, credentials.Secret{Role: credentials.SecretRolePassword, Value: []byte(password)})
+	}
+	desc, err := opts.Credentials.Put(ctx, credName, method.Name,
 		credentials.BasicMeta{Username: username},
-		credentials.Secret{Role: credentials.SecretRolePassword, Value: []byte(password)},
+		secrets...,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if choice == SecretCleared {
+		return opts.Credentials.DeleteSecret(ctx, desc.ID, credentials.SecretRolePassword)
+	}
+	return nil
+}
+
+// secretFor centralizes the "fresh setup vs reconfigure" branch
+// every helper repeats: in fresh setup the value is required
+// (Secret), in reconfigure the user can keep, set, or clear
+// (SecretWithKeep). Returns the value and the choice; the
+// "fresh setup" return is always SecretSet so callers can route
+// uniformly on the SecretChoice.
+func secretFor(p Prompter, question string, reconfiguring bool) (string, SecretChoice, error) {
+	if reconfiguring {
+		return p.SecretWithKeep(question)
+	}
+	v, err := p.Secret(question)
+	if err != nil {
+		return "", SecretKept, err
+	}
+	return v, SecretSet, nil
 }
 
 // setupAPIKey provisions an apikey credential. The
@@ -37,7 +75,7 @@ func setupBasic(ctx context.Context, opts Options, credName string, method crede
 // Pre-setting matters when the API has a single canonical
 // placement (GitHub PATs always go in `Authorization: Bearer
 // <pat>`) — re-asking the user is just noise.
-func setupAPIKey(ctx context.Context, opts Options, credName string, method credentialMethod) error {
+func setupAPIKey(ctx context.Context, opts Options, credName string, method credentialMethod, existing *credentials.APIKeyMeta) error {
 	var loc credentials.ApplySpec
 	var err error
 	if method.Location != nil {
@@ -46,21 +84,40 @@ func setupAPIKey(ctx context.Context, opts Options, credName string, method cred
 			return err
 		}
 		opts.Prompter.Info("  Location: " + describeApplySpec(loc))
+	} else if existing != nil {
+		// Reconfigure with no manifest-pinned location: keep
+		// what's stored. The user can change it by first
+		// switching the method (which forces a fresh
+		// location prompt). Re-asking here would force a
+		// password-style typing exercise for something that
+		// almost never changes.
+		loc = existing.Location
+		opts.Prompter.Info("  Location: " + describeApplySpec(loc) + " (unchanged)")
 	} else {
 		loc, err = promptAPIKeyLocation(opts.Prompter)
 		if err != nil {
 			return err
 		}
 	}
-	key, err := opts.Prompter.Secret("Key value")
+	key, choice, err := secretFor(opts.Prompter, "Key value", existing != nil)
 	if err != nil {
 		return err
 	}
-	_, err = opts.Credentials.Put(ctx, credName, method.Name,
+	var secrets []credentials.Secret
+	if choice == SecretSet {
+		secrets = append(secrets, credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte(key)})
+	}
+	desc, err := opts.Credentials.Put(ctx, credName, method.Name,
 		credentials.APIKeyMeta{Location: loc},
-		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte(key)},
+		secrets...,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if choice == SecretCleared {
+		return opts.Credentials.DeleteSecret(ctx, desc.ID, credentials.SecretRoleKey)
+	}
+	return nil
 }
 
 // applyLocationFromManifest converts the manifest JSON shape
@@ -140,25 +197,35 @@ func promptAPIKeyLocation(p Prompter) (credentials.ApplySpec, error) {
 // is taken from the method declaration (the manifest author
 // committed to one at design time) — re-prompting would invite
 // drift between the schema and what's stored.
-func setupSigningKey(ctx context.Context, opts Options, credName string, method credentialMethod) error {
+func setupSigningKey(ctx context.Context, opts Options, credName string, method credentialMethod, existing *credentials.SigningKeyMeta) error {
 	if method.Algorithm == "" {
 		return fmt.Errorf("manifest declares signing-key %s.%s without algorithm", credName, method.Name)
 	}
-	key, err := opts.Prompter.Secret(fmt.Sprintf("Signing key (%s)", method.Algorithm))
+	key, choice, err := secretFor(opts.Prompter, fmt.Sprintf("Signing key (%s)", method.Algorithm), existing != nil)
 	if err != nil {
 		return err
 	}
-	_, err = opts.Credentials.Put(ctx, credName, method.Name,
+	var secrets []credentials.Secret
+	if choice == SecretSet {
+		secrets = append(secrets, credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte(key)})
+	}
+	desc, err := opts.Credentials.Put(ctx, credName, method.Name,
 		credentials.SigningKeyMeta{Algorithm: method.Algorithm},
-		credentials.Secret{Role: credentials.SecretRoleKey, Value: []byte(key)},
+		secrets...,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if choice == SecretCleared {
+		return opts.Credentials.DeleteSecret(ctx, desc.ID, credentials.SecretRoleKey)
+	}
+	return nil
 }
 
 // setupRaw captures an opaque value, after warning the user that
 // it'll be visible to the JS handler (and any transitive npm
 // dep) in plaintext. Per design doc §7.
-func setupRaw(ctx context.Context, opts Options, credName string, method credentialMethod) error {
+func setupRaw(ctx context.Context, opts Options, credName string, method credentialMethod, existing *credentials.RawMeta) error {
 	opts.Prompter.Warn("'raw' credentials are returned to your particle's JavaScript in their actual value.")
 	opts.Prompter.Warn("They will be visible to all code in the particle, including transitive npm dependencies.")
 	opts.Prompter.Warn("Use a more specific type (basic, oauth2, apikey, signing-key) where possible.")
@@ -169,13 +236,23 @@ func setupRaw(ctx context.Context, opts Options, credName string, method credent
 	if !ok {
 		return fmt.Errorf("aborted by user")
 	}
-	value, err := opts.Prompter.Secret("Value")
+	value, choice, err := secretFor(opts.Prompter, "Value", existing != nil)
 	if err != nil {
 		return err
 	}
-	_, err = opts.Credentials.Put(ctx, credName, method.Name,
+	var secrets []credentials.Secret
+	if choice == SecretSet {
+		secrets = append(secrets, credentials.Secret{Role: credentials.SecretRoleValue, Value: []byte(value)})
+	}
+	desc, err := opts.Credentials.Put(ctx, credName, method.Name,
 		credentials.RawMeta{},
-		credentials.Secret{Role: credentials.SecretRoleValue, Value: []byte(value)},
+		secrets...,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if choice == SecretCleared {
+		return opts.Credentials.DeleteSecret(ctx, desc.ID, credentials.SecretRoleValue)
+	}
+	return nil
 }
