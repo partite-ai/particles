@@ -11,13 +11,98 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	httptypes "github.com/partite-ai/wacogo/wasi/http/types"
+
 	"github.com/partite-ai/particles/credentials"
 	"github.com/partite-ai/particles/credentials/memory"
 )
+
+// HTTPPolicy.CheckRedirect is the per-hop gate the default
+// http.Client factory installs. Unit-test it directly here so the
+// behavior is pinned without the wasm round-trip (which can't
+// easily route distinct hostnames to localhost).
+func TestHTTPPolicy_CheckRedirect(t *testing.T) {
+	pol := newHTTPPolicyDescriptor([]string{"good.example"})
+
+	t.Run("allowed host returns nil", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://good.example/x", nil)
+		if err := pol.CheckRedirect(req, nil); err != nil {
+			t.Errorf("CheckRedirect = %v, want nil", err)
+		}
+	})
+
+	t.Run("disallowed host returns HostNotAllowedError", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://evil.example/x", nil)
+		err := pol.CheckRedirect(req, nil)
+		if err == nil {
+			t.Fatal("CheckRedirect = nil, want error")
+		}
+		if !IsHostNotAllowed(err) {
+			t.Errorf("CheckRedirect err = %v, want HostNotAllowedError", err)
+		}
+	})
+
+	t.Run("too many hops returns error", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://good.example/x", nil)
+		via := make([]*http.Request, maxRedirects)
+		if err := pol.CheckRedirect(req, via); err == nil {
+			t.Error("CheckRedirect = nil after maxRedirects hops, want error")
+		}
+	})
+
+	t.Run("nil descriptor denies", func(t *testing.T) {
+		var nilPol *HTTPPolicy
+		if nilPol.AllowsHost("anything") {
+			t.Error("nil policy allowed a host")
+		}
+	})
+}
+
+// httpPolicy.Do recognizes a CheckRedirect denial that came back
+// wrapped in *url.Error and re-wraps it into the same coded
+// denial a first-hop block produces, so callers see one shape.
+func TestHTTPPolicy_RedirectDenialSurfacesAsCodedDenial(t *testing.T) {
+	// Inner doer that simulates http.Client returning a
+	// HostNotAllowedError from CheckRedirect: stdlib wraps the
+	// CheckRedirect error in *url.Error.
+	innerErr := &url.Error{
+		Op:  "Get",
+		URL: "http://evil.example/x",
+		Err: &HostNotAllowedError{Host: "evil.example"},
+	}
+	inner := doerFunc(func(*http.Request) (*http.Response, error) {
+		return nil, innerErr
+	})
+
+	pol := newHTTPPolicy(
+		newHTTPPolicyDescriptor([]string{"good.example"}),
+		inner,
+		nil, nil, nil, nil,
+	)
+	req := httptest.NewRequest("GET", "http://good.example/x", nil)
+	_, err := pol.Do(req)
+	if err == nil {
+		t.Fatal("Do = nil, want denial error")
+	}
+	if !IsHostNotAllowed(err) {
+		t.Errorf("err = %v, want IsHostNotAllowed", err)
+	}
+	// Coded form must also be reachable — that's what wasi:http
+	// reads to surface destination-ip-prohibited to the guest.
+	var coded *httptypes.CodedError
+	if !errors.As(err, &coded) {
+		t.Errorf("err = %v, want *httptypes.CodedError in chain", err)
+	}
+}
+
+type doerFunc func(*http.Request) (*http.Response, error)
+
+func (f doerFunc) Do(r *http.Request) (*http.Response, error) { return f(r) }
 
 // recordingDoer captures the request that finally goes "outbound"
 // after substitution + allow-list, so substitution tests can
@@ -47,7 +132,7 @@ func newPolicyWithStore(t *testing.T, particle string, declared ...string) (*htt
 	t.Helper()
 	store := memory.New()
 	rec := &recordingDoer{}
-	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store.Scoped(particle), declared, nil, nil)
+	pol := newHTTPPolicy(newHTTPPolicyDescriptor([]string{"upstream.test"}), rec, store.Scoped(particle), declared, nil, nil)
 	return pol, store, rec
 }
 
@@ -193,7 +278,7 @@ func TestSubstitute_OAuth2_ExpiredToken_ProactivelyRefreshed(t *testing.T) {
 			ExpiresAt: time.Now().Add(1 * time.Hour),
 		}, nil
 	}
-	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store.Scoped("p"), []string{"gh"}, nil, refresh)
+	pol := newHTTPPolicy(newHTTPPolicyDescriptor([]string{"upstream.test"}), rec, store.Scoped("p"), []string{"gh"}, nil, refresh)
 
 	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
 		"Authorization": {"Bearer " + placeholder},
@@ -229,7 +314,7 @@ func TestSubstitute_OAuth2_FreshToken_NoRefresh(t *testing.T) {
 		t.Fatal("refresh must not be called for a token outside the skew window")
 		return credentials.AccessToken{}, nil
 	}
-	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store.Scoped("p"), []string{"gh"}, nil, refresh)
+	pol := newHTTPPolicy(newHTTPPolicyDescriptor([]string{"upstream.test"}), rec, store.Scoped("p"), []string{"gh"}, nil, refresh)
 
 	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
 		"Authorization": {"Bearer " + placeholder},
@@ -265,7 +350,7 @@ func TestSubstitute_OAuth2_RefreshFailure_FallsBackToStale(t *testing.T) {
 	refresh := func(context.Context, string) (credentials.AccessToken, error) {
 		return credentials.AccessToken{}, errors.New("provider unreachable")
 	}
-	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store.Scoped("p"), []string{"gh"}, nil, refresh)
+	pol := newHTTPPolicy(newHTTPPolicyDescriptor([]string{"upstream.test"}), rec, store.Scoped("p"), []string{"gh"}, nil, refresh)
 
 	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
 		"Authorization": {"Bearer " + placeholder},
@@ -296,7 +381,7 @@ func TestSubstitute_OAuth2_ZeroExpiresAt_NoRefresh(t *testing.T) {
 		t.Fatal("refresh must not fire when ExpiresAt is zero")
 		return credentials.AccessToken{}, nil
 	}
-	pol := newHTTPPolicy([]string{"upstream.test"}, rec, store.Scoped("p"), []string{"gh"}, nil, refresh)
+	pol := newHTTPPolicy(newHTTPPolicyDescriptor([]string{"upstream.test"}), rec, store.Scoped("p"), []string{"gh"}, nil, refresh)
 
 	req := mustReq(t, "GET", "https://upstream.test/", http.Header{
 		"Authorization": {"Bearer " + placeholder},
@@ -548,7 +633,7 @@ func TestSubstitute_SecretMissing_ReturnsError(t *testing.T) {
 func TestSubstitute_DeniedHost_ShortCircuitsBeforeSubstitution(t *testing.T) {
 	store := memory.New()
 	rec := &recordingDoer{}
-	pol := newHTTPPolicy([]string{"only.allowed.test"}, rec, store.Scoped("p"), []string{"k"}, nil, nil)
+	pol := newHTTPPolicy(newHTTPPolicyDescriptor([]string{"only.allowed.test"}), rec, store.Scoped("p"), []string{"k"}, nil, nil)
 
 	desc, _ := store.Put(context.Background(), "p", "k", "k",
 		credentials.APIKeyMeta{Location: credentials.ApplySpec{

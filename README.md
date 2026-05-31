@@ -113,9 +113,10 @@ A typical MCP-client config (Claude Desktop, Cursor, etc.) wires the particle in
 | `particle ping <name>[@version]` | Call the particle's `ping` health-check. |
 | `particle run <name>[@version] <tool> [tool-flags]` | Call a tool. `--help` after the tool name lists the schema-derived flags. `--mount name=path` (before the name) maps a filesystem mount for this run. |
 | `particle serve-mcp <name>[@version]` | Stdio MCP server. `--only-tools=a,b` and `--exclude-tools=c,d` filter what's exposed; `--mount name=path` maps a mount for the session. |
+| `particle builder-mcp` | Stdio MCP server that exposes particle-authoring tools to an LLM client — build a particle from source, fetch the authoring guide for a language, and pull bundled example Particlefiles by name. |
 | `particle mount <name>[@version] [<mount> <host-path>]` | With just a particle name, list its declared mounts and current mappings. With a mount name + host path, save a persistent mapping. |
 | `particle unmount <name>[@version] <mount>` | Remove a saved mount mapping. |
-| `particle link <name>[@version] <path>` | Create a small executable at `<path>` that runs `particle run <name>`, forwarding its arguments — a sh shim on Unix, a launcher `.exe` on Windows. |
+| `particle link [--mount n=p] [--trace-http=lvl] <name>[@version][/tool] <path>` | Create a small executable at `<path>` that runs `particle run <name>`, forwarding its arguments — a sh shim on Unix, a launcher `.exe` on Windows. Append `/tool` to bind a single tool. Pre-tool `particle run` flags supplied at link time (`--mount`, `--trace-http`) are baked into the link; `--mount` is validated against the manifest and the host path. |
 
 Version is optional anywhere it appears — omitted resolves to the highest registered semver.
 

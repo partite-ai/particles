@@ -69,7 +69,7 @@ func TestOAuthAdapter_Refresh_HappyPath(t *testing.T) {
 		},
 	}
 
-	a := newOAuthAdapter(store, rf)
+	a := newOAuthAdapter(store, rf, nil)
 	res, err := a.Refresh(context.Background(), "github_oauth")
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
@@ -132,7 +132,7 @@ func TestOAuthAdapter_Refresh_RotatesRefreshToken(t *testing.T) {
 			}, nil
 		},
 	}
-	a := newOAuthAdapter(store, rf)
+	a := newOAuthAdapter(store, rf, nil)
 	if _, err := a.Refresh(context.Background(), "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestOAuthAdapter_Refresh_RotatesRefreshToken(t *testing.T) {
 }
 
 func TestOAuthAdapter_Refresh_NotConfigured_NoEntry(t *testing.T) {
-	a := newOAuthAdapter(&fakeStore{}, &fakeRefresher{})
+	a := newOAuthAdapter(&fakeStore{}, &fakeRefresher{}, nil)
 	res, _ := a.Refresh(context.Background(), "missing")
 	errRes := res.(gen.Result_OauthErrorErr)
 	if _, ok := errRes.Value.(gen.OauthErrorNotConfigured); !ok {
@@ -155,7 +155,7 @@ func TestOAuthAdapter_Refresh_NotOAuth(t *testing.T) {
 	// Entry exists but isn't OAuth2 → not-oauth.
 	store := &fakeStore{}
 	store.putWithSecrets("i", "x", APIKeyMeta{Location: ApplySpec{Kind: ApplyHeader, Name: "X-API"}}, nil)
-	a := newOAuthAdapter(store, &fakeRefresher{})
+	a := newOAuthAdapter(store, &fakeRefresher{}, nil)
 	res, _ := a.Refresh(context.Background(), "x")
 	errRes := res.(gen.Result_OauthErrorErr)
 	if _, ok := errRes.Value.(gen.OauthErrorNotOauth); !ok {
@@ -166,7 +166,7 @@ func TestOAuthAdapter_Refresh_NotOAuth(t *testing.T) {
 func TestOAuthAdapter_Refresh_NotConfigured_RefreshTokenMissing(t *testing.T) {
 	store := &fakeStore{}
 	store.putWithSecrets("i", "x", OAuth2Meta{TokenURL: "https://x"}, nil) // no refresh token slot
-	a := newOAuthAdapter(store, &fakeRefresher{})
+	a := newOAuthAdapter(store, &fakeRefresher{}, nil)
 	res, _ := a.Refresh(context.Background(), "x")
 	errRes := res.(gen.Result_OauthErrorErr)
 	if _, ok := errRes.Value.(gen.OauthErrorNotConfigured); !ok {
@@ -185,7 +185,7 @@ func TestOAuthAdapter_Refresh_RefreshFailed_UpstreamError(t *testing.T) {
 			return RefreshResponse{}, errors.New("server returned 500")
 		},
 	}
-	a := newOAuthAdapter(store, rf)
+	a := newOAuthAdapter(store, rf, nil)
 	res, _ := a.Refresh(context.Background(), "x")
 	errRes := res.(gen.Result_OauthErrorErr)
 	rf2, ok := errRes.Value.(gen.OauthErrorRefreshFailed)
@@ -208,7 +208,7 @@ func TestOAuthAdapter_Refresh_RefreshFailed_EmptyAccessToken(t *testing.T) {
 			return RefreshResponse{}, nil // empty AccessToken
 		},
 	}
-	a := newOAuthAdapter(store, rf)
+	a := newOAuthAdapter(store, rf, nil)
 	res, _ := a.Refresh(context.Background(), "x")
 	errRes := res.(gen.Result_OauthErrorErr)
 	if _, ok := errRes.Value.(gen.OauthErrorRefreshFailed); !ok {
@@ -234,7 +234,7 @@ func TestOAuthAdapter_Refresh_PKCE_NoClientSecret(t *testing.T) {
 			}, nil
 		},
 	}
-	a := newOAuthAdapter(store, rf)
+	a := newOAuthAdapter(store, rf, nil)
 	if _, err := a.Refresh(context.Background(), "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -356,6 +356,82 @@ func TestHTTPRefresher_ErrorBody_RFCShape(t *testing.T) {
 	if !strings.Contains(err.Error(), "invalid_grant") || !strings.Contains(err.Error(), "refresh token is invalid") {
 		t.Errorf("error %q should embed both error and error_description", err)
 	}
+}
+
+// A token endpoint whose host isn't in the per-particle policy
+// must be refused before the refresh_token goes on the wire.
+func TestHTTPRefresher_PolicyRejectsTokenURL(t *testing.T) {
+	r := &HTTPRefresher{}
+	_, err := r.Refresh(context.Background(), RefreshRequest{
+		Meta:         OAuth2Meta{TokenURL: "https://evil.example/token"},
+		RefreshToken: []byte("rt"),
+		Policy:       allowHostsPolicy{"good.example": {}},
+	})
+	if err == nil {
+		t.Fatal("expected error when TokenURL host is not in allowedHosts")
+	}
+	if !strings.Contains(err.Error(), "not in capabilities.http.allowedHosts") {
+		t.Errorf("err = %v, want the allowedHosts denial message", err)
+	}
+}
+
+// A redirect from the token endpoint to a host the policy denies
+// must not be followed — the refresh_token (and client_secret,
+// for confidential clients) must not be re-POSTed to whatever
+// Location says. httptest binds 127.0.0.1 so both servers share
+// a hostname; the test uses a CheckRedirect that denies every hop
+// to prove the policy callback is wired into the http.Client.
+func TestHTTPRefresher_PolicyRejectsRedirectHop(t *testing.T) {
+	var evilHits int
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		evilHits++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"access_token":"hijacked"}`)
+	}))
+	defer evil.Close()
+
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evil.URL, http.StatusFound)
+	}))
+	defer tokenSrv.Close()
+
+	_, err := (&HTTPRefresher{}).Refresh(context.Background(), RefreshRequest{
+		Meta:         OAuth2Meta{TokenURL: tokenSrv.URL},
+		RefreshToken: []byte("rt"),
+		Policy:       alwaysDenyRedirectPolicy{},
+	})
+	if err == nil {
+		t.Fatal("expected error when redirect hop is denied by policy")
+	}
+	if evilHits != 0 {
+		t.Fatalf("redirect target was reached %d time(s) — refresh_token may have been exfiltrated", evilHits)
+	}
+}
+
+// allowHostsPolicy is a minimal EgressPolicy keyed by hostname.
+// Used by tests so we don't depend on the runtime package's
+// HTTPPolicy.
+type allowHostsPolicy map[string]struct{}
+
+func (a allowHostsPolicy) AllowsHost(host string) bool {
+	_, ok := a[strings.ToLower(host)]
+	return ok
+}
+func (a allowHostsPolicy) CheckRedirect(req *http.Request, _ []*http.Request) error {
+	if !a.AllowsHost(req.URL.Hostname()) {
+		return fmt.Errorf("disallowed redirect to %q", req.URL.Hostname())
+	}
+	return nil
+}
+
+// alwaysDenyRedirectPolicy approves the first-hop host check but
+// refuses every redirect. Lets a test prove the CheckRedirect is
+// actually wired into the http.Client used by the refresher.
+type alwaysDenyRedirectPolicy struct{}
+
+func (alwaysDenyRedirectPolicy) AllowsHost(string) bool { return true }
+func (alwaysDenyRedirectPolicy) CheckRedirect(req *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("redirect to %q denied by test policy", req.URL.Hostname())
 }
 
 func TestHTTPRefresher_RejectsEmptyTokenURL(t *testing.T) {

@@ -316,7 +316,7 @@ func newRuntimeWithLog(t *testing.T, ctx context.Context, cb runtime.LogCallback
 
 func newRuntimeWithHTTPClient(t *testing.T, ctx context.Context, c runtime.HTTPDoer) (*testRuntime, func()) {
 	t.Helper()
-	return newTestRuntime(t, ctx, runtime.WithHTTPClient(c))
+	return newTestRuntime(t, ctx, runtime.WithHTTPClient(func(*runtime.HTTPPolicy) runtime.HTTPDoer { return c }))
 }
 
 func newTestRuntime(t *testing.T, ctx context.Context, opts ...runtime.ParticleOption) (*testRuntime, func()) {

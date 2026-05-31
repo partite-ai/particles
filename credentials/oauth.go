@@ -34,11 +34,31 @@ type OAuthRefresher interface {
 
 // RefreshRequest is everything the refresher needs to perform one
 // token refresh: the credential's metadata (provider URLs, client
-// id/secret, scopes) and the current refresh token.
+// id/secret, scopes), the current refresh token, and the
+// per-particle egress policy the exchange must respect.
 type RefreshRequest struct {
 	Meta         OAuth2Meta
 	ClientSecret []byte // empty when the credential has no client secret (PKCE)
 	RefreshToken []byte
+
+	// Policy, when non-nil, gates the exchange against the
+	// caller particle's capabilities.http.allowedHosts: the
+	// TokenURL host is checked before the request goes on the
+	// wire, and every redirect hop is checked the same way. nil
+	// disables the gate (used by tests and by call sites that
+	// have no per-particle policy to enforce).
+	Policy EgressPolicy
+}
+
+// EgressPolicy is the subset of the runtime's per-particle HTTP
+// policy the refresher needs: the same hostname allow-list the
+// runtime's wasi:http path gates outbound requests against. The
+// runtime's *HTTPPolicy satisfies it; this declaration lives in
+// the credentials package to keep the dependency direction
+// (runtime → credentials) intact.
+type EgressPolicy interface {
+	AllowsHost(host string) bool
+	CheckRedirect(req *http.Request, via []*http.Request) error
 }
 
 // RefreshResponse is what the refresher produces on success. The
@@ -96,6 +116,21 @@ func (r *HTTPRefresher) Refresh(ctx context.Context, req RefreshRequest) (Refres
 		return RefreshResponse{}, errors.New("oauth: refresh token is empty")
 	}
 
+	// Gate the first hop against the per-particle policy when one
+	// was supplied. Without this, a particle whose
+	// allowedHosts=["api.partner.com"] but whose stored OAuth
+	// metadata points TokenURL at a different host would still
+	// POST its refresh_token there.
+	if req.Policy != nil {
+		u, err := url.Parse(req.Meta.TokenURL)
+		if err != nil {
+			return RefreshResponse{}, fmt.Errorf("oauth: parse TokenURL: %w", err)
+		}
+		if !req.Policy.AllowsHost(u.Hostname()) {
+			return RefreshResponse{}, fmt.Errorf("oauth: token endpoint host %q not in capabilities.http.allowedHosts", u.Hostname())
+		}
+	}
+
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", string(req.RefreshToken))
@@ -121,9 +156,21 @@ func (r *HTTPRefresher) Refresh(ctx context.Context, req RefreshRequest) (Refres
 	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	httpReq.Header.Set("Accept", "application/json")
 
-	client := r.Client
-	if client == nil {
-		client = http.DefaultClient
+	// Clone the user-supplied client (if any) so we can install a
+	// CheckRedirect that re-runs the per-particle policy on every
+	// redirect hop, without disturbing the caller's Transport /
+	// Jar / Timeout. Without this, a 302 from the token endpoint
+	// would let stdlib silently re-POST refresh_token (and
+	// client_secret) to wherever Location says. When req.Policy
+	// is nil (tests, library callers with no policy to enforce)
+	// stdlib's default follow-up-to-10 kicks in unchanged.
+	base := r.Client
+	if base == nil {
+		base = http.DefaultClient
+	}
+	client := *base
+	if req.Policy != nil {
+		client.CheckRedirect = req.Policy.CheckRedirect
 	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -210,12 +257,13 @@ func parseExpiresIn(raw json.RawMessage) (int64, bool) {
 type oauthAdapter struct {
 	store     Store
 	refresher OAuthRefresher
+	policy    EgressPolicy
 }
 
 var _ gen.Oauth = (*oauthAdapter)(nil)
 
-func newOAuthAdapter(store Store, refresher OAuthRefresher) *oauthAdapter {
-	return &oauthAdapter{store: store, refresher: refresher}
+func newOAuthAdapter(store Store, refresher OAuthRefresher, policy EgressPolicy) *oauthAdapter {
+	return &oauthAdapter{store: store, refresher: refresher, policy: policy}
 }
 
 // Refresh resolves the credential by name, verifies it's an OAuth2
@@ -240,7 +288,7 @@ func (a *oauthAdapter) Refresh(ctx context.Context, name string) (gen.Result_Oau
 	if _, ok := desc.Meta.(OAuth2Meta); !ok {
 		return gen.Result_OauthErrorErr{Value: gen.OauthErrorNotOauth{}}, nil
 	}
-	if _, err := rotateAccessToken(ctx, a.store, a.refresher, desc.ID); err != nil {
+	if _, err := rotateAccessToken(ctx, a.store, a.refresher, a.policy, desc.ID); err != nil {
 		// ErrNotFound (and the ErrSecretNotSet that wraps it)
 		// at this layer means the refresh token slot was empty —
 		// the credential isn't usable for refresh.
@@ -274,7 +322,7 @@ func (a *oauthAdapter) Refresh(ctx context.Context, name string) (gen.Result_Oau
 // verifying that the entry IS an OAuth2 credential before
 // calling — if it isn't, rotate returns a clear error pointing
 // at the type mismatch.
-func rotateAccessToken(ctx context.Context, store Store, refresher OAuthRefresher, id string) (AccessToken, error) {
+func rotateAccessToken(ctx context.Context, store Store, refresher OAuthRefresher, policy EgressPolicy, id string) (AccessToken, error) {
 	desc, err := store.GetByID(ctx, id)
 	if err != nil {
 		return AccessToken{}, fmt.Errorf("rotate: lookup %s: %w", id, err)
@@ -300,6 +348,7 @@ func rotateAccessToken(ctx context.Context, store Store, refresher OAuthRefreshe
 		Meta:         meta,
 		ClientSecret: clientSecret,
 		RefreshToken: refreshTok,
+		Policy:       policy,
 	})
 	if err != nil {
 		return AccessToken{}, fmt.Errorf("rotate %s: %w", id, err)

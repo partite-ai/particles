@@ -17,22 +17,50 @@ type ParticleOption func(*particleConfig)
 // runtime needs at instantiation time. Populated by applying every
 // [ParticleOption] in order.
 type particleConfig struct {
-	httpClient     HTTPDoer
-	log            LogCallback
-	introspectMode bool
+	httpClientFactory HTTPClientFactory
+	log               LogCallback
+	introspectMode    bool
 
 	traceLevel  TraceLevel
 	traceWriter io.Writer
 }
 
-// WithHTTPClient overrides the [HTTPDoer] the per-particle wasi:http
-// policy delegates to. nil → [http.DefaultClient].
+// HTTPClientFactory builds the [HTTPDoer] the per-particle
+// wasi:http policy delegates to. The factory is invoked once per
+// [Runtime.NewParticle] call, after the manifest's egress policy
+// is known, with that policy passed in so the returned doer can
+// install [HTTPPolicy.CheckRedirect] on its http.Client (or
+// equivalent) and re-validate every redirect hop against the same
+// allowed-hosts set the first-hop check uses.
+type HTTPClientFactory func(policy *HTTPPolicy) HTTPDoer
+
+// WithHTTPClient overrides the [HTTPClientFactory] the runtime
+// uses to build each particle's inner [HTTPDoer]. nil factory
+// (the default) builds an http.Client wired with
+// [HTTPPolicy.CheckRedirect], which is the safe choice — every
+// redirect hop is re-checked against allowedHosts.
+//
+// A custom factory that returns something other than an
+// http.Client (a recording shim, a Transport, a hand-rolled
+// implementation) is responsible for performing equivalent
+// per-hop validation. The descriptor passed in carries the
+// allowed-hosts set as both [HTTPPolicy.AllowsHost] and a
+// drop-in [HTTPPolicy.CheckRedirect] callback — use whichever
+// fits the underlying client.
 //
 // The policy's allowed-hosts gate and credential substitution
 // always run first; this doer sees only the already-validated
 // outbound request.
-func WithHTTPClient(d HTTPDoer) ParticleOption {
-	return func(c *particleConfig) { c.httpClient = d }
+func WithHTTPClient(f HTTPClientFactory) ParticleOption {
+	return func(c *particleConfig) { c.httpClientFactory = f }
+}
+
+// defaultHTTPClientFactory builds an http.Client wired with
+// [HTTPPolicy.CheckRedirect] so the wasi:http policy re-runs the
+// allowed-hosts check on every redirect hop. This is the factory
+// used when no [WithHTTPClient] override is supplied.
+func defaultHTTPClientFactory(policy *HTTPPolicy) HTTPDoer {
+	return &http.Client{CheckRedirect: policy.CheckRedirect}
 }
 
 // WithHTTPTrace wraps the per-particle HTTP doer with a
@@ -73,15 +101,8 @@ func applyParticleOptions(opts []ParticleOption) particleConfig {
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	if cfg.httpClient == nil {
-		cfg.httpClient = http.DefaultClient
-	}
-	if cfg.traceLevel > TraceOff && cfg.traceWriter != nil {
-		cfg.httpClient = &TracingHTTPDoer{
-			Inner: cfg.httpClient,
-			W:     cfg.traceWriter,
-			Level: cfg.traceLevel,
-		}
+	if cfg.httpClientFactory == nil {
+		cfg.httpClientFactory = defaultHTTPClientFactory
 	}
 	return cfg
 }

@@ -38,6 +38,69 @@ func IsHostNotAllowed(err error) bool {
 	return errors.As(err, &hae)
 }
 
+// HTTPPolicy is the per-particle egress policy descriptor handed
+// to a [HTTPClientFactory] so caller-built http.Clients can
+// re-validate redirects against the same allowed-hosts set the
+// runtime's first-hop check uses.
+//
+// The intended use is to install [HTTPPolicy.CheckRedirect] on the
+// http.Client the factory returns; the default factory does exactly
+// that. Callers who return a non-*http.Client doer (a custom
+// RoundTripper-style implementation, a recording shim, …) are
+// responsible for performing equivalent per-hop validation —
+// without it, a 302 from an allowed origin to an arbitrary host
+// will be followed transparently by stdlib defaults.
+type HTTPPolicy struct {
+	allowedHosts map[string]struct{}
+}
+
+// newHTTPPolicyDescriptor builds an [HTTPPolicy] from the raw
+// allowedHosts list. DNS hostnames are case-insensitive, so the
+// set is keyed lowercased and lookups normalize the same way.
+func newHTTPPolicyDescriptor(allowedHosts []string) *HTTPPolicy {
+	set := make(map[string]struct{}, len(allowedHosts))
+	for _, h := range allowedHosts {
+		if h != "" {
+			set[strings.ToLower(h)] = struct{}{}
+		}
+	}
+	return &HTTPPolicy{allowedHosts: set}
+}
+
+// AllowsHost reports whether host is in the manifest's
+// capabilities.http.allowedHosts list. Match is case-insensitive.
+// A nil receiver denies every host — easier than nil-checking at
+// every call site and matches "no policy installed → no egress".
+func (p *HTTPPolicy) AllowsHost(host string) bool {
+	if p == nil {
+		return false
+	}
+	_, ok := p.allowedHosts[strings.ToLower(host)]
+	return ok
+}
+
+// maxRedirects caps the redirect chain length. Mirrors stdlib's
+// http.Client default so a custom policy doesn't accidentally let
+// a chain run further than callers expect.
+const maxRedirects = 10
+
+// CheckRedirect is a stdlib-compatible [http.Client.CheckRedirect]
+// callback that re-runs the allowed-hosts gate on every hop and
+// caps the chain at [maxRedirects]. Returns a *HostNotAllowedError
+// when a redirect target's host isn't in the policy — the wrapping
+// http.Client surfaces that as a (response, error) pair that
+// [httpPolicy.Do] re-wraps into the same coded denial a first-hop
+// block produces, so callers see one shape.
+func (p *HTTPPolicy) CheckRedirect(req *http.Request, via []*http.Request) error {
+	if !p.AllowsHost(req.URL.Hostname()) {
+		return &HostNotAllowedError{Host: req.URL.Hostname()}
+	}
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	return nil
+}
+
 // httpPolicy is the per-particle wasi.HTTPDoer. It directly
 // implements wacogo's `Do(*http.Request) (*http.Response, error)`
 // interface and does two jobs in order:
@@ -57,9 +120,16 @@ func IsHostNotAllowed(err error) bool {
 // causes the Store to be touched — denied destinations shouldn't
 // see substituted secrets and shouldn't be probable for which
 // credentials a particle has configured.
+//
+// Redirects are NOT followed here — the inner doer (the
+// [HTTPClientFactory] output) is responsible. The default factory
+// returns an http.Client wired with [HTTPPolicy.CheckRedirect], so
+// each hop re-runs the host gate; Do recognizes the wrapped
+// HostNotAllowedError that surfaces when a hop is rejected and
+// re-wraps it into the same codedDenialError as a first-hop block.
 type httpPolicy struct {
-	allowedHosts map[string]struct{}
-	inner        httptypes.HTTPDoer
+	*HTTPPolicy
+	inner httptypes.HTTPDoer
 
 	store               credentials.Store
 	declaredCredentials []string
@@ -90,8 +160,15 @@ const tokenSkew = 30 * time.Second
 
 // newHTTPPolicy builds the policy for one particle.
 //
-//   - allowedHosts is the set of hostnames outbound requests may
-//     reach. Empty or nil → every request is denied.
+//   - descriptor is the [HTTPPolicy] the runtime built from the
+//     manifest's allowedHosts (and passed to the HTTPClientFactory
+//     when it built `inner`). Empty allowedHosts → every request
+//     is denied.
+//   - inner is the [HTTPClientFactory] output — the doer that does
+//     the actual network call. Expected to install
+//     [HTTPPolicy.CheckRedirect] so redirect hops are re-validated;
+//     Do recognizes a hop-denial that comes back wrapped in the
+//     stdlib's url.Error and re-wraps it into codedDenialError.
 //   - declaredCredentials lists the credential names the manifest
 //     authorized; substitution only ever attempts these. nil/empty
 //     → no substitution runs and any placeholder a particle
@@ -103,7 +180,7 @@ const tokenSkew = 30 * time.Second
 //   - refreshAccessToken, when non-nil, enables proactive refresh
 //     of expired bearer tokens before substitution.
 func newHTTPPolicy(
-	allowedHosts []string,
+	descriptor *HTTPPolicy,
 	inner httptypes.HTTPDoer,
 	store credentials.Store,
 	declaredCredentials []string,
@@ -111,21 +188,11 @@ func newHTTPPolicy(
 	refreshAccessToken func(ctx context.Context, id string) (credentials.AccessToken, error),
 ) *httpPolicy {
 	p := &httpPolicy{
+		HTTPPolicy:          descriptor,
 		inner:               inner,
 		store:               store,
 		declaredCredentials: declaredCredentials,
 		refreshAccessToken:  refreshAccessToken,
-	}
-	// DNS hostnames are case-insensitive; the map lookup
-	// isn't. Normalize both the declared set and the request
-	// hostname (in Do) to lowercase so a manifest typo on
-	// case doesn't cause a runtime "host not allowed" that
-	// surprises a particle author.
-	p.allowedHosts = make(map[string]struct{}, len(allowedHosts))
-	for _, h := range allowedHosts {
-		if h != "" {
-			p.allowedHosts[strings.ToLower(h)] = struct{}{}
-		}
 	}
 	if len(credentialHosts) > 0 {
 		p.credentialHosts = make(map[string]map[string]struct{}, len(credentialHosts))
@@ -145,23 +212,42 @@ func newHTTPPolicy(
 	return p
 }
 
+// denyError builds the (codedDenialError, *HostNotAllowedError)
+// pair the policy returns for both first-hop and redirect-hop
+// blocks — the wasi:http layer reads the coded form, Go-side
+// helpers like [IsHostNotAllowed] read the wrapped sentinel.
+func denyError(host string) error {
+	hae := &HostNotAllowedError{Host: host}
+	return &codedDenialError{
+		HostNotAllowed: hae,
+		coded: &httptypes.CodedError{
+			Code: httptypes.ErrorCodeDestinationIPProhibited{},
+			Msg:  hae.Error(),
+		},
+	}
+}
+
 // Do implements wasi/http/types.HTTPDoer.
 func (p *httpPolicy) Do(req *http.Request) (*http.Response, error) {
-	host := strings.ToLower(req.URL.Hostname())
-	if _, ok := p.allowedHosts[host]; !ok {
-		hae := &HostNotAllowedError{Host: req.URL.Hostname()}
-		return nil, &codedDenialError{
-			HostNotAllowed: hae,
-			coded: &httptypes.CodedError{
-				Code: httptypes.ErrorCodeDestinationIPProhibited{},
-				Msg:  hae.Error(),
-			},
-		}
+	if !p.AllowsHost(req.URL.Hostname()) {
+		return nil, denyError(req.URL.Hostname())
 	}
 	if err := p.substituteCredentials(req); err != nil {
 		return nil, err
 	}
-	return p.inner.Do(req)
+	resp, err := p.inner.Do(req)
+	if err != nil {
+		// Redirect-hop denial: when the inner http.Client's
+		// CheckRedirect returns a *HostNotAllowedError, stdlib
+		// hands it back wrapped in a *url.Error (along with the
+		// last 3xx response, body already closed). Surface it as
+		// the same coded denial a first-hop block produces.
+		var hae *HostNotAllowedError
+		if errors.As(err, &hae) {
+			return nil, denyError(hae.Host)
+		}
+	}
+	return resp, err
 }
 
 // codedDenialError pairs a *CodedError (so wasi:http surfaces the

@@ -169,6 +169,48 @@ func TestRuntime_HTTP_AllowedHostsCaseInsensitive(t *testing.T) {
 	}
 }
 
+
+// A redirect to a host that IS in allowedHosts is followed, so a
+// legitimate provider that 302s within its own origin keeps working.
+func TestRuntime_HTTP_RedirectToAllowedHostFollowed(t *testing.T) {
+	ctx := context.Background()
+
+	var redirected bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/landed" {
+			redirected = true
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		// Redirect with a relative URL so the target host is the
+		// same server (which IS in allowedHosts).
+		http.Redirect(w, r, "/landed", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	caps := fmt.Sprintf(`{ "http": { "allowedHosts": [%q] } }`, mustHost(t, srv.URL))
+	res := buildParticle(t, fetchParticleSource("http-redirect-allow", caps))
+
+	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
+	defer cleanup()
+	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close(ctx)
+
+	got, err := p.CallTool(ctx, "fetch_url", []byte(fmt.Sprintf(`{"url":%q}`, srv.URL+"/start")))
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !redirected {
+		t.Error("expected the redirect target to be reached")
+	}
+	if !strings.Contains(string(got), `"status":200`) {
+		t.Errorf("result = %s, want status:200", got)
+	}
+}
+
 // A particle that never declares the http capability at all has
 // every outbound request denied, even to localhost.
 func TestRuntime_HTTP_NoCapability_AllDenied(t *testing.T) {

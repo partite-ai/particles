@@ -3,6 +3,7 @@ package importer
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"net"
@@ -65,7 +66,12 @@ func runAuthCodeFlow(ctx context.Context, p Prompter, cfg *oauth2.Config, pkce b
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		if got := q.Get("state"); got != state {
+		// Constant-time compare: the state string is a 32-byte
+		// crypto/rand value, but a length-leak via early-exit
+		// !=-compare is trivial to remove and the standard
+		// library helper covers length-mismatch safely.
+		got := q.Get("state")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(state)) != 1 {
 			http.Error(w, "state mismatch", http.StatusBadRequest)
 			resCh <- result{err: fmt.Errorf("OAuth callback: state mismatch (csrf protection)")}
 			return
@@ -96,11 +102,7 @@ func runAuthCodeFlow(ctx context.Context, p Prompter, cfg *oauth2.Config, pkce b
 			serveErrCh <- err
 		}
 	}()
-	defer func() {
-		shutdownCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-	}()
+	defer server.Close()
 
 	var got result
 	select {

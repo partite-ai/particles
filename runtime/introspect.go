@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"net/http"
 
 	"github.com/partite-ai/particles/credentials"
 	"github.com/partite-ai/particles/internal/memfs"
@@ -50,13 +49,13 @@ func (r *Runtime) IntrospectParticle(ctx context.Context, kind RuntimeKind, sour
 	credStore := credentials.NewIntrospectTrapStore()
 	kvStore := kv.NewIntrospectTrapStore()
 	cfg := particleConfig{
-		// httpClient is unused under introspectMode (newParticleInternal
-		// wires the trap doer regardless), but we fill it in so the
-		// resolved config matches what applyParticleOptions would
-		// produce.
-		httpClient:     http.DefaultClient,
-		log:            DefaultLogCallback,
-		introspectMode: true,
+		// httpClientFactory is unused under introspectMode
+		// (newParticleInternal wires the trap doer regardless), but
+		// we fill it in so the resolved config matches what
+		// applyParticleOptions would produce.
+		httpClientFactory: defaultHTTPClientFactory,
+		log:               DefaultLogCallback,
+		introspectMode:    true,
 	}
 
 	p, err := r.newParticleInternal(ctx, particleFS, credStore, kvStore, nil, cfg)

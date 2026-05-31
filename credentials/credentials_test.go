@@ -195,7 +195,7 @@ func TestManager_NewOAuthInstance(t *testing.T) {
 	}
 	defer mgr.Close(ctx)
 
-	inst, err := mgr.NewOAuthInstance(ctx, &fakeStore{})
+	inst, err := mgr.NewOAuthInstance(ctx, &fakeStore{}, nil)
 	if err != nil {
 		t.Fatalf("NewOAuthInstance: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestManager_BothCapabilitiesForOneParticle(t *testing.T) {
 	}
 	defer credInst.Close(ctx)
 
-	oauthInst, err := mgr.NewOAuthInstance(ctx, store)
+	oauthInst, err := mgr.NewOAuthInstance(ctx, store, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestManager_RejectsNilStore(t *testing.T) {
 	if _, err := mgr.NewCredentialsInstance(ctx, nil); err == nil {
 		t.Error("expected error for nil store")
 	}
-	if _, err := mgr.NewOAuthInstance(ctx, nil); err == nil {
+	if _, err := mgr.NewOAuthInstance(ctx, nil, nil); err == nil {
 		t.Error("expected error for nil store")
 	}
 	if _, err := mgr.NewSigningInstance(ctx, nil); err == nil {

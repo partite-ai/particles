@@ -27,13 +27,28 @@ const trampolineMagic = "PRTCLNK1"
 
 // encodeTrailer renders the payload + length + magic appended to the
 // stub. argv[0] is the particle binary so the trampoline knows what
-// to CreateProcess; "run [--db ...] <target>" is the fixed prefix.
+// to CreateProcess; the rest is the run-line prefix the trampoline
+// appends the caller's runtime arguments to. Argv order matches the
+// Unix shim:
+//
+//	particle run [--db X] [--mount A=a]... [--trace-http=lvl] <target> [<tool>]
 func encodeTrailer(spec linkSpec) []byte {
 	args := []string{spec.particleBin, "run"}
 	if spec.dbPath != "" {
 		args = append(args, "--db", spec.dbPath)
 	}
+	for _, m := range spec.mounts {
+		args = append(args, "--mount", m)
+	}
+	if spec.traceLevelSet {
+		// --trace-http requires the `=` form (see shimScript for
+		// the NoOptDefVal explanation).
+		args = append(args, "--trace-http="+traceLevelName(spec.traceLevel))
+	}
 	args = append(args, spec.target)
+	if spec.tool != "" {
+		args = append(args, spec.tool)
+	}
 
 	var payload bytes.Buffer
 	var u32 [4]byte

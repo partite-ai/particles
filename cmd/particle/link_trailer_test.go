@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/binary"
 	"testing"
+
+	"github.com/partite-ai/particles/runtime"
 )
 
 // decodeTrailer mirrors the parser in
@@ -54,6 +56,44 @@ func TestEncodeTrailer_WithDB(t *testing.T) {
 		dbPath:      `D:\state\particle.db`,
 	}))
 	want := []string{`C:\particle.exe`, "run", "--db", `D:\state\particle.db`, "demo"}
+	assertArgs(t, got, want)
+}
+
+func TestEncodeTrailer_WithTool(t *testing.T) {
+	got := decodeTrailer(t, encodeTrailer(linkSpec{
+		particleBin: `C:\particle.exe`,
+		target:      "github-tools@1.2.0",
+		tool:        "list_issues",
+	}))
+	want := []string{`C:\particle.exe`, "run", "github-tools@1.2.0", "list_issues"}
+	assertArgs(t, got, want)
+}
+
+func TestEncodeTrailer_WithBakedMounts(t *testing.T) {
+	got := decodeTrailer(t, encodeTrailer(linkSpec{
+		particleBin: `C:\particle.exe`,
+		target:      "pipeline",
+		tool:        "run",
+		mounts:      []string{`source=D:\data\in`, `dest=D:\data\out`},
+	}))
+	want := []string{
+		`C:\particle.exe`, "run",
+		"--mount", `source=D:\data\in`,
+		"--mount", `dest=D:\data\out`,
+		"pipeline", "run",
+	}
+	assertArgs(t, got, want)
+}
+
+func TestEncodeTrailer_WithBakedTraceHTTP(t *testing.T) {
+	got := decodeTrailer(t, encodeTrailer(linkSpec{
+		particleBin:   `C:\particle.exe`,
+		target:        "demo",
+		traceLevel:    runtime.TraceFull,
+		traceLevelSet: true,
+	}))
+	// Must be the `=` form because --trace-http has NoOptDefVal.
+	want := []string{`C:\particle.exe`, "run", "--trace-http=full", "demo"}
 	assertArgs(t, got, want)
 }
 

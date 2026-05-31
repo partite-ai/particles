@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing/fstest"
 
 	regsqlite "github.com/partite-ai/particles/registry/sqlite"
+	"github.com/partite-ai/particles/runtime"
 )
 
 func TestShimScript_Content(t *testing.T) {
@@ -44,6 +46,86 @@ func TestShimScript_WithDB(t *testing.T) {
 	want := "exec '/opt/particle' run --db '/var/lib/particle/state.db' 'demo' \"$@\"\n"
 	if !strings.Contains(got, want) {
 		t.Errorf("script missing %q in:\n%s", want, got)
+	}
+}
+
+func TestShimScript_WithTool(t *testing.T) {
+	got := shimScript(linkSpec{
+		particleBin: "/opt/particle",
+		target:      "github-tools@1.2.0",
+		tool:        "list_issues",
+	})
+	wantExec := "exec '/opt/particle' run 'github-tools@1.2.0' 'list_issues' \"$@\"\n"
+	if !strings.Contains(got, wantExec) {
+		t.Errorf("script missing %q in:\n%s", wantExec, got)
+	}
+	// Comment should also reflect the tool so future readers see
+	// the full intent at the top of the file.
+	wantComment := "particle run github-tools@1.2.0 list_issues"
+	if !strings.Contains(got, wantComment) {
+		t.Errorf("comment missing %q in:\n%s", wantComment, got)
+	}
+}
+
+func TestShimScript_WithBakedMounts(t *testing.T) {
+	got := shimScript(linkSpec{
+		particleBin: "/opt/particle",
+		target:      "pipeline",
+		tool:        "run",
+		mounts:      []string{"source=/data/in", "dest=/data/out"},
+	})
+	want := "exec '/opt/particle' run --mount 'source=/data/in' --mount 'dest=/data/out' 'pipeline' 'run' \"$@\"\n"
+	if !strings.Contains(got, want) {
+		t.Errorf("script missing %q in:\n%s", want, got)
+	}
+}
+
+func TestShimScript_WithBakedTraceHTTP(t *testing.T) {
+	got := shimScript(linkSpec{
+		particleBin:   "/opt/particle",
+		target:        "demo",
+		traceLevel:    runtime.TraceFull,
+		traceLevelSet: true,
+	})
+	// --trace-http MUST use the = form because the flag is
+	// registered with NoOptDefVal.
+	want := "exec '/opt/particle' run --trace-http='full' 'demo' \"$@\"\n"
+	if !strings.Contains(got, want) {
+		t.Errorf("script missing %q in:\n%s", want, got)
+	}
+}
+
+func TestShimScript_BakedMountWithShellMetachars(t *testing.T) {
+	// A mount host path with spaces and shell metachars must
+	// round-trip as one shell word — otherwise the shim is a
+	// shell-injection foothold.
+	got := shimScript(linkSpec{
+		particleBin: "/opt/particle",
+		target:      "demo",
+		mounts:      []string{`source=/odd path/$PATH/'q'`},
+	})
+	want := `--mount 'source=/odd path/$PATH/'\''q'\'''`
+	if !strings.Contains(got, want) {
+		t.Errorf("script quoting unsafe; want %q in:\n%s", want, got)
+	}
+}
+
+func TestSplitLinkTarget(t *testing.T) {
+	cases := []struct {
+		in, wantTarget, wantTool string
+	}{
+		{"github-tools", "github-tools", ""},
+		{"github-tools@1.2.0", "github-tools@1.2.0", ""},
+		{"github-tools/list_issues", "github-tools", "list_issues"},
+		{"github-tools@1.2.0/list_issues", "github-tools@1.2.0", "list_issues"},
+		{"/just-a-tool", "", "just-a-tool"},
+	}
+	for _, c := range cases {
+		gotT, gotTool := splitLinkTarget(c.in)
+		if gotT != c.wantTarget || gotTool != c.wantTool {
+			t.Errorf("splitLinkTarget(%q) = (%q, %q), want (%q, %q)",
+				c.in, gotT, gotTool, c.wantTarget, c.wantTool)
+		}
 	}
 }
 
@@ -153,6 +235,181 @@ func TestLink_CommandHappyPath(t *testing.T) {
 	}
 }
 
+// TestLink_CommandWithTool_HappyPath drives the cobra command with a
+// `name/tool` selector against a registry seeded with a manifest
+// containing the tool. The shim should reference the tool.
+func TestLink_CommandWithTool_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	seedParticleWithManifest(t, ctx, dbPath, "demo", "0.1.0", []runtime.ManifestTool{
+		{Name: "echo", Description: "echo", InputSchema: json.RawMessage(`{"type":"object","properties":{"msg":{"type":"string"}}}`)},
+	})
+
+	linkPath := filepath.Join(dir, "echo-link")
+	out := runRoot(t, ctx, "link", "demo/echo", linkPath, "--db", dbPath)
+	if !strings.Contains(out, "linked "+linkPath+" -> particle run demo echo") {
+		t.Errorf("unexpected link output: %q", out)
+	}
+	data, err := os.ReadFile(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "'demo' 'echo'") {
+		t.Errorf("shim missing tool name; got:\n%s", data)
+	}
+}
+
+// TestLink_CommandWithBakedMount_HappyPath confirms a --mount
+// supplied at link time is validated against the manifest, the host
+// path is resolved to absolute, and the result lands in the shim.
+func TestLink_CommandWithBakedMount_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	mountDir := filepath.Join(dir, "data")
+	if err := os.Mkdir(mountDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seedParticleWithMounts(t, ctx, dbPath, "pipeline", "0.1.0",
+		[]runtime.ManifestTool{{Name: "run", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		map[string]runtime.MountDecl{"source": {Description: "input data", Path: "/mnt/source", Access: runtime.MountReadOnly}},
+	)
+
+	linkPath := filepath.Join(dir, "pipeline-run")
+	out := runRoot(t, ctx, "link", "pipeline/run", linkPath, "--db", dbPath, "--mount", "source="+mountDir)
+
+	if !strings.Contains(out, "--mount source="+mountDir) {
+		t.Errorf("link summary missing baked mount; got: %q", out)
+	}
+	data, err := os.ReadFile(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "--mount 'source="+mountDir+"'") {
+		t.Errorf("shim missing baked --mount; got:\n%s", data)
+	}
+}
+
+// TestLink_CommandWithBakedTraceHTTP_HappyPath confirms --trace-http
+// is baked into the shim using the = form (NoOptDefVal compat).
+func TestLink_CommandWithBakedTraceHTTP_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	seedParticle(t, ctx, dbPath, "demo", "0.1.0")
+
+	linkPath := filepath.Join(dir, "demo-trace")
+	out := runRoot(t, ctx, "link", "demo", linkPath, "--db", dbPath, "--trace-http=headers")
+	if !strings.Contains(out, "--trace-http=headers") {
+		t.Errorf("link summary missing trace flag; got: %q", out)
+	}
+	data, err := os.ReadFile(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "--trace-http='headers'") {
+		t.Errorf("shim missing baked --trace-http; got:\n%s", data)
+	}
+}
+
+func TestLink_CommandRejectsUnknownTool(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	seedParticleWithManifest(t, ctx, dbPath, "demo", "0.1.0", []runtime.ManifestTool{
+		{Name: "real_tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	})
+
+	root, _ := newRootCmd()
+	root.SetArgs([]string{"link", "demo/typo_tool", filepath.Join(dir, "x"), "--db", dbPath})
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	err := root.ExecuteContext(ctx)
+	if err == nil {
+		t.Fatalf("expected error for unknown tool; output: %q", buf.String())
+	}
+	if !strings.Contains(err.Error(), `"typo_tool"`) || !strings.Contains(err.Error(), "real_tool") {
+		t.Errorf("error should name the bad tool and list available; got: %v", err)
+	}
+}
+
+func TestLink_CommandRejectsUndeclaredMount(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	mountDir := filepath.Join(dir, "data")
+	if err := os.Mkdir(mountDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seedParticleWithMounts(t, ctx, dbPath, "demo", "0.1.0", nil,
+		map[string]runtime.MountDecl{"source": {Description: "input data", Path: "/mnt/source", Access: runtime.MountReadOnly}},
+	)
+
+	root, _ := newRootCmd()
+	root.SetArgs([]string{"link", "demo", filepath.Join(dir, "x"), "--db", dbPath, "--mount", "typo=" + mountDir})
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	err := root.ExecuteContext(ctx)
+	if err == nil {
+		t.Fatalf("expected error for undeclared mount; output: %q", buf.String())
+	}
+	if !strings.Contains(err.Error(), "typo") || !strings.Contains(err.Error(), "source") {
+		t.Errorf("error should name the bad mount and list declared; got: %v", err)
+	}
+}
+
+func TestLink_CommandRejectsNonexistentMountPath(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	seedParticleWithMounts(t, ctx, dbPath, "demo", "0.1.0", nil,
+		map[string]runtime.MountDecl{"source": {Description: "input data", Path: "/mnt/source", Access: runtime.MountReadOnly}},
+	)
+
+	root, _ := newRootCmd()
+	root.SetArgs([]string{"link", "demo", filepath.Join(dir, "x"), "--db", dbPath,
+		"--mount", "source=" + filepath.Join(dir, "does-not-exist")})
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	err := root.ExecuteContext(ctx)
+	if err == nil {
+		t.Fatalf("expected error for missing mount path; output: %q", buf.String())
+	}
+	if !strings.Contains(err.Error(), "source") {
+		t.Errorf("error should name the mount; got: %v", err)
+	}
+}
+
+func TestLink_CommandRejectsMountPathThatIsFile(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	notADir := filepath.Join(dir, "regular-file")
+	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedParticleWithMounts(t, ctx, dbPath, "demo", "0.1.0", nil,
+		map[string]runtime.MountDecl{"source": {Description: "input data", Path: "/mnt/source", Access: runtime.MountReadOnly}},
+	)
+
+	root, _ := newRootCmd()
+	root.SetArgs([]string{"link", "demo", filepath.Join(dir, "x"), "--db", dbPath, "--mount", "source=" + notADir})
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	err := root.ExecuteContext(ctx)
+	if err == nil {
+		t.Fatalf("expected error for mount path that is not a dir; output: %q", buf.String())
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("error should explain the path isn't a directory; got: %v", err)
+	}
+}
+
 func TestLink_UnregisteredParticleErrors(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -170,6 +427,47 @@ func TestLink_UnregisteredParticleErrors(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "x")); !os.IsNotExist(err) {
 		t.Error("link file should not be created when the particle doesn't resolve")
+	}
+}
+
+// seedParticleWithManifest registers a particle whose FS contains a
+// minimal but real manifest.json. Used by the tool-linking tests so
+// runtime.LoadManifest sees actual tool entries rather than the
+// empty FS seedParticle hands out.
+func seedParticleWithManifest(t *testing.T, ctx context.Context, dbPath, name, version string, tools []runtime.ManifestTool) {
+	t.Helper()
+	seedParticleWithMounts(t, ctx, dbPath, name, version, tools, nil)
+}
+
+// seedParticleWithMounts is seedParticleWithManifest's sibling for
+// the mount-validation tests: registers a manifest with declared
+// filesystem mounts (and optional tools) so resolveLinkMounts has
+// something to validate against.
+func seedParticleWithMounts(t *testing.T, ctx context.Context, dbPath, name, version string, tools []runtime.ManifestTool, mounts map[string]runtime.MountDecl) {
+	t.Helper()
+	manifest := runtime.Manifest{Name: name, Version: version, Tools: tools}
+	if len(mounts) > 0 {
+		manifest.Capabilities.Filesystem.Mounts = mounts
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if _, err := resolveDBPath(dbPath); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	reg, err := regsqlite.New(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fsys := fstest.MapFS{"manifest.json": &fstest.MapFile{Data: data}}
+	if err := reg.Put(ctx, name, version, fsys); err != nil {
+		t.Fatal(err)
 	}
 }
 

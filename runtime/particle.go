@@ -310,13 +310,17 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	}
 	entries = append(entries, userEntries...)
 
-	allowedHosts := manifest.Capabilities.HTTP.AllowedHosts
+	policy := newHTTPPolicyDescriptor(manifest.Capabilities.HTTP.AllowedHosts)
 
 	listener := hostmeter.Listener{}
 
 	// HTTP wiring branches on introspect mode:
 	//   - Normal: per-particle httpPolicy that gates against
 	//     allowedHosts and substitutes credential placeholders.
+	//     The inner doer comes from cfg.httpClientFactory, which
+	//     receives `policy` so its http.Client (or equivalent) can
+	//     install HTTPPolicy.CheckRedirect and re-validate redirect
+	//     hops against the same allowed-hosts set.
 	//   - Introspect: trap doer that returns
 	//     ErrIntrospectMode for every outbound — the synthesized
 	//     get-manifest particle has no real HTTP policy to enforce,
@@ -326,14 +330,25 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	if cfg.introspectMode {
 		httpClient = introspectTrapHTTPDoer{}
 	} else {
+		inner := cfg.httpClientFactory(policy)
+		// Tracing wraps the factory output so traces capture the
+		// bytes as they leave the policy, not as a custom factory
+		// might internally reshape them.
+		if cfg.traceLevel > TraceOff && cfg.traceWriter != nil {
+			inner = &TracingHTTPDoer{
+				Inner: inner,
+				W:     cfg.traceWriter,
+				Level: cfg.traceLevel,
+			}
+		}
 		httpClient = newHTTPPolicy(
-			allowedHosts,
-			cfg.httpClient,
+			policy,
+			inner,
 			credStore,
 			manifest.declaredCredentialNames(),
 			credentialHostBindings(manifest),
 			func(ctx context.Context, id string) (credentials.AccessToken, error) {
-				return r.cfg.Credentials.RotateAccessToken(ctx, credStore, id)
+				return r.cfg.Credentials.RotateAccessToken(ctx, credStore, policy, id)
 			},
 		)
 	}
@@ -407,7 +422,7 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	}
 	hostInsts = append(hostInsts, credInst)
 
-	oauthInst, err := r.cfg.Credentials.NewOAuthInstance(ctx, credStore, host.WithCallListener(listener))
+	oauthInst, err := r.cfg.Credentials.NewOAuthInstance(ctx, credStore, policy, host.WithCallListener(listener))
 	if err != nil {
 		closeAll()
 		return nil, fmt.Errorf("runtime: build oauth host instance: %w", err)

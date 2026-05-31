@@ -101,8 +101,8 @@ func NewManager(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 // failure, or store write failure; callers decide whether to fail
 // the operation, fall through to the stale token, or surface
 // somewhere else.
-func (m *Manager) RotateAccessToken(ctx context.Context, store Store, id string) (AccessToken, error) {
-	return rotateAccessToken(ctx, store, m.refresher, id)
+func (m *Manager) RotateAccessToken(ctx context.Context, store Store, policy EgressPolicy, id string) (AccessToken, error) {
+	return rotateAccessToken(ctx, store, m.refresher, policy, id)
 }
 
 // Close releases the host.Component templates for every
@@ -147,11 +147,11 @@ func (m *Manager) NewCredentialsInstance(ctx context.Context, store Store, opts 
 // writes through the supplied (particle-scoped) Store. Pass
 // `inst.Core()` to `wacogo.WithInstanceImport(...)`. Additional
 // `opts` are forwarded to wacogo's Instantiate.
-func (m *Manager) NewOAuthInstance(ctx context.Context, store Store, opts ...host.InstantiateOption) (*host.ComponentInstance, error) {
+func (m *Manager) NewOAuthInstance(ctx context.Context, store Store, policy EgressPolicy, opts ...host.InstantiateOption) (*host.ComponentInstance, error) {
 	if store == nil {
 		return nil, errors.New("credentials: NewOAuthInstance: store is required")
 	}
-	inst, err := m.oauthFac.NewInstance(ctx, newOAuthAdapter(store, m.refresher), nil, opts...)
+	inst, err := m.oauthFac.NewInstance(ctx, newOAuthAdapter(store, m.refresher, policy), nil, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("credentials: instantiate oauth: %w", err)
 	}
