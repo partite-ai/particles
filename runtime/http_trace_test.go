@@ -63,19 +63,27 @@ func brotliBytes(t *testing.T, s string) []byte {
 // stubDoer is a minimal HTTPDoer that returns a canned response
 // (or error) and records the request URL + body bytes it saw.
 type stubDoer struct {
-	resp    *http.Response
-	err     error
+	resp *http.Response
+	err  error
+
+	mu      sync.Mutex
 	gotURL  string
 	gotBody []byte
 }
 
 func (s *stubDoer) Do(req *http.Request) (*http.Response, error) {
-	s.gotURL = req.URL.String()
+	url := req.URL.String()
+	var body []byte
 	if req.Body != nil {
-		b, _ := io.ReadAll(req.Body)
+		body, _ = io.ReadAll(req.Body)
 		_ = req.Body.Close()
-		s.gotBody = b
 	}
+	s.mu.Lock()
+	s.gotURL = url
+	if body != nil {
+		s.gotBody = body
+	}
+	s.mu.Unlock()
 	if s.err != nil {
 		return nil, s.err
 	}
