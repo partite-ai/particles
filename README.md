@@ -224,3 +224,13 @@ go build -o particle ./cmd/particle
 ## Status
 
 Early. APIs, on-disk formats, and the credential setup flow may change as the project matures.
+
+## License
+
+Particles is licensed under **GPL-3.0-or-later** — see [`LICENSE`](LICENSE).
+
+The shipped binary includes third-party software (CPython, QuickJS, TypeScript, a long list of Go and Rust modules, …); each component's license and the attribution required to redistribute the binary is inventoried in [`THIRD_PARTY_LICENSES/`](THIRD_PARTY_LICENSES/README.md).
+
+## Contributing
+
+Contributions go through pull requests with `Signed-off-by:` trailers (Developer Certificate of Origin + an inbound license grant). See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the exact terms.
