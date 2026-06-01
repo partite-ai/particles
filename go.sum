@@ -35,8 +35,8 @@ github.com/modelcontextprotocol/go-sdk v1.6.0 h1:PPLS3kn7WtOEnR+Af4X5H96SG0qSab8
 github.com/modelcontextprotocol/go-sdk v1.6.0/go.mod h1:kzm3kzFL1/+AziGOE0nUs3gvPoNxMCvkxokMkuFapXQ=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
-github.com/partite-ai/wacogo v0.0.0-20260530012429-06b376786a90 h1:LY5z2IiaSFb0cMTLxGAsuBaM1YXB4OzzVDc4HDgEEto=
-github.com/partite-ai/wacogo v0.0.0-20260530012429-06b376786a90/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
+github.com/partite-ai/wacogo v0.0.0-20260601004924-5e687b021449 h1:dAON/neV5ugAZrnP049A9Q8tQLtWdHw/nCGI97x1YrQ=
+github.com/partite-ai/wacogo v0.0.0-20260601004924-5e687b021449/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
