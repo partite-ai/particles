@@ -191,6 +191,13 @@ credentials. For `signing-key`, use `signing.sign`. For `raw`, use
 ### Key/value store
 
 Scoped per-particle. Strings only — base64-encode binary if needed.
+Declare it under `capabilities.kv` — without the declaration every
+call throws a `not-declared` error (no user approval is needed, just
+the declaration):
+
+```ts
+capabilities: { kv: { enabled: true } },
+```
 
 ```ts
 import { kv } from "@partite-ai/particle-kv";

@@ -122,6 +122,81 @@ func TestBuild_FilesystemCapability(t *testing.T) {
 	}
 }
 
+// A particle that imports @partite-ai/particle-kv must declare
+// capabilities.kv in its manifest. The build pipeline catches the
+// missing declaration via the importscan vs. manifest cross-check
+// so authors hit it at build time instead of as a runtime
+// kv-error::not-declared on first invocation.
+func TestBuild_RejectsKVImportWithoutDeclaration(t *testing.T) {
+	src := fstest.MapFS{
+		"Particlefile.ts": &fstest.MapFile{
+			Data: []byte(`import { kv } from "@partite-ai/particle-kv";
+export default {
+  name: "kv-tool",
+  description: "Uses kv without declaring it.",
+  version: "0.1.0",
+  capabilities: {},
+  tools: {
+    get: {
+      description: "Read a value",
+      inputSchema: { type: "object", properties: { k: { type: "string" } } },
+      handler: async ({ k }: { k: string }) => ({ v: await kv.get(k) }),
+    },
+  },
+};
+`),
+		},
+	}
+	_, err := build.Build(context.Background(), build.Options{Source: src, NoTypeCheck: true})
+	if err == nil {
+		t.Fatal("expected error for kv import without manifest declaration")
+	}
+	var be *build.Error
+	if !errors.As(err, &be) {
+		t.Fatalf("error type: got %T, want *build.Error", err)
+	}
+	if be.Phase != build.PhaseManifestExtract {
+		t.Errorf("phase = %v, want PhaseManifestExtract", be.Phase)
+	}
+	if !strings.Contains(err.Error(), "capabilities.kv") {
+		t.Errorf("error should mention capabilities.kv: %v", err)
+	}
+}
+
+// Declaring capabilities.kv = { enabled: true } in the manifest
+// lets the kv import resolve cleanly — same source as the
+// rejection case above, plus the declaration. The emitted
+// manifest.json carries the kv block.
+func TestBuild_AcceptsKVImportWithDeclaration(t *testing.T) {
+	src := fstest.MapFS{
+		"Particlefile.ts": &fstest.MapFile{
+			Data: []byte(`import { kv } from "@partite-ai/particle-kv";
+export default {
+  name: "kv-tool",
+  description: "Uses kv with declaration.",
+  version: "0.1.0",
+  capabilities: { kv: { enabled: true } },
+  tools: {
+    get: {
+      description: "Read a value",
+      inputSchema: { type: "object", properties: { k: { type: "string" } } },
+      handler: async ({ k }: { k: string }) => ({ v: await kv.get(k) }),
+    },
+  },
+};
+`),
+		},
+	}
+	res, err := build.Build(context.Background(), build.Options{Source: src, NoTypeCheck: true})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	manifest := string(readFile(t, res.Particle, "manifest.json"))
+	if !strings.Contains(manifest, `"kv":{"enabled":true}`) {
+		t.Errorf("manifest should carry kv:{enabled:true}; got:\n%s", manifest)
+	}
+}
+
 func TestBuild_RejectsBareSpecifier(t *testing.T) {
 	src := fstest.MapFS{
 		"Particlefile.ts": &fstest.MapFile{

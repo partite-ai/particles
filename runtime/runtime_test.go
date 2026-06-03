@@ -2,7 +2,9 @@ package runtime_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io/fs"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -373,6 +375,145 @@ export default {
 	if !strings.Contains(string(out), `"method":null`) {
 		t.Errorf("result = %s, want method=null", out)
 	}
+}
+
+// -----------------------------------------------------------------------------
+// KV capability gating
+// -----------------------------------------------------------------------------
+
+// A particle that declares capabilities.kv reaches the real
+// per-particle store: a set in one tool call is visible to a get in
+// the next. Exercises the full chain — manifest declaration → WIT
+// record → Go Manifest → real store wired in NewParticle.
+func TestRuntime_KV_Declared_RoundTrips(t *testing.T) {
+	ctx := context.Background()
+	src := `import { kv } from "@partite-ai/particle-kv";
+export default {
+  name: "kv-tools",
+  description: "Persist a cursor.",
+  version: "0.1.0",
+  capabilities: { kv: { enabled: true } },
+  tools: {
+    put: {
+      description: "Store a value",
+      inputSchema: { type: "object", properties: { k: { type: "string" }, v: { type: "string" } }, required: ["k", "v"] },
+      handler: async ({ k, v }: { k: string; v: string }) => { await kv.set(k, v); return { ok: true }; },
+    },
+    get: {
+      description: "Read a value",
+      inputSchema: { type: "object", properties: { k: { type: "string" } }, required: ["k"] },
+      handler: async ({ k }: { k: string }) => ({ v: await kv.get(k) }),
+    },
+  },
+};`
+	res := buildParticle(t, src)
+	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
+	defer cleanup()
+	p, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
+	if err != nil {
+		t.Fatalf("NewParticle: %v", err)
+	}
+	defer p.Close(ctx)
+
+	if _, err := p.CallTool(ctx, "put", []byte(`{"k":"cursor","v":"abc123"}`)); err != nil {
+		t.Fatalf("CallTool put: %v", err)
+	}
+	out, err := p.CallTool(ctx, "get", []byte(`{"k":"cursor"}`))
+	if err != nil {
+		t.Fatalf("CallTool get: %v", err)
+	}
+	if !strings.Contains(string(out), `"v":"abc123"`) {
+		t.Errorf("result = %s, want the stored value round-tripped", out)
+	}
+}
+
+// A particle whose manifest does NOT declare kv gets the
+// denied-trap store wired in its place, so a kv call surfaces an
+// error rather than silently using a store the manifest never asked
+// for. The build pipeline normally blocks an undeclared kv import,
+// so we strip the declaration from a built artifact to drive the
+// runtime gate directly (defense-in-depth below the build check).
+func TestRuntime_KV_Undeclared_Denied(t *testing.T) {
+	ctx := context.Background()
+	src := `import { kv } from "@partite-ai/particle-kv";
+export default {
+  name: "kv-tools",
+  description: "Persist a cursor.",
+  version: "0.1.0",
+  capabilities: { kv: { enabled: true } },
+  tools: {
+    get: {
+      description: "Read a value",
+      inputSchema: { type: "object", properties: { k: { type: "string" } }, required: ["k"] },
+      handler: async ({ k }: { k: string }) => ({ v: await kv.get(k) }),
+    },
+  },
+};`
+	res := buildParticle(t, src)
+	particleFS := stripKVDeclaration(t, res.Particle)
+
+	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
+	defer cleanup()
+	p, err := rt.NewParticle(ctx, particleFS, credStore, kvStore, nil)
+	if err != nil {
+		t.Fatalf("NewParticle: %v", err)
+	}
+	defer p.Close(ctx)
+
+	// The manifest the runtime decoded should reflect the stripped
+	// declaration — kv is not granted.
+	if p.Manifest().Capabilities.KVGranted() {
+		t.Fatal("expected KV not granted after stripping the declaration")
+	}
+
+	_, err = p.CallTool(ctx, "get", []byte(`{"k":"cursor"}`))
+	if err == nil {
+		t.Fatal("expected the kv call to fail for an undeclared particle")
+	}
+	var te *runtime.ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("error = %v (%T), want *runtime.ToolError", err, err)
+	}
+}
+
+// stripKVDeclaration returns a copy of the built particle FS with
+// `capabilities.kv` removed from manifest.json — everything else
+// (bundle, source map, build-info) passes through unchanged. Models
+// a manifest that doesn't grant kv while the bundle still calls it.
+func stripKVDeclaration(t *testing.T, particleFS fs.FS) fs.FS {
+	t.Helper()
+	out := fstest.MapFS{}
+	err := fs.WalkDir(particleFS, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		data, err := fs.ReadFile(particleFS, p)
+		if err != nil {
+			return err
+		}
+		if p == "manifest.json" {
+			var m map[string]any
+			if err := json.Unmarshal(data, &m); err != nil {
+				return err
+			}
+			if caps, ok := m["capabilities"].(map[string]any); ok {
+				delete(caps, "kv")
+			}
+			data, err = json.Marshal(m)
+			if err != nil {
+				return err
+			}
+		}
+		out[p] = &fstest.MapFile{Data: data}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stripKVDeclaration: %v", err)
+	}
+	return out
 }
 
 // -----------------------------------------------------------------------------

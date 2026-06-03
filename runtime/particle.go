@@ -436,7 +436,24 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	}
 	hostInsts = append(hostInsts, signingInst)
 
-	kvInst, err := r.cfg.KV.NewInstance(ctx, kvStore, host.WithCallListener(listener))
+	// KV is gated by the manifest: undeclared particles get a
+	// denied-trap Store so every kv call surfaces
+	// kv-error::not-declared. The host instance is wired either way
+	// because the guest's WIT-level import of particle:host/kv@0.1.0
+	// is unconditional — skipping it would fail instantiation rather
+	// than failing the kv call at use time.
+	//
+	// Introspect mode is exempt: the caller passes the introspect
+	// trap (which reports "not allowed during get-manifest") and the
+	// manifest doesn't exist yet — it's the very thing get-manifest
+	// computes — so there's nothing to gate against. Leave its trap
+	// in place so a stray module-scope kv call surfaces the
+	// introspect message, not a misleading not-declared.
+	kvActive := kvStore
+	if !cfg.introspectMode && !manifest.Capabilities.KVGranted() {
+		kvActive = kv.NewDeniedTrapStore()
+	}
+	kvInst, err := r.cfg.KV.NewInstance(ctx, kvActive, host.WithCallListener(listener))
 	if err != nil {
 		closeAll()
 		return nil, fmt.Errorf("runtime: build kv host instance: %w", err)

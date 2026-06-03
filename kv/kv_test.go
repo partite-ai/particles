@@ -214,6 +214,34 @@ func TestAdapter_Set_OkAndQuota(t *testing.T) {
 			t.Errorf("message = %q", se.Value)
 		}
 	})
+
+	t.Run("not declared", func(t *testing.T) {
+		// The runtime swaps in NewDeniedTrapStore when the
+		// manifest doesn't declare kv; every operation through
+		// that Store should surface as kv-error::not-declared.
+		a := newAdapter(NewDeniedTrapStore())
+		res, _ := a.Set(context.Background(), "k", "v")
+		errRes := res.(gen.Result_KvErrorErr)
+		if _, ok := errRes.Value.(gen.KvErrorNotDeclared); !ok {
+			t.Errorf("got %T, want NotDeclared", errRes.Value)
+		}
+	})
+
+	t.Run("wrapped not-declared", func(t *testing.T) {
+		// errors.Is walks wrappers — a Store that adds context to
+		// ErrNotDeclared still maps to the right variant.
+		store := &fakeStore{
+			setFn: func(_ context.Context, _, _ string) error {
+				return errors.Join(ErrNotDeclared, errors.New("with context"))
+			},
+		}
+		a := newAdapter(store)
+		res, _ := a.Set(context.Background(), "k", "v")
+		errRes := res.(gen.Result_KvErrorErr)
+		if _, ok := errRes.Value.(gen.KvErrorNotDeclared); !ok {
+			t.Errorf("got %T, want NotDeclared for wrapped sentinel", errRes.Value)
+		}
+	})
 }
 
 func TestAdapter_Delete(t *testing.T) {

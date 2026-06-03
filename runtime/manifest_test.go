@@ -119,6 +119,37 @@ func TestParseManifest_AllMethodKinds(t *testing.T) {
 	}
 }
 
+// KV declaration round-trips through ParseManifest / MarshalJSON.
+// Absent / Enabled=false are both "not granted" per
+// Capabilities.KVGranted, which the runtime gates on; only the
+// {enabled: true} shape lets a particle reach the host KV store.
+func TestParseManifest_KV(t *testing.T) {
+	cases := []struct {
+		name    string
+		json    string
+		granted bool
+		present bool
+	}{
+		{"absent", `{"name":"p","version":"0.1.0","capabilities":{},"tools":[]}`, false, false},
+		{"explicit disabled", `{"name":"p","version":"0.1.0","capabilities":{"kv":{"enabled":false}},"tools":[]}`, false, true},
+		{"enabled", `{"name":"p","version":"0.1.0","capabilities":{"kv":{"enabled":true}},"tools":[]}`, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m, err := ParseManifest(strings.NewReader(c.json))
+			if err != nil {
+				t.Fatalf("ParseManifest: %v", err)
+			}
+			if got := (m.Capabilities.KV != nil); got != c.present {
+				t.Errorf("KV present = %v, want %v", got, c.present)
+			}
+			if got := m.Capabilities.KVGranted(); got != c.granted {
+				t.Errorf("KVGranted = %v, want %v", got, c.granted)
+			}
+		})
+	}
+}
+
 // A missing or empty `http` capability yields an empty
 // AllowedHosts slice — either way, the policy denies every
 // outbound request. The two manifest shapes are

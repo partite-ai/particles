@@ -119,9 +119,13 @@ func (a *adapter) List(ctx context.Context, prefix string) (gen.ResultListString
 
 // liftError maps a Store error to a kv-error variant case.
 //
+//	ErrNotDeclared (or wrappers)   → not-declared
 //	ErrQuotaExceeded (or wrappers) → quota-exceeded
 //	any other error                → storage-error(err.Error())
 func liftError(err error) gen.KvError {
+	if errors.Is(err, ErrNotDeclared) {
+		return gen.KvErrorNotDeclared{}
+	}
 	if errors.Is(err, ErrQuotaExceeded) {
 		return gen.KvErrorQuotaExceeded{}
 	}

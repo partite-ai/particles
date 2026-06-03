@@ -49,7 +49,10 @@ func buildWasm(ctx context.Context, opts Options, comps *wacogo.Components) (*Re
 	// doesn't carry it. The caller asked for a wasm build via
 	// Options.Component, so the value is fixed here.
 	extracted.Runtime = runtime.RuntimeWasm
-	if err := validateExtractedManifest(extracted); err != nil {
+	// Native wasm particles don't pass through importscan, so the
+	// kv cross-check in validateExtractedManifest is a no-op for
+	// this path; nil skips it.
+	if err := validateExtractedManifest(extracted, nil); err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Cause: err}
 	}
 	manifestJSON, err := json.Marshal(extracted)

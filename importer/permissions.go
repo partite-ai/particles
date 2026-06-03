@@ -45,10 +45,11 @@ const (
 // confirmation or because we never prompted). Returns an error
 // when the user declines.
 func confirmPermissions(ctx context.Context, opts Options, mf manifest) error {
-	nextCaps := mf.CapabilitiesRaw
+	nextCaps := approvalCaps(mf.CapabilitiesRaw)
 	nextCreds := mf.CredentialsRaw
 
 	prevCaps, prevCreds, prevVer, _ := loadPriorPermissions(ctx, opts.Registry, mf.Name)
+	prevCaps = approvalCaps(prevCaps)
 
 	switch opts.PermissionMode {
 	case PermissionSkip:
@@ -89,6 +90,28 @@ func confirmPermissions(ctx context.Context, opts Options, mf manifest) error {
 		return fmt.Errorf("permissions declined")
 	}
 	return nil
+}
+
+// approvalCaps returns a copy of caps without the capability
+// categories that don't require user approval. KV is declared by
+// the particle and gated entirely by the manifest at runtime (an
+// undeclared particle gets a denied-trap store) — there's no
+// host-side grant for the user to weigh, so it never appears in the
+// permission prompt, never blocks a silent reinstall, and never
+// forces a re-prompt on change. Returns the input untouched when it
+// holds no such category, so the common path allocates nothing.
+func approvalCaps(caps map[string]json.RawMessage) map[string]json.RawMessage {
+	if _, ok := caps["kv"]; !ok {
+		return caps
+	}
+	out := make(map[string]json.RawMessage, len(caps))
+	for k, v := range caps {
+		if k == "kv" {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // loadPriorPermissions returns the capabilities + credentials of

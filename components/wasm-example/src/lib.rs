@@ -79,7 +79,7 @@ impl ManifestGuest for Component {
             name: "wasm-example".into(),
             description: "Native-WASM particle fixture — echo + add.".into(),
             version: "0.1.0".into(),
-            capabilities: CapabilitySet { http: None },
+            capabilities: CapabilitySet { http: None, filesystem: None, kv: None },
             credentials: vec![],
             tools: vec![
                 ToolEntry {

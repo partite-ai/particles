@@ -80,10 +80,11 @@ type Result struct {
 	// Capabilities is the sorted set of host-capability modules
 	// the source imports — i.e., the @partite-ai/particle-*
 	// modules whose use must be matched by a manifest
-	// declaration. `kv` is intentionally NOT recorded here: every
-	// particle gets a KV store unconditionally, so importing
-	// @partite-ai/particle-kv doesn't imply any manifest
-	// declaration.
+	// declaration. Includes "kv": a particle that imports
+	// @partite-ai/particle-kv must declare `capabilities.kv =
+	// { enabled: true }` in its manifest, otherwise the runtime
+	// wires a denied-trap kv adapter and every call surfaces
+	// kv-error::not-declared.
 	Capabilities []string
 
 	Locals []LocalImport
@@ -308,14 +309,6 @@ func classifyImport(
 
 	case strings.HasPrefix(p, hostPackagePrefix):
 		cap := strings.TrimPrefix(p, hostPackagePrefix)
-		// kv is universal — every particle gets the per-particle
-		// KV store unconditionally, so importing it doesn't
-		// imply any manifest declaration. Recording it here
-		// would misleadingly suggest it's a capability the
-		// manifest needs to grant.
-		if cap == "kv" {
-			return
-		}
 		seenCap[cap] = struct{}{}
 
 	case strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../") || strings.HasPrefix(p, "/"):

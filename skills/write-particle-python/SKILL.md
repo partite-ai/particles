@@ -240,6 +240,14 @@ info = credentials.get_placeholder("example")
 ### Key/value store
 
 Scoped per-particle. Strings only — base64-encode binary if needed.
+Declare it with `kv=KV(enabled=True)` on the `Particle` — without the
+declaration every call raises a `not-declared` error (no user approval
+is needed, just the declaration):
+
+```python
+from particle.manifest import Particle, KV
+# particle = Particle(..., kv=KV(enabled=True))
+```
 
 ```python
 from particle import kv

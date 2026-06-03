@@ -73,6 +73,10 @@ interface kv {
   variant kv-error {
     storage-error(string),
     quota-exceeded,
+    /// Particle did not declare `capabilities.kv` in its manifest.
+    /// The host wires a denied-trap adapter in that case so any kv
+    /// call surfaces here rather than silently succeeding.
+    not-declared,
   }
 
   get: func(key: string) -> result<option<string>, kv-error>;

@@ -79,3 +79,11 @@ type KvErrorQuotaExceeded struct {
 }
 
 func (KvErrorQuotaExceeded) isKvError() {}
+
+// Particle did not declare `capabilities.kv` in its manifest.
+// The host wires a denied-trap adapter in that case so any kv
+// call surfaces here rather than silently succeeding.
+type KvErrorNotDeclared struct {
+}
+
+func (KvErrorNotDeclared) isKvError() {}

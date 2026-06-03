@@ -125,9 +125,22 @@ interface manifest {
     http: option<http-capability>,
     /// Host filesystem mounts. None = no mounts declared.
     filesystem: option<filesystem-capability>,
+    /// Per-particle key/value storage. None = the particle did not
+    /// declare KV; the host wires a denied-trap kv adapter so any
+    /// `@partite-ai/particle-kv` call surfaces `kv-error::not-declared`
+    /// rather than silently using a store the manifest never asked
+    /// for.
+    kv: option<kv-capability>,
   }
   record http-capability {
     allowed-hosts: list<string>,
+  }
+  /// Per-particle KV declaration. No options today — `enabled` is
+  /// the explicit on/off knob that lets a particle author flip the
+  /// declaration without removing the record itself, and reserves
+  /// shape for future fields (quota, namespace) without a WIT break.
+  record kv-capability {
+    enabled: bool,
   }
 
   /// Declared filesystem mounts. WIT has no map type, so each map is

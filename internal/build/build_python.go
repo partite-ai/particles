@@ -127,7 +127,11 @@ func buildPython(ctx context.Context, opts Options, comps *wacogo.Components, en
 	// doesn't carry it. We dispatched into buildPython off the .py
 	// extension, so the value is fixed here.
 	extracted.Runtime = runtime.RuntimePython
-	if err := validateExtractedManifest(extracted); err != nil {
+	// Python source isn't import-scanned for capability modules
+	// (pyscan parses PEP 723 only), so the kv cross-check below
+	// runs only for the JS path; nil means "skip scan-driven
+	// cross-checks" inside validateExtractedManifest.
+	if err := validateExtractedManifest(extracted, nil); err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
 	}
 	manifestJSON, err := json.Marshal(extracted)

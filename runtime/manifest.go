@@ -16,9 +16,9 @@ import (
 // — the file the build pipeline emits at the root of the
 // particle FS.
 type Manifest struct {
-	Name         string                `json:"name"`
-	Description  string                `json:"description"`
-	Version      string                `json:"version"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Version     string `json:"version"`
 	// Runtime selects which engine the host instantiates for this
 	// particle: the QuickJS-based JS runtime (`"js"`) or the
 	// CPython-based Python runtime (`"python"`). Omitted /
@@ -66,6 +66,7 @@ func (m Manifest) ResolvedRuntime() RuntimeKind {
 type Capabilities struct {
 	HTTP       HTTPCapability       `json:"http"`
 	Filesystem FilesystemCapability `json:"filesystem"`
+	KV         *KVCapability        `json:"kv,omitempty"`
 }
 
 // HTTPCapability mirrors `capabilities.http`. An empty
@@ -73,6 +74,22 @@ type Capabilities struct {
 // the policy denies every request.
 type HTTPCapability struct {
 	AllowedHosts []string `json:"allowedHosts"`
+}
+
+// KVCapability mirrors `capabilities.kv`. `Enabled` is the
+// explicit on/off knob — flipping it to false declares the
+// capability shape (which keeps future-field round-trips honest)
+// while still telling the runtime to wire the denied trap. The
+// runtime treats `nil` and `Enabled: false` identically.
+type KVCapability struct {
+	Enabled bool `json:"enabled"`
+}
+
+// Granted reports whether the runtime should wire the real KV
+// store. Centralizes the nil/Enabled check so callers don't have
+// to repeat the two-step.
+func (c Capabilities) KVGranted() bool {
+	return c.KV != nil && c.KV.Enabled
 }
 
 // FilesystemCapability mirrors `capabilities.filesystem`. Mounts
@@ -142,21 +159,6 @@ type TempMountDecl struct {
 // MaxSizeBytes parses MaxSize into a byte count via [ParseByteSize].
 func (t TempMountDecl) MaxSizeBytes() (int64, error) {
 	return ParseByteSize(t.MaxSize)
-}
-
-// MarshalJSON renders Capabilities with `http` always present (its
-// historical shape) and `filesystem` emitted only when it declares at
-// least one mount or temp mount. Omitting an empty filesystem block
-// keeps manifest.json byte-identical for the many particles that
-// declare no mounts. A struct `json:",omitempty"` can't express this —
-// omitempty never elides a non-pointer struct — hence the hand-rolled
-// marshaler.
-func (c Capabilities) MarshalJSON() ([]byte, error) {
-	out := map[string]any{"http": c.HTTP}
-	if len(c.Filesystem.Mounts) > 0 || len(c.Filesystem.Temp) > 0 {
-		out["filesystem"] = c.Filesystem
-	}
-	return json.Marshal(out)
 }
 
 // Credential is one entry in the manifest's top-level

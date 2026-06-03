@@ -130,6 +130,7 @@ fn kv_err(e: h_kv::KvError) -> PyErr {
     match e {
         h_kv::KvError::StorageError(d) => raise("storage-error", &d),
         h_kv::KvError::QuotaExceeded => raise("quota-exceeded", ""),
+        h_kv::KvError::NotDeclared => raise("not-declared", ""),
     }
 }
 

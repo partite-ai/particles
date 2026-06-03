@@ -66,6 +66,11 @@ func decodeCapabilitySet(rec *wc.ValRecord) Capabilities {
 			out.Filesystem = decodeFilesystemCapability(fsRec)
 		}
 	}
+	if opt, ok := rec.Field("kv").(*wc.ValOption); ok && !opt.IsNone() {
+		if kvRec, ok := opt.Val().(*wc.ValRecord); ok {
+			out.KV = &KVCapability{Enabled: boolField(kvRec, "enabled")}
+		}
+	}
 	return out
 }
 

@@ -86,6 +86,18 @@ class Filesystem:
     temp: dict[str, TempMount] = field(default_factory=dict)
 
 
+# ---- KV capability ----------------------------------------------------------
+
+@dataclass
+class KV:
+    """Per-particle key/value declaration. Set `enabled=True` to
+    grant the runtime's `particle.kv` access; leaving the field
+    unset (or `enabled=False`) makes every kv call surface
+    `kv-error::not-declared`. Future fields (quota, namespace) will
+    join here without breaking the existing shape."""
+    enabled: bool = True
+
+
 # ---- Credential methods -----------------------------------------------------
 #
 # Each class is one variant of the WIT `credential-method` union. The
@@ -232,6 +244,7 @@ class Particle:
     version: str
     http: Optional[Http] = None
     filesystem: Optional[Filesystem] = None
+    kv: Optional[KV] = None
     credentials: dict[str, Credential] = field(default_factory=dict)
     tools: dict[str, Tool] = field(default_factory=dict)
     ping: Optional[Callable[[], Any]] = None

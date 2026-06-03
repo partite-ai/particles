@@ -33,7 +33,7 @@ func NewFactory(ctx context.Context, e *wacogo.Engine) (*Factory, error) {
 	f_ := &Factory{engine: e}
 	b_ := e.NewHostBuilder("particle_host_kv")
 
-	typKvError_ := b_.AddType("kv-error", host.Variant{Cases: []host.Case{{Name: "storage-error", Payload: host.String}, {Name: "quota-exceeded", Payload: nil}}})
+	typKvError_ := b_.AddType("kv-error", host.Variant{Cases: []host.Case{{Name: "storage-error", Payload: host.String}, {Name: "quota-exceeded", Payload: nil}, {Name: "not-declared", Payload: nil}}})
 	_ = typKvError_
 
 	b_.AddFunction("delete", &host.FuncType{
@@ -98,6 +98,8 @@ func toGoFlatKvError(ctx context.Context, cc *host.CallContext, h *host.Componen
 		return KvErrorStorageError{Value: val}, nil
 	case 1:
 		return KvErrorQuotaExceeded{}, nil
+	case 2:
+		return KvErrorNotDeclared{}, nil
 	}
 	return nil, fmt.Errorf("wacogo/witgen: toGoFlatKvError: invalid discriminant %d", disc_)
 }
@@ -122,6 +124,8 @@ func toGoMemKvError(ctx context.Context, cc *host.CallContext, h *host.Component
 		return KvErrorStorageError{Value: val}, nil
 	case 1:
 		return KvErrorQuotaExceeded{}, nil
+	case 2:
+		return KvErrorNotDeclared{}, nil
 	}
 	return nil, fmt.Errorf("wacogo/witgen: toGoMemKvError: invalid discriminant %d", disc_)
 }
@@ -135,6 +139,11 @@ func fromGoFlatKvError(ctx context.Context, cc *host.CallContext, h *host.Compon
 		}
 	case KvErrorQuotaExceeded:
 		stack[0] = 1
+		_ = x
+		stack[1] = 0
+		stack[2] = 0
+	case KvErrorNotDeclared:
+		stack[0] = 2
 		_ = x
 		stack[1] = 0
 		stack[2] = 0
@@ -155,6 +164,11 @@ func fromGoMemKvError(ctx context.Context, cc *host.CallContext, h *host.Compone
 		}
 	case KvErrorQuotaExceeded:
 		if ok_ := cc.Memory().WriteByte(ptr, uint8(1)); !ok_ {
+			return fmt.Errorf("wacogo/witgen: fromGoMemKvError: discriminant: bad memory write")
+		}
+		_ = x
+	case KvErrorNotDeclared:
+		if ok_ := cc.Memory().WriteByte(ptr, uint8(2)); !ok_ {
 			return fmt.Errorf("wacogo/witgen: fromGoMemKvError: discriminant: bad memory write")
 		}
 		_ = x
@@ -179,6 +193,8 @@ func liftFlatKvError(ctx context.Context, caller, callee *host.CallContext, h *h
 		return KvErrorStorageError{Value: val}, nil
 	case 1:
 		return KvErrorQuotaExceeded{}, nil
+	case 2:
+		return KvErrorNotDeclared{}, nil
 	}
 	return nil, fmt.Errorf("wacogo/witgen: liftFlatKvError: invalid discriminant %d", disc_)
 }
@@ -203,6 +219,8 @@ func liftMemKvError(ctx context.Context, caller, callee *host.CallContext, h *ho
 		return KvErrorStorageError{Value: val}, nil
 	case 1:
 		return KvErrorQuotaExceeded{}, nil
+	case 2:
+		return KvErrorNotDeclared{}, nil
 	}
 	return nil, fmt.Errorf("wacogo/witgen: liftMemKvError: invalid discriminant %d", disc_)
 }
@@ -218,6 +236,11 @@ func lowerFlatKvError(ctx context.Context, caller, callee *host.CallContext, h *
 		}
 	case KvErrorQuotaExceeded:
 		stack[0] = 1
+		_ = x
+		stack[1] = 0
+		stack[2] = 0
+	case KvErrorNotDeclared:
+		stack[0] = 2
 		_ = x
 		stack[1] = 0
 		stack[2] = 0
@@ -240,6 +263,11 @@ func lowerMemKvError(ctx context.Context, caller, callee *host.CallContext, h *h
 		}
 	case KvErrorQuotaExceeded:
 		if ok_ := callee.Memory().WriteByte(ptr, uint8(1)); !ok_ {
+			return fmt.Errorf("wacogo/witgen: lowerMemKvError: discriminant: bad memory write")
+		}
+		_ = x
+	case KvErrorNotDeclared:
+		if ok_ := callee.Memory().WriteByte(ptr, uint8(2)); !ok_ {
 			return fmt.Errorf("wacogo/witgen: lowerMemKvError: discriminant: bad memory write")
 		}
 		_ = x

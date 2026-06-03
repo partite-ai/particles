@@ -54,9 +54,9 @@ use exports::particle::runtime::health::{
 use exports::particle::runtime::manifest::{
     ApikeyLocation, ApikeyLocationKind, ApikeyMethod, CapabilitySet, CredentialEntry,
     CredentialMethod, CredentialMethodEntry, ErrorDetail as ManifestErrorDetail,
-    FilesystemCapability, Guest as ManifestGuest, HttpCapability, ManifestError, MountAccess,
-    MountDecl, Oauth2Flow, Oauth2Method, ParticleManifest, SigningAlgorithm, SigningKeyMethod,
-    TempMountDecl, ToolEntry,
+    FilesystemCapability, Guest as ManifestGuest, HttpCapability, KvCapability, ManifestError,
+    MountAccess, MountDecl, Oauth2Flow, Oauth2Method, ParticleManifest, SigningAlgorithm,
+    SigningKeyMethod, TempMountDecl, ToolEntry,
 };
 use exports::particle::runtime::tools::{
     ErrorDetail as ToolErrorDetail, Guest as ToolsGuest, ToolDef, ToolError,
@@ -907,17 +907,17 @@ unsafe fn marshal_particle_manifest(obj: *mut pyo3_ffi::PyObject) -> Result<Part
 }
 
 unsafe fn marshal_capability_set(parent: *mut pyo3_ffi::PyObject) -> Result<CapabilitySet, String> {
-    // parent.capabilities — a CapabilitySet-like object with .http and
-    // .filesystem.
+    // parent.capabilities — a CapabilitySet-like object with .http,
+    // .filesystem and .kv.
     let cn = CString::new("capabilities").unwrap();
     let caps = pyo3_ffi::PyObject_GetAttrString(parent, cn.as_ptr());
     if caps.is_null() {
         pyo3_ffi::PyErr_Clear();
-        return Ok(CapabilitySet { http: None, filesystem: None });
+        return Ok(CapabilitySet { http: None, filesystem: None, kv: None });
     }
     if is_none(caps) {
         pyo3_ffi::Py_DecRef(caps);
-        return Ok(CapabilitySet { http: None, filesystem: None });
+        return Ok(CapabilitySet { http: None, filesystem: None, kv: None });
     }
     let http_name = CString::new("http").unwrap();
     let http_obj = pyo3_ffi::PyObject_GetAttrString(caps, http_name.as_ptr());
@@ -935,8 +935,28 @@ unsafe fn marshal_capability_set(parent: *mut pyo3_ffi::PyObject) -> Result<Capa
         Some(HttpCapability { allowed_hosts })
     };
     let filesystem = marshal_filesystem_capability(caps)?;
+    let kv = marshal_kv_capability(caps);
     pyo3_ffi::Py_DecRef(caps);
-    Ok(CapabilitySet { http, filesystem })
+    Ok(CapabilitySet { http, filesystem, kv })
+}
+
+// marshal_kv_capability reads `caps.kv` (a KvCapability-like object
+// with an `.enabled` bool), or returns None when the particle did
+// not declare the capability.
+unsafe fn marshal_kv_capability(caps: *mut pyo3_ffi::PyObject) -> Option<KvCapability> {
+    let kv_name = CString::new("kv").unwrap();
+    let kv_obj = pyo3_ffi::PyObject_GetAttrString(caps, kv_name.as_ptr());
+    if kv_obj.is_null() {
+        pyo3_ffi::PyErr_Clear();
+        return None;
+    }
+    if is_none(kv_obj) {
+        pyo3_ffi::Py_DecRef(kv_obj);
+        return None;
+    }
+    let enabled = get_bool_attr(kv_obj, "enabled", false);
+    pyo3_ffi::Py_DecRef(kv_obj);
+    Some(KvCapability { enabled })
 }
 
 // marshal_filesystem_capability reads `caps.filesystem` (a

@@ -169,6 +169,24 @@ func TestImport_Permission_NoCapabilities_Silent(t *testing.T) {
 	}
 }
 
+// KV is declared in the manifest but is not an approval-gated
+// capability — a particle that declares only kv installs silently,
+// exactly like one with no capabilities at all. (The manifest
+// declaration alone governs runtime access; see runtime KV gating.)
+func TestImport_Permission_KVOnly_Silent(t *testing.T) {
+	reg := newRegistry(t)
+	prompter := &scriptedPrompter{t: t} // any prompt fails
+
+	if _, err := importer.Import(context.Background(),
+		mkParticleFS("p", "0.1.0", `{"kv":{"enabled":true}}`, "{}"),
+		importer.Options{
+			Registry: reg, Prompter: prompter,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Whitespace differences in the capability JSON don't trigger a
 // fresh prompt — the canonical comparison normalizes both
 // sides through json.Unmarshal so byte-shape variations of the
@@ -207,9 +225,9 @@ func TestImport_Permission_CanonicalComparison(t *testing.T) {
 // The summary text covers each capability category the
 // particle's manifest declares — a quick spot-check that the
 // formatter actually mentions hosts and credential methods when
-// present. kv is intentionally NOT a capability (every particle
-// gets a KV store unconditionally), and env is input data not a
-// permission — neither belongs in the summary.
+// present. kv is a declared capability but not approval-gated (the
+// manifest declaration is its sole gate), and env is input data not
+// a permission — neither belongs in the summary.
 func TestImport_Permission_SummaryNamesEachCategory(t *testing.T) {
 	reg := newRegistry(t)
 	store := credmem.New().Scoped("p")

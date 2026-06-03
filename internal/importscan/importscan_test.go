@@ -91,10 +91,10 @@ func TestScanHappyPath(t *testing.T) {
 		t.Fatalf("npm deps mismatch:\n got: %#v\nwant: %#v", gotNpm, wantNpm)
 	}
 
-	// kv is intentionally NOT a capability — every particle gets
-	// the KV store unconditionally. Importing
-	// @partite-ai/particle-kv doesn't show up in Capabilities.
-	wantCaps := []string{"credentials"}
+	// kv requires a manifest declaration like every other host
+	// capability — importing @partite-ai/particle-kv shows up in
+	// Capabilities so the build pipeline can cross-check.
+	wantCaps := []string{"credentials", "kv"}
 	if !reflect.DeepEqual(r.Capabilities, wantCaps) {
 		t.Fatalf("capabilities = %v, want %v", r.Capabilities, wantCaps)
 	}
@@ -270,11 +270,11 @@ func TestScanCapabilityDedup(t *testing.T) {
 	}
 }
 
-// Importing @partite-ai/particle-kv does NOT add "kv" to the
-// reported Capabilities — KV is universal, not a capability you
-// declare. Build-info therefore won't suggest the manifest needs
-// a kv entry it can't actually have.
-func TestScanCapabilityKVIsNotRecorded(t *testing.T) {
+// Importing @partite-ai/particle-kv now records "kv" alongside
+// every other host capability — the manifest must declare it
+// (capabilities.kv = { enabled: true }), and the build pipeline
+// uses this entry to cross-check.
+func TestScanCapabilityKVIsRecorded(t *testing.T) {
 	fsys := mapfs(map[string]string{
 		"a.ts": `import { kv } from "@partite-ai/particle-kv";`,
 	})
@@ -282,8 +282,8 @@ func TestScanCapabilityKVIsNotRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	if len(r.Capabilities) != 0 {
-		t.Errorf("capabilities = %v, want empty (kv is not a capability)", r.Capabilities)
+	if !reflect.DeepEqual(r.Capabilities, []string{"kv"}) {
+		t.Errorf("capabilities = %v, want [kv]", r.Capabilities)
 	}
 }
 

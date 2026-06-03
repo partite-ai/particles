@@ -135,12 +135,25 @@ class FilesystemCapability:
         self.temp = temp
 
 
-class CapabilitySet:
-    __slots__ = ("http", "filesystem")
+class KvCapability:
+    __slots__ = ("enabled",)
 
-    def __init__(self, http: HttpCapability | None, filesystem: FilesystemCapability | None = None) -> None:
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+
+class CapabilitySet:
+    __slots__ = ("http", "filesystem", "kv")
+
+    def __init__(
+        self,
+        http: HttpCapability | None,
+        filesystem: FilesystemCapability | None = None,
+        kv: "KvCapability | None" = None,
+    ) -> None:
         self.http = http
         self.filesystem = filesystem
+        self.kv = kv
 
 
 # Credential-method variants. Rust dispatches by `.kind` (a short
@@ -497,7 +510,12 @@ def _build_manifest_record(p) -> ParticleManifest:
         ]
         fs_cap = FilesystemCapability(mounts=mounts, temp=temp)
 
-    capabilities = CapabilitySet(http=http_cap, filesystem=fs_cap)
+    kv = getattr(p, "kv", None)
+    kv_cap = None
+    if kv is not None:
+        kv_cap = KvCapability(enabled=bool(getattr(kv, "enabled", False)))
+
+    capabilities = CapabilitySet(http=http_cap, filesystem=fs_cap, kv=kv_cap)
 
     credentials = []
     creds_map = getattr(p, "credentials", {}) or {}

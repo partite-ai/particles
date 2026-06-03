@@ -363,7 +363,7 @@ func buildJS(ctx context.Context, opts Options, comps *wacogo.Components, entry 
 	// returned by get-manifest doesn't carry it. Entry-point extension
 	// drove the dispatch into buildJS, so the value is fixed here.
 	extracted.Runtime = runtime.RuntimeJS
-	if err := validateExtractedManifest(extracted); err != nil {
+	if err := validateExtractedManifest(extracted, scan); err != nil {
 		return nil, &Error{Phase: PhaseManifestExtract, Logs: logs, Cause: err}
 	}
 	// Compact JSON: keeps manifest.json byte-diff-stable across runs
@@ -445,7 +445,7 @@ func overlayVendoredPackages(nodeModules fs.FS) {
 }
 
 // validateExtractedManifest runs the Go-side cross-field gates on
-// the typed manifest returned by the runtime. Two checks:
+// the typed manifest returned by the runtime. Three checks:
 //
 //  1. SemVer 2.0.0 on `version` — shared with the registry via
 //     `internal/semver`, so a tarball that bypasses the build can't
@@ -453,13 +453,17 @@ func overlayVendoredPackages(nodeModules fs.FS) {
 //  2. Every host listed under `credentials.<name>.hosts` must also
 //     appear in `capabilities.http.allowedHosts` — a credential
 //     bound to a host the particle can't reach is a layering bug.
+//  3. If the source imports `@partite-ai/particle-kv` (scan.Capabilities
+//     contains "kv"), the manifest must declare it. The runtime would
+//     surface kv-error::not-declared at first use; raising it here
+//     turns that into a build-time failure with a fixable message.
 //
 // Enumeration shape (recognized runtimes / capability categories /
 // credential-method types) is enforced by the WIT contract itself:
 // the runtime's get-manifest can only return records that match the
 // typed shape, so anything out of band fails inside the runtime with
 // `invalid-manifest` before reaching this layer.
-func validateExtractedManifest(m *runtime.Manifest) error {
+func validateExtractedManifest(m *runtime.Manifest, scan *importscan.Result) error {
 	if !semver.IsValid(m.Version) {
 		return fmt.Errorf("particle.version %q is not a valid semver string (e.g. \"1.2.3\", \"0.1.0-rc.1\", \"1.0.0+build.7\")", m.Version)
 	}
@@ -471,6 +475,13 @@ func validateExtractedManifest(m *runtime.Manifest) error {
 		for _, h := range cred.Hosts {
 			if _, ok := allowed[strings.ToLower(h)]; !ok {
 				return fmt.Errorf("credentials.%s.hosts: %q is not in capabilities.http.allowedHosts — add it there or remove it from this credential", credName, h)
+			}
+		}
+	}
+	if scan != nil {
+		for _, c := range scan.Capabilities {
+			if c == "kv" && !m.Capabilities.KVGranted() {
+				return errors.New(`source imports "@partite-ai/particle-kv" but the manifest does not declare it — add capabilities.kv = { enabled: true } to your Particlefile`)
 			}
 		}
 	}

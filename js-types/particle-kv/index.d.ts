@@ -21,4 +21,8 @@ export const kv: {
 
 export type KVError =
   | { tag: "storage-error"; val: string }
-  | { tag: "quota-exceeded" };
+  | { tag: "quota-exceeded" }
+  // The particle didn't declare `capabilities.kv` in its manifest.
+  // Add `capabilities: { kv: { enabled: true } }` to the default
+  // export to enable the store.
+  | { tag: "not-declared" };

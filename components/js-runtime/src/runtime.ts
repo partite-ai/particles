@@ -329,9 +329,11 @@ type TempMountDecl = {
   maxSize: string;
 };
 type FilesystemCapability = { mounts: MountDecl[]; temp: TempMountDecl[] };
+type KvCapability = { enabled: boolean };
 type CapabilitySet = {
   http: HttpCapability | undefined;
   filesystem: FilesystemCapability | undefined;
+  kv: KvCapability | undefined;
 };
 
 type Oauth2Flow = "authorization-code" | "authorization-code-pkce" | "device-code";
@@ -426,7 +428,16 @@ function buildCapabilitySet(raw: Record<string, unknown>): CapabilitySet {
   return {
     http: buildHttpCapability(raw.http as RawObject | undefined),
     filesystem: buildFilesystemCapability(raw.filesystem as RawObject | undefined),
+    kv: buildKvCapability(raw.kv as RawObject | undefined),
   };
+}
+
+function buildKvCapability(kvRaw: RawObject | undefined): KvCapability | undefined {
+  if (!kvRaw) return undefined;
+  if (typeof kvRaw.enabled !== "boolean") {
+    throw new Error("capabilities.kv.enabled must be a boolean");
+  }
+  return { enabled: kvRaw.enabled };
 }
 
 function buildHttpCapability(http: RawObject | undefined): HttpCapability | undefined {

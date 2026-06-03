@@ -67,3 +67,10 @@ type Store interface {
 // Other errors from any Store method are surfaced as
 // `kv-error::storage-error` carrying the error message.
 var ErrQuotaExceeded = errors.New("kv: quota exceeded")
+
+// ErrNotDeclared is the sentinel the denied trap Store
+// ([NewDeniedTrapStore]) returns from every method. The runtime
+// maps it to the WIT `kv-error::not-declared` variant so the
+// guest sees a typed "capability not declared" error rather than
+// a generic storage-error.
+var ErrNotDeclared = errors.New("kv: capability not declared in manifest")
