@@ -57,6 +57,18 @@ type soInfo struct {
 	gotFuncImports []string
 	gotMemImports  []string
 
+	// tagImports: exception-handling tags the .so imports from "env".
+	// A C++ library built with the wasm exceptions proposal emits one
+	// `(import "env" "__cpp_exception" (tag (type T) (param i32)))`;
+	// buildEnvModule defines a matching tag in the env module and
+	// exports it under the same name, and wazero links the two
+	// (store.go resolveImports, ExternTypeTag). Each entry's typeIdx
+	// indexes soInfo.types. The tag stays local to this .so — C++
+	// throws and catches within the library before returning across
+	// the CPython C-API boundary, so no cross-.so tag sharing is
+	// needed.
+	tagImports []tagImport
+
 	// wasiImports: per-method core imports the .so makes from
 	// wasi:*@X.Y.Z module names. wasm32-wasip2 Rust cdylibs emit
 	// these directly via libstd's wasi-pal (one core import per
@@ -128,6 +140,14 @@ type soInfo struct {
 // funcImport is one entry in soInfo.funcImports — keyed on name so
 // the env module can re-export it under the same name.
 type funcImport struct {
+	name    string
+	typeIdx uint32 // index into soInfo.types
+}
+
+// tagImport is one entry in soInfo.tagImports — an exception-handling
+// tag the .so imports from "env", keyed on name so the env module can
+// define and export a matching tag.
+type tagImport struct {
 	name    string
 	typeIdx uint32 // index into soInfo.types
 }
@@ -371,6 +391,27 @@ func (info *soInfo) parseImportSection(r *bytes.Reader) error {
 			if modName == "env" && name == "memory" {
 				info.importsMemory = true
 			}
+		case importKindTag:
+			// Exception-handling tag import (kind 0x04). Binary form
+			// matches wazero's decoder: an attribute byte (must be
+			// 0x00 — the only defined attribute, "exception") then a
+			// type index into the .so's type section. We record it so
+			// buildEnvModule can define and export a matching tag.
+			attr, err := r.ReadByte()
+			if err != nil {
+				return err
+			}
+			if attr != 0x00 {
+				return fmt.Errorf("import[%d]: tag attribute 0x%02x unsupported (want 0x00)", i, attr)
+			}
+			typeIdx, err := readULEB128(r)
+			if err != nil {
+				return err
+			}
+			info.tagImports = append(info.tagImports, tagImport{
+				name:    name,
+				typeIdx: uint32(typeIdx),
+			})
 		case importKindGlobal:
 			valType, err := r.ReadByte()
 			if err != nil {
@@ -754,6 +795,21 @@ func (a *Adapter) buildEnvModule(info *soInfo, envFuncSources []string, memoryBa
 		envFuncTypeIdx[i] = spec.internType(t)
 	}
 
+	// Intern the type of each exception-handling tag the .so imports
+	// from env, the same way. The env module will define one tag per
+	// import (env imports no tags, so env tag indices start at 0) and
+	// export it under the import's name.
+	envTagTypeIdx := make([]uint32, len(info.tagImports))
+	for i, ti := range info.tagImports {
+		if int(ti.typeIdx) >= len(info.types) {
+			return nil, fmt.Errorf("buildEnvModule: tag typeIdx %d out of range", ti.typeIdx)
+		}
+		envTagTypeIdx[i] = spec.internType(info.types[ti.typeIdx])
+	}
+	for i := range info.tagImports {
+		spec.tags = append(spec.tags, envTag{typeIdx: envTagTypeIdx[i]})
+	}
+
 	// Indices we'll track for the export section.
 	var (
 		tableImportIdx  uint32
@@ -838,6 +894,16 @@ func (a *Adapter) buildEnvModule(info *soInfo, envFuncSources []string, memoryBa
 		spec.exports = append(spec.exports, envExport{
 			name: fi.name,
 			kind: exportKindFunc,
+			idx:  uint32(i),
+		})
+	}
+	// Re-export each imported tag under its own name so the .so's tag
+	// import resolves to env's locally-defined tag (env tag index space
+	// starts at 0 since env imports no tags).
+	for i, ti := range info.tagImports {
+		spec.exports = append(spec.exports, envExport{
+			name: ti.name,
+			kind: exportKindTag,
 			idx:  uint32(i),
 		})
 	}

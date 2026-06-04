@@ -287,7 +287,7 @@ wasm-example:
 #
 # CFLAGS/LDFLAGS asymmetry (CC targets wasm32-wasi with wasip1 includes,
 # LD targets wasm32-wasip2) is deliberate and matches build.rs:566-581 —
-# wasi-sdk-30's clang resolves both to the same sysroot artifacts.
+# wasi-sdk's clang resolves both to the same sysroot artifacts.
 
 CPYTHON_REV       := 0e13686da8bb881b059d35e23c32bcd2e6440099
 ZLIB_VERSION      := 1.3.1

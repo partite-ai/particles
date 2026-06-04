@@ -25,6 +25,7 @@ const (
 	secGlobal byte = 6
 	secExport byte = 7
 	secElem   byte = 9
+	secTag    byte = 13
 )
 
 const (
@@ -40,6 +41,7 @@ const (
 	importKindTable  byte = 0x01
 	importKindMemory byte = 0x02
 	importKindGlobal byte = 0x03
+	importKindTag    byte = 0x04
 )
 
 const (
@@ -47,10 +49,11 @@ const (
 	exportKindTable  byte = 0x01
 	exportKindMemory byte = 0x02
 	exportKindGlobal byte = 0x03
+	exportKindTag    byte = 0x04
 )
 
 const (
-	opEnd     byte = 0x0B
+	opEnd      byte = 0x0B
 	opI32Const byte = 0x41
 )
 
@@ -104,10 +107,20 @@ type envGlobal struct {
 	initI32 int32 // we only emit i32-const-init globals
 }
 
+// envTag describes one locally-defined exception-handling tag in the
+// env module. typeIdx references the type section; the type must be a
+// func type with no results (the tag's payload is its params). The env
+// module exports each tag so the .so's `(import "env" "<name>" (tag))`
+// resolves to it.
+type envTag struct {
+	typeIdx uint32
+}
+
 // envModuleSpec collects everything needed to encode one env module.
 type envModuleSpec struct {
 	types   []funcType
 	imports []envImport
+	tags    []envTag
 	globals []envGlobal
 	exports []envExport
 	elems   []envElem
@@ -118,8 +131,8 @@ type envModuleSpec struct {
 // The encoder emits the wasm 2.0 flag-byte form (0x02 — table idx +
 // reftype + offset expr + indices).
 type envElem struct {
-	tableIdx   uint32
-	offset     int32
+	tableIdx    uint32
+	offset      int32
 	funcIndices []uint32
 }
 
@@ -173,6 +186,18 @@ func (s *envModuleSpec) encode() ([]byte, error) {
 						b.WriteByte(0x00)
 					}
 				}
+			}
+		})
+	}
+
+	// Tag section sits after imports and before globals (the exceptions
+	// proposal's required position, not its numeric id-13 slot).
+	if len(s.tags) > 0 {
+		writeSection(&w, secTag, func(b *bytes.Buffer) {
+			writeULEB128(b, uint64(len(s.tags)))
+			for _, t := range s.tags {
+				b.WriteByte(0x00) // attribute: 0 = exception (the only defined value)
+				writeULEB128(b, uint64(t.typeIdx))
 			}
 		})
 	}

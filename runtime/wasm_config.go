@@ -49,9 +49,10 @@ const PageSize = 64 * 1024
 
 // NewWasmConfig returns a wazero RuntimeConfig configured per
 // opts. Always sets the feature set the runtime's bundled wasms
-// rely on (CoreFeaturesV2 + the extended-const proposal);
-// everything else is gated on the corresponding [WasmOptions]
-// field.
+// rely on (CoreFeaturesV2 + the extended-const proposal + the
+// exception-handling proposal, which native CPython extension .so's
+// built from C++ with -fwasm-exceptions import a tag for); everything
+// else is gated on the corresponding [WasmOptions] field.
 //
 // Usage:
 //
@@ -62,7 +63,7 @@ const PageSize = 64 * 1024
 //	engine := wacogo.NewEngine(ctx, wacogo.WithRuntimeConfig(cfg))
 func NewWasmConfig(opts WasmOptions) wazero.RuntimeConfig {
 	cfg := wazero.NewRuntimeConfig().
-		WithCoreFeatures(api.CoreFeaturesV2 | experimental.CoreFeaturesExtendedConst).
+		WithCoreFeatures(api.CoreFeaturesV2 | experimental.CoreFeaturesExtendedConst | experimental.CoreFeaturesExceptionHandling).
 		WithCloseOnContextDone(opts.CloseOnContextDone)
 	if opts.MemoryLimitPages > 0 {
 		cfg = cfg.WithMemoryLimitPages(opts.MemoryLimitPages)

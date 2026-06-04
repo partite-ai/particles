@@ -66,11 +66,9 @@ RUN cargo install --locked --root /usr/local wasm-tools
 
 # Install wasi-sdk for cross-compiling C/C++ to wasm32-wasip2. Used by the
 # python-runtime build to produce libpython3.14.so + its dependencies (zlib,
-# sqlite, libc++, wasi-emulated-* shims). Version is pinned to match what
-# componentize-py 0.23.0 uses — dicej's CPython patches (commit 0e13686)
-# were validated against this clang/sysroot pair. Releases:
+# sqlite, libc++, wasi-emulated-* shims). Releases:
 #   https://github.com/WebAssembly/wasi-sdk/releases
-ARG WASI_SDK_VERSION=30
+ARG WASI_SDK_VERSION=33
 RUN ARCH=$(dpkg --print-architecture) && \
   case "$ARCH" in \
     arm64) WASI_ARCH=arm64 ;; \

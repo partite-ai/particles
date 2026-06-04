@@ -124,7 +124,7 @@ func bootParticle(ctx context.Context, db *sql.DB, entry registry.Entry, cliMoun
 		// internal/build/wacogo's NewWithOptions for context) so
 		// turning the cache on doesn't subtly diverge behavior.
 		cfg := wazero.NewRuntimeConfig().
-			WithCoreFeatures(api.CoreFeaturesV2 | experimental.CoreFeaturesExtendedConst).
+			WithCoreFeatures(api.CoreFeaturesV2 | experimental.CoreFeaturesExtendedConst | experimental.CoreFeaturesExceptionHandling).
 			WithCompilationCache(cache)
 		engineOpts = append(engineOpts, wacogo.WithRuntimeConfig(cfg))
 	}

@@ -214,6 +214,25 @@ declare module "@partite-ai/particle" {
      * particle's own bundle.
      */
     filesystem?: FilesystemCapability;
+  
+    /**
+     * Per-particle key/value storage. Set to `{ enabled: true }` to
+     * use `@partite-ai/particle-kv`. Omitting `kv` (or setting
+     * `enabled: false`) leaves the runtime's kv adapter in
+     * denied-trap mode — every kv call surfaces a `not-declared`
+     * error. No user approval is required at install; the manifest
+     * declaration is the sole gate.
+     */
+    kv?: KVCapability;
+  }
+  
+  export interface KVCapability {
+    /**
+     * Turns the per-particle KV store on. The shape is a record
+     * rather than a bare boolean so future knobs (quota, namespace)
+     * can be added without a schema break.
+     */
+    enabled: boolean;
   }
   
   export interface HTTPCapability {
@@ -603,5 +622,9 @@ declare module "@partite-ai/particle-kv" {
   
   export type KVError =
     | { tag: "storage-error"; val: string }
-    | { tag: "quota-exceeded" };
+    | { tag: "quota-exceeded" }
+    // The particle didn't declare `capabilities.kv` in its manifest.
+    // Add `capabilities: { kv: { enabled: true } }` to the default
+    // export to enable the store.
+    | { tag: "not-declared" };
 }
