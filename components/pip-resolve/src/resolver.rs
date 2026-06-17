@@ -30,8 +30,9 @@
 //! `choose_version` — surfaces a clear error rather than the cryptic
 //! pubgrub "no solution" message.
 
+use crate::local_index::LocalIndex;
 use crate::particle_index;
-use crate::pypi::{self, PyPiFile, ReleaseIndex, VersionInfo};
+use crate::pypi::{self, PyPiFile, ReleaseIndex, VersionInfo, VersionMeta};
 use crate::wheel_tag;
 use crate::Error;
 
@@ -107,24 +108,81 @@ struct Cache {
 // Resolution
 // -----------------------------------------------------------------------------
 
-/// Fetch PyPI's release index for `name` AND consult the particle
-/// wheels index, merging any particle-index files into the result.
-/// Particle index entries are marked `host_vouched = true` so
-/// `choose_version` accepts them without the pure-Python wheel
-/// filter. Versions present in the particle index but not on PyPI
-/// get synthesized release entries so pubgrub can choose them.
-async fn fetch_combined_release_index(name: &str) -> Result<ReleaseIndex, Error> {
-    let mut pypi_idx = pypi::fetch_release_index(name).await?;
-    if let Some(particle_idx) = particle_index::fetch_release_index(name).await? {
-        for (version, particle_files) in particle_idx.releases {
-            pypi_idx
-                .releases
-                .entry(version)
+/// Fetch PyPI's release index for `name`, consult the particle wheels
+/// index, and fold in any local `/wheels` entries — local first.
+///
+/// Source priority within a version's file list (front = preferred by
+/// `pick_usable_wheel`'s host-vouched pass): local wheels, then
+/// particle-index, then PyPI. Particle and local entries are
+/// `host_vouched = true`, so `choose_version` accepts them without the
+/// pure-Python filter. Versions present only in the particle/local
+/// source get synthesized release entries so pubgrub can choose them.
+///
+/// When the package is available locally, a PyPI/particle miss or
+/// network failure is NOT fatal — the local wheels can satisfy it on
+/// their own (a private package may not be published on PyPI at all).
+/// Without a local copy the remote errors propagate as before.
+async fn fetch_combined_release_index(
+    name: &str,
+    local: &LocalIndex,
+) -> Result<ReleaseIndex, Error> {
+    let local_files = local.files_for(name);
+
+    let mut idx = match pypi::fetch_release_index(name).await {
+        Ok(idx) => idx,
+        Err(_) if local_files.is_some() => ReleaseIndex {
+            releases: BTreeMap::new(),
+        },
+        Err(e) => return Err(e),
+    };
+
+    match particle_index::fetch_release_index(name).await {
+        Ok(Some(particle_idx)) => {
+            for (version, particle_files) in particle_idx.releases {
+                idx.releases
+                    .entry(version)
+                    .or_default()
+                    .extend(particle_files);
+            }
+        }
+        Ok(None) => {}
+        // A particle-index failure is swallowed only when local can
+        // cover the package; otherwise surface it.
+        Err(_) if local_files.is_some() => {}
+        Err(e) => return Err(e),
+    }
+
+    if let Some(local_files) = local_files {
+        for (version, file) in local_files {
+            // Front-insert so local wins the host-vouched pass over a
+            // same-version particle-index entry.
+            idx.releases
+                .entry(version.clone())
                 .or_default()
-                .extend(particle_files);
+                .insert(0, file.clone());
         }
     }
-    Ok(pypi_idx)
+
+    Ok(idx)
+}
+
+/// Transitive-dep metadata for `name@version`. A locally-sourced
+/// version reads its `Requires-Dist` straight from the wheel's
+/// METADATA (so a package that isn't on PyPI still resolves its deps);
+/// everything else falls back to PyPI's per-version JSON.
+async fn fetch_version_info_combined(
+    name: &str,
+    version: &str,
+    local: &LocalIndex,
+) -> Result<VersionInfo, Error> {
+    if let Some(requires_dist) = local.requires_dist(name, version) {
+        return Ok(VersionInfo {
+            info: VersionMeta {
+                requires_dist: Some(requires_dist),
+            },
+        });
+    }
+    pypi::fetch_version_info(name, version).await
 }
 
 /// Resolve `top_level` reqs to a flat list of pinned (name, version,
@@ -136,11 +194,15 @@ async fn fetch_combined_release_index(name: &str) -> Result<ReleaseIndex, Error>
 pub async fn resolve(top_level: &[Requirement]) -> Result<Vec<Resolved>, Error> {
     let cache = RefCell::new(Cache::default());
 
+    // Scan the local wheel dir once (empty when `/wheels` isn't
+    // mounted). Consulted ahead of PyPI / the particle index below.
+    let local = LocalIndex::load()?;
+
     // Pre-fetch release indices for every top-level package.
     for req in top_level {
         let name = pypi::normalize_for_url(req.name.as_ref());
         if !cache.borrow().release_indices.contains_key(&name) {
-            let idx = fetch_combined_release_index(&name).await?;
+            let idx = fetch_combined_release_index(&name, &local).await?;
             cache.borrow_mut().release_indices.insert(name, idx);
         }
     }
@@ -159,11 +221,11 @@ pub async fn resolve(top_level: &[Requirement]) -> Result<Vec<Resolved>, Error> 
             Err(pubgrub::PubGrubError::ErrorRetrievingDependencies { source, .. }) => {
                 match source {
                     ProviderError::NeedReleaseIndex(name) => {
-                        let idx = fetch_combined_release_index(&name).await?;
+                        let idx = fetch_combined_release_index(&name, &local).await?;
                         cache.borrow_mut().release_indices.insert(name, idx);
                     }
                     ProviderError::NeedVersionInfo(name, version) => {
-                        let info = pypi::fetch_version_info(&name, &version).await?;
+                        let info = fetch_version_info_combined(&name, &version, &local).await?;
                         cache
                             .borrow_mut()
                             .version_infos
@@ -175,11 +237,11 @@ pub async fn resolve(top_level: &[Requirement]) -> Result<Vec<Resolved>, Error> 
             Err(pubgrub::PubGrubError::ErrorChoosingVersion { source, .. }) => {
                 match source {
                     ProviderError::NeedReleaseIndex(name) => {
-                        let idx = fetch_combined_release_index(&name).await?;
+                        let idx = fetch_combined_release_index(&name, &local).await?;
                         cache.borrow_mut().release_indices.insert(name, idx);
                     }
                     ProviderError::NeedVersionInfo(name, version) => {
-                        let info = pypi::fetch_version_info(&name, &version).await?;
+                        let info = fetch_version_info_combined(&name, &version, &local).await?;
                         cache
                             .borrow_mut()
                             .version_infos
@@ -309,10 +371,21 @@ impl<'a> DependencyProvider for CachedProvider<'a> {
                     .collect();
                 candidates.sort_by(|a, b| b.cmp(a));
 
-                // First pass: pick any version in range that has a
-                // usable wheel — either a particle-index file
-                // (host-vouched, any tag triple) or PyPI's
-                // pure-Python (`*-none-any.whl`).
+                // First pass: prefer a version backed by a local
+                // `/wheels` file when one satisfies the range — "look
+                // in the local dir first." A lower local version wins
+                // over a higher PyPI-only one, so dropping a wheel in
+                // the dir pins it. PyPI remains the fallback below when
+                // no local version fits.
+                for v in &candidates {
+                    if range.contains(v) && pick_local_wheel(idx, v).is_some() {
+                        return Ok(Some(v.clone()));
+                    }
+                }
+
+                // Second pass: any version in range with a usable
+                // wheel — a particle-index file (host-vouched, any tag
+                // triple) or PyPI's pure-Python (`*-none-any.whl`).
                 for v in &candidates {
                     if range.contains(v) && pick_usable_wheel(idx, v).is_some() {
                         return Ok(Some(v.clone()));
@@ -477,6 +550,17 @@ fn parse_requires_dist(
 /// over PyPI's pure-Python alternative (this matters for packages
 /// that ship both, e.g., when a future particle-index version
 /// supersedes a slower pure-Python implementation).
+/// Find a local-dir wheel (`PARTICLES_PY_WHEEL_DIR`) for `version`, if
+/// the dir ships one. Used by `choose_version` to prefer locally-
+/// provided versions; `None` falls through to the network sources.
+fn pick_local_wheel(idx: &ReleaseIndex, version: &Version) -> Option<PyPiFile> {
+    let files = idx.releases.get(&version.to_string())?;
+    files
+        .iter()
+        .find(|f| f.local_path.is_some() && !f.yanked)
+        .cloned()
+}
+
 fn pick_usable_wheel(idx: &ReleaseIndex, version: &Version) -> Option<PyPiFile> {
     let key = version.to_string();
     let files = idx.releases.get(&key)?;
@@ -511,7 +595,17 @@ pub async fn fetch_all(items: &[Resolved]) -> Result<Vec<ResolvedWheel>, Error> 
     let mut out = Vec::with_capacity(items.len());
     for r in items {
         let file = &r.file;
-        let bytes = pypi::fetch_wheel_bytes(file).await?;
+        // Local-dir wheels are read off the preopened `/wheels` fs;
+        // everything else is fetched over HTTP from its URL.
+        let bytes = match &file.local_path {
+            Some(path) => std::fs::read(path).map_err(|e| {
+                Error::ResolutionError(format!(
+                    "{}@{}: reading local wheel {path}: {e}",
+                    r.name, r.version
+                ))
+            })?,
+            None => pypi::fetch_wheel_bytes(file).await?,
+        };
         let actual = sha256_hex(&bytes);
         // Particle-index entries may publish without a hash (older
         // PEP 503 indexes didn't always carry one). When we have a

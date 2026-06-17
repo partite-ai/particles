@@ -91,11 +91,10 @@ func runServeMCP(cmd *cobra.Command, target, dbPath string, includes, excludes, 
 	}
 	defer teardown()
 
-	tools, err := p.ListTools(ctx)
-	if err != nil {
-		return fmt.Errorf("list tools: %w", err)
-	}
-	tools, err = filterTools(tools, includes, excludes)
+	// Tools come from the manifest (name, description, input schema),
+	// not a live ListTools call — no round-trip into wasm to advertise
+	// what the particle exposes.
+	tools, err := filterTools(p.Manifest().ToolDefs(), includes, excludes)
 	if err != nil {
 		return err
 	}

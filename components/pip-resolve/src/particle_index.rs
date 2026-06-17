@@ -146,6 +146,7 @@ fn parse_simple_html(html: &str, base_url: &str) -> Result<Vec<PyPiFile>, Error>
             yanked: false,
             digests: PyPiDigests { sha256 },
             host_vouched: true,
+            local_path: None,
         });
     }
     Ok(out)

@@ -64,7 +64,8 @@ const PageSize = 64 * 1024
 func NewWasmConfig(opts WasmOptions) wazero.RuntimeConfig {
 	cfg := wazero.NewRuntimeConfig().
 		WithCoreFeatures(api.CoreFeaturesV2 | experimental.CoreFeaturesExtendedConst | experimental.CoreFeaturesExceptionHandling).
-		WithCloseOnContextDone(opts.CloseOnContextDone)
+		WithCloseOnContextDone(opts.CloseOnContextDone).
+		WithDebugInfoEnabled(false)
 	if opts.MemoryLimitPages > 0 {
 		cfg = cfg.WithMemoryLimitPages(opts.MemoryLimitPages)
 	}

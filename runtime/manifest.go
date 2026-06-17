@@ -288,6 +288,24 @@ type ManifestTool struct {
 	InputSchema json.RawMessage `json:"inputSchema"`
 }
 
+// ToolDefs projects the manifest's declared tools into [ToolDef]
+// values. Callers that only need the static tool metadata (name,
+// description, input schema) can use this instead of [Particle.ListTools],
+// avoiding a round-trip into wasm. Unlike ListTools, this reflects the
+// manifest as built, not the live bundle — fine for any consumer of a
+// registered particle, where the two are produced from the same build.
+func (m Manifest) ToolDefs() []ToolDef {
+	out := make([]ToolDef, len(m.Tools))
+	for i, t := range m.Tools {
+		out[i] = ToolDef{
+			Name:            t.Name,
+			Description:     t.Description,
+			InputSchemaJSON: []byte(t.InputSchema),
+		}
+	}
+	return out
+}
+
 // -----------------------------------------------------------------------------
 // Load / Parse
 // -----------------------------------------------------------------------------

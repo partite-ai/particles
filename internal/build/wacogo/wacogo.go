@@ -126,7 +126,8 @@ func NewWithOptions(ctx context.Context, opts Options) (*Components, error) {
 		// from the no-cache path.
 		cfg := wazero.NewRuntimeConfig().
 			WithCoreFeatures(api.CoreFeaturesV2 | experimental.CoreFeaturesExtendedConst | experimental.CoreFeaturesExceptionHandling).
-			WithCompilationCache(opts.CompilationCache)
+			WithCompilationCache(opts.CompilationCache).
+			WithDebugInfoEnabled(false)
 		engineOpts = append(engineOpts, wc.WithRuntimeConfig(cfg))
 	}
 	e := wc.NewEngine(ctx, engineOpts...)

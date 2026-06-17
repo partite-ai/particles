@@ -39,6 +39,13 @@ pub struct PyPiFile {
     /// is loadable; skip the pure-Python wheel filter."
     #[serde(default)]
     pub host_vouched: bool,
+    /// Set for wheels sourced from the local wheel directory
+    /// (`PARTICLES_PY_WHEEL_DIR`, preopened at `/wheels`) — the guest
+    /// filesystem path to read bytes from instead of fetching `url`
+    /// over HTTP. `None` (the serde default) for PyPI / particle-index
+    /// files, which are fetched from `url`. See local_index.rs.
+    #[serde(default)]
+    pub local_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

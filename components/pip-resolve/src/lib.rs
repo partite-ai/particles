@@ -14,6 +14,7 @@
 
 #![allow(clippy::needless_lifetimes)]
 
+mod local_index;
 mod particle_index;
 mod pypi;
 mod resolver;

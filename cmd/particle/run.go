@@ -8,7 +8,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/tetratelabs/wazero/experimental"
 
+	"github.com/partite-ai/particles/internal/memory"
 	regsqlite "github.com/partite-ai/particles/registry/sqlite"
 	"github.com/partite-ai/particles/runtime"
 )
@@ -68,6 +70,8 @@ func runRun(cmd *cobra.Command, args []string, dbPath string, mountFlags []strin
 	}
 	defer db.Close()
 
+	ctx = experimental.WithMemoryAllocator(ctx, memory.NewMemoryAllocator())
+
 	reg, err := regsqlite.New(ctx, db)
 	if err != nil {
 		return fmt.Errorf("registry: %w", err)
@@ -86,10 +90,10 @@ func runRun(cmd *cobra.Command, args []string, dbPath string, mountFlags []strin
 	}
 	defer teardown()
 
-	tools, err := p.ListTools(ctx)
-	if err != nil {
-		return fmt.Errorf("list tools: %w", err)
-	}
+	// Read tools from the manifest rather than calling ListTools: the
+	// manifest already carries every tool's name, description, and input
+	// schema, so listing them needs no round-trip into wasm.
+	tools := p.Manifest().ToolDefs()
 
 	// `particle run yaml-tools` (no tool) or `particle run yaml-tools --help`
 	// → list tools. We treat a leading "-" in rest[0] as "no tool"

@@ -48,7 +48,7 @@ import duckdb
 from particle import credentials
 from particle.manifest import (
     Particle, Tool, Http, Filesystem, Mount,
-    Credential, ApiKey, ApiKeyLocation,
+    Credential, ApiKey, ApiKeyLocation, TempMount
 )
 
 SEARCH_API = "https://api.github.com/search/repositories"
@@ -107,6 +107,9 @@ def _discover(args):
 
     conn = duckdb.connect()
     _create_github_secret(conn)
+    conn.execute("SET force_download = true;")
+    conn.execute("SET temp_directory = '/tmp/duckdb_swap';")
+    conn.execute("SET memory_limit = '100MB';")
 
     # Phase 1 — one request just to learn the match count, so we know how
     # many pages to ask for. total_count is repeated on every page.
@@ -229,6 +232,13 @@ particle = Particle(
                 access="readwrite",
                 required=True,
             ),
+        },
+        temp={
+            "duckdb": TempMount(
+                description="DuckDB's scratch space for sorting and joins that exceed memory; cleared on exit.",
+                path="/tmp/duckdb_swap",
+                max_size="100MB",
+            )
         },
     ),
 

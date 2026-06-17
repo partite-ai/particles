@@ -1,7 +1,11 @@
 package wacogo_test
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -160,6 +164,131 @@ func TestPipResolve_Live_PubgrubBacktrack(t *testing.T) {
 			t.Errorf("expected %q exactly once, got %d (wheels: %v)",
 				want, count[want], sortedNames(res.Wheels))
 		}
+	}
+}
+
+// PARTICLES_PY_WHEEL_DIR with a package PyPI has never heard of: the
+// resolver must find it in the local dir, read its deps from the
+// wheel's own METADATA, and return the local bytes. This is the
+// headline of the feature — private/local-only wheels resolve without
+// being published anywhere. (Still gated under -short: the resolver
+// makes a tolerated PyPI lookup for the name, which 404s, before
+// falling back to local.)
+func TestPipResolve_LocalWheelDir_LocalOnlyPackage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipped under -short (resolver makes a live PyPI lookup before local fallback)")
+	}
+
+	dir := t.TempDir()
+	marker := []byte("PARTICLE-LOCAL-WHEEL-MARKER")
+	// A name nothing on PyPI uses; dist part is underscore-escaped per
+	// PEP 427, normalizing back to the hyphenated requirement name.
+	writeTestWheel(t, dir, "particle_localtest_pkg-9.9.9-py3-none-any.whl",
+		"Metadata-Version: 2.1\nName: particle-localtest-pkg\nVersion: 9.9.9\n", marker)
+	t.Setenv("PARTICLES_PY_WHEEL_DIR", dir)
+
+	ctx := context.Background()
+	c, err := wacogo.New(ctx)
+	if err != nil {
+		t.Fatalf("wacogo.New: %v", err)
+	}
+	defer c.Close(ctx)
+
+	res, err := c.PipResolveAndFetch(ctx, []string{"particle-localtest-pkg"}, "3.12")
+	if err != nil {
+		t.Fatalf("PipResolveAndFetch: %v\nstderr: %s", err, stderr(res))
+	}
+	if len(res.Wheels) != 1 {
+		t.Fatalf("got %d wheels, want 1 (no deps): %v", len(res.Wheels), sortedNames(res.Wheels))
+	}
+	w := res.Wheels[0]
+	if w.Name != "particle-localtest-pkg" {
+		t.Errorf("name = %q, want particle-localtest-pkg", w.Name)
+	}
+	if w.Version != "9.9.9" {
+		t.Errorf("version = %q, want 9.9.9", w.Version)
+	}
+	if !bytes.Contains(w.WheelBytes, marker) {
+		t.Errorf("wheel bytes don't contain the local marker — served the wrong wheel")
+	}
+	if !strings.HasPrefix(w.Sha256, "sha256:") {
+		t.Errorf("sha256 = %q, want sha256:... prefix (computed over local bytes)", w.Sha256)
+	}
+}
+
+// A local wheel must win over PyPI even when PyPI ships a newer
+// version: dropping idna 2.0 into the dir and requiring an unconstrained
+// `idna` must resolve to the local 2.0 (not PyPI's latest), and the
+// returned bytes must be ours, not PyPI's real idna 2.0.
+func TestPipResolve_LocalWheelDir_PreferredOverPyPI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipped under -short (live PyPI access for idna's release index)")
+	}
+
+	dir := t.TempDir()
+	marker := []byte("PARTICLE-LOCAL-IDNA-MARKER")
+	writeTestWheel(t, dir, "idna-2.0-py3-none-any.whl",
+		"Metadata-Version: 2.1\nName: idna\nVersion: 2.0\n", marker)
+	t.Setenv("PARTICLES_PY_WHEEL_DIR", dir)
+
+	ctx := context.Background()
+	c, err := wacogo.New(ctx)
+	if err != nil {
+		t.Fatalf("wacogo.New: %v", err)
+	}
+	defer c.Close(ctx)
+
+	res, err := c.PipResolveAndFetch(ctx, []string{"idna"}, "3.12")
+	if err != nil {
+		t.Fatalf("PipResolveAndFetch: %v\nstderr: %s", err, stderr(res))
+	}
+	if len(res.Wheels) != 1 {
+		t.Fatalf("got %d wheels, want 1: %v", len(res.Wheels), sortedNames(res.Wheels))
+	}
+	w := res.Wheels[0]
+	if w.Version != "2.0" {
+		t.Errorf("version = %q, want 2.0 (local should win over PyPI's newer)", w.Version)
+	}
+	if !bytes.Contains(w.WheelBytes, marker) {
+		t.Errorf("served PyPI's idna 2.0, not the local wheel (marker missing)")
+	}
+}
+
+// writeTestWheel writes a minimal valid wheel (a zip carrying a
+// dist-info/METADATA plus a marker file so the bytes are identifiable)
+// into dir. distInfo is derived from the filename's name-version stem.
+func writeTestWheel(t *testing.T, dir, filename, metadata string, marker []byte) {
+	t.Helper()
+	stem := strings.TrimSuffix(filename, ".whl")
+	parts := strings.Split(stem, "-")
+	if len(parts) < 2 {
+		t.Fatalf("bad test wheel filename %q", filename)
+	}
+	distInfo := parts[0] + "-" + parts[1] + ".dist-info"
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range map[string][]byte{
+		distInfo + "/METADATA": []byte(metadata),
+		distInfo + "/RECORD":   {}, // present-but-empty is fine for our reader
+		"_marker":              marker,
+	} {
+		// Store (uncompressed) so the marker bytes appear verbatim in
+		// the raw .whl — lets the test confirm the returned bytes are
+		// this local wheel, not a same-name/version one from PyPI.
+		f, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
+		if err != nil {
+			t.Fatalf("zip create %s: %v", name, err)
+		}
+		if _, err := f.Write(content); err != nil {
+			t.Fatalf("zip write %s: %v", name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filename), buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("write wheel: %v", err)
 	}
 }
 

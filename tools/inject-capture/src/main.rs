@@ -126,14 +126,17 @@ struct Analysis {
     /// order; first-occurrence-wins on duplicate symbol names.
     libraries: Vec<Library>,
     /// Component INSTANCE index (separate space from core instance) of
-    /// each wasi:* instance import in the pre-component. Keyed on
-    /// the entry's `component_import_name` in [`WASI_LOWERED_METHODS`].
-    /// Entries the rewrite step needs come from here.
-    wasi_instance_indices: HashMap<&'static str, u32>,
-    /// Lowered core wasm signature for each entry in [`WASI_LOWERED_METHODS`],
+    /// each `wasi:*` instance import in the pre-component, keyed on the
+    /// versioned import name (e.g. "wasi:io/streams@0.2.4").
+    wasi_instance_indices: HashMap<String, u32>,
+    /// The wasi methods to pre-lower, enumerated from the pre-component's
+    /// WIT by [`enumerate_wasi_lowerings`] (every function + resource-drop
+    /// of every `wasi:*` interface the host exposes). `wasi_signatures`
+    /// is aligned 1:1 with this.
+    lowered: Vec<WasiLowering>,
+    /// Lowered core wasm signature for each entry in [`Analysis::lowered`],
     /// aligned 1:1 by index. Computed from the pre-component's embedded WIT
-    /// via [`compute_wasi_signatures`]. `None` for entries whose interface
-    /// or method isn't present in the pre-component (caller skips them).
+    /// via [`compute_wasi_signatures`].
     wasi_signatures: Vec<Option<WasiSig>>,
 }
 
@@ -244,14 +247,19 @@ const SKIPPED_LIBRARY_EXPORTS: &[&str] = &["__wasm_apply_data_relocs", "_initial
 /// `wit_parser::Resolve::wasm_signature` against the wit types the
 /// pre-component carries in its custom sections. For ResourceDrop
 /// entries the signature is always `(i32) → ()`.
+///
+/// Entries are enumerated from the pre-component's WIT by
+/// [`enumerate_wasi_lowerings`], not hand-listed — hence owned
+/// `String`s rather than `&'static str`.
+#[derive(Debug)]
 struct WasiLowering {
-    component_import_name: &'static str,
-    module_short_name: &'static str,
-    method: &'static str,
+    component_import_name: String,
+    module_short_name: String,
+    method: String,
     kind: WasiLoweringKind,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum WasiLoweringKind {
     /// canon.lower against an aliased instance-method func. Sig
     /// computed via `Resolve::wasm_signature(GuestImport, func)`.
@@ -261,69 +269,84 @@ enum WasiLoweringKind {
     ResourceDrop,
 }
 
-/// Methods to pre-lower. Subset covering Rust libstd's wasi-pal surface
-/// that cryptography_rust.so (and other PyO3 .so's built by maturin) hit
-/// when loaded via the dyld adapter.
-///
-/// Sockets are intentionally absent: particle-runtime forbids socket
-/// access from inside particles via host policy, and a missing import
-/// surfaces that clearly at .so instantiate time rather than via a
-/// surprise stub-trap at the first send().
-///
-/// All resource-drop methods share the same signature `(func (param i32))`
-/// — the i32 is the handle to drop. Filesystem methods that read/write
-/// memory use additional retptr params. Cross-reference cryptography.so's
-/// imports if expanding this table; the .so's type section after wasm-ld
-/// is the authoritative shape.
 // Shorthand for clarity.
 use WasiLoweringKind::{Method, ResourceDrop};
 
-const WASI_LOWERED_METHODS: &[WasiLowering] = &[
-    // wasi:io/poll
-    WasiLowering { component_import_name: "wasi:io/poll@0.2.4", module_short_name: "wasi:io/poll", method: "[resource-drop]pollable", kind: ResourceDrop },
-    WasiLowering { component_import_name: "wasi:io/poll@0.2.4", module_short_name: "wasi:io/poll", method: "[method]pollable.block", kind: Method },
-    WasiLowering { component_import_name: "wasi:io/poll@0.2.4", module_short_name: "wasi:io/poll", method: "[method]pollable.ready", kind: Method },
-    WasiLowering { component_import_name: "wasi:io/poll@0.2.4", module_short_name: "wasi:io/poll", method: "poll", kind: Method },
-    // wasi:io/error
-    WasiLowering { component_import_name: "wasi:io/error@0.2.4", module_short_name: "wasi:io/error", method: "[resource-drop]error", kind: ResourceDrop },
-    // wasi:io/streams
-    WasiLowering { component_import_name: "wasi:io/streams@0.2.4", module_short_name: "wasi:io/streams", method: "[resource-drop]input-stream", kind: ResourceDrop },
-    WasiLowering { component_import_name: "wasi:io/streams@0.2.4", module_short_name: "wasi:io/streams", method: "[resource-drop]output-stream", kind: ResourceDrop },
-    WasiLowering { component_import_name: "wasi:io/streams@0.2.4", module_short_name: "wasi:io/streams", method: "[method]input-stream.blocking-read", kind: Method },
-    WasiLowering { component_import_name: "wasi:io/streams@0.2.4", module_short_name: "wasi:io/streams", method: "[method]input-stream.subscribe", kind: Method },
-    WasiLowering { component_import_name: "wasi:io/streams@0.2.4", module_short_name: "wasi:io/streams", method: "[method]output-stream.check-write", kind: Method },
-    WasiLowering { component_import_name: "wasi:io/streams@0.2.4", module_short_name: "wasi:io/streams", method: "[method]output-stream.write", kind: Method },
-    WasiLowering { component_import_name: "wasi:io/streams@0.2.4", module_short_name: "wasi:io/streams", method: "[method]output-stream.blocking-flush", kind: Method },
-    WasiLowering { component_import_name: "wasi:io/streams@0.2.4", module_short_name: "wasi:io/streams", method: "[method]output-stream.subscribe", kind: Method },
-    // wasi:cli
-    WasiLowering { component_import_name: "wasi:cli/terminal-input@0.2.4", module_short_name: "wasi:cli/terminal-input", method: "[resource-drop]terminal-input", kind: ResourceDrop },
-    WasiLowering { component_import_name: "wasi:cli/terminal-output@0.2.4", module_short_name: "wasi:cli/terminal-output", method: "[resource-drop]terminal-output", kind: ResourceDrop },
-    WasiLowering { component_import_name: "wasi:cli/terminal-stdin@0.2.4", module_short_name: "wasi:cli/terminal-stdin", method: "get-terminal-stdin", kind: Method },
-    WasiLowering { component_import_name: "wasi:cli/terminal-stdout@0.2.4", module_short_name: "wasi:cli/terminal-stdout", method: "get-terminal-stdout", kind: Method },
-    WasiLowering { component_import_name: "wasi:cli/terminal-stderr@0.2.4", module_short_name: "wasi:cli/terminal-stderr", method: "get-terminal-stderr", kind: Method },
-    WasiLowering { component_import_name: "wasi:cli/stdin@0.2.4", module_short_name: "wasi:cli/stdin", method: "get-stdin", kind: Method },
-    WasiLowering { component_import_name: "wasi:cli/stdout@0.2.4", module_short_name: "wasi:cli/stdout", method: "get-stdout", kind: Method },
-    WasiLowering { component_import_name: "wasi:cli/stderr@0.2.4", module_short_name: "wasi:cli/stderr", method: "get-stderr", kind: Method },
-    WasiLowering { component_import_name: "wasi:cli/environment@0.2.4", module_short_name: "wasi:cli/environment", method: "get-environment", kind: Method },
-    WasiLowering { component_import_name: "wasi:cli/exit@0.2.4", module_short_name: "wasi:cli/exit", method: "exit", kind: Method },
-    // wasi:clocks
-    WasiLowering { component_import_name: "wasi:clocks/monotonic-clock@0.2.4", module_short_name: "wasi:clocks/monotonic-clock", method: "now", kind: Method },
-    WasiLowering { component_import_name: "wasi:clocks/wall-clock@0.2.4", module_short_name: "wasi:clocks/wall-clock", method: "now", kind: Method },
-    // wasi:random
-    WasiLowering { component_import_name: "wasi:random/insecure-seed@0.2.4", module_short_name: "wasi:random/insecure-seed", method: "insecure-seed", kind: Method },
-    WasiLowering { component_import_name: "wasi:random/random@0.2.4", module_short_name: "wasi:random/random", method: "get-random-bytes", kind: Method },
-    // wasi:filesystem
-    WasiLowering { component_import_name: "wasi:filesystem/types@0.2.4", module_short_name: "wasi:filesystem/types", method: "[resource-drop]descriptor", kind: ResourceDrop },
-    WasiLowering { component_import_name: "wasi:filesystem/types@0.2.4", module_short_name: "wasi:filesystem/types", method: "[resource-drop]directory-entry-stream", kind: ResourceDrop },
-    WasiLowering { component_import_name: "wasi:filesystem/types@0.2.4", module_short_name: "wasi:filesystem/types", method: "[method]descriptor.read-via-stream", kind: Method },
-    WasiLowering { component_import_name: "wasi:filesystem/types@0.2.4", module_short_name: "wasi:filesystem/types", method: "[method]descriptor.write-via-stream", kind: Method },
-    WasiLowering { component_import_name: "wasi:filesystem/types@0.2.4", module_short_name: "wasi:filesystem/types", method: "[method]descriptor.append-via-stream", kind: Method },
-    WasiLowering { component_import_name: "wasi:filesystem/types@0.2.4", module_short_name: "wasi:filesystem/types", method: "[method]descriptor.get-flags", kind: Method },
-    WasiLowering { component_import_name: "wasi:filesystem/types@0.2.4", module_short_name: "wasi:filesystem/types", method: "[method]descriptor.stat", kind: Method },
-    WasiLowering { component_import_name: "wasi:filesystem/types@0.2.4", module_short_name: "wasi:filesystem/types", method: "[method]descriptor.metadata-hash", kind: Method },
-    WasiLowering { component_import_name: "wasi:filesystem/types@0.2.4", module_short_name: "wasi:filesystem/types", method: "[method]descriptor.open-at", kind: Method },
-    WasiLowering { component_import_name: "wasi:filesystem/preopens@0.2.4", module_short_name: "wasi:filesystem/preopens", method: "get-directories", kind: Method },
-];
+/// Build the set of wasi methods to pre-lower from the pre-component's
+/// own WIT: for every `wasi:*` instance the component imports — i.e.
+/// everything the host exposes to a dlopen'd .so, which is the wasi:cli
+/// world plus the outgoing http handler — lower every function and a
+/// resource-drop for every resource the interface owns.
+///
+/// Enumerated rather than hand-listed so the lowering set can't drift
+/// out of sync with what the host actually provides; a method the .so
+/// imports but we didn't lower used to surface as a wasi-shim
+/// instantiate failure. Sockets are included: they currently trap at
+/// first use (the intended "not supported yet" behavior) and need no
+/// change here when real socket support lands.
+///
+/// `wasi_import_names` is in component-import order (deterministic), so
+/// the returned Vec — and thus the whole rewrite — is reproducible.
+fn enumerate_wasi_lowerings(
+    resolve: &wit_parser::Resolve,
+    wasi_import_names: &[String],
+) -> Vec<WasiLowering> {
+    // Canonical interface id (e.g. "wasi:io/streams@0.2.4") → InterfaceId.
+    let mut by_id: HashMap<String, wit_parser::InterfaceId> = HashMap::new();
+    for (id, _iface) in resolve.interfaces.iter() {
+        if let Some(canonical) = resolve.id_of(id) {
+            by_id.insert(canonical, id);
+        }
+    }
+
+    let mut out = Vec::new();
+    for import_name in wasi_import_names {
+        let Some(&iface_id) = by_id.get(import_name) else {
+            // Imported wasi instance with no matching interface in the
+            // embedded WIT — nothing to enumerate. (Shouldn't happen for
+            // our composition.)
+            continue;
+        };
+        let iface = &resolve.interfaces[iface_id];
+        let module_short = import_name
+            .rsplit_once('@')
+            .map(|(base, _ver)| base)
+            .unwrap_or(import_name)
+            .to_string();
+
+        // A resource-drop for every resource this interface OWNS
+        // (defines). `use`d-in resources belong to — and are lowered
+        // under — their defining interface.
+        for (type_name, &type_id) in &iface.types {
+            let ty = &resolve.types[type_id];
+            if matches!(ty.kind, wit_parser::TypeDefKind::Resource)
+                && ty.owner == wit_parser::TypeOwner::Interface(iface_id)
+            {
+                out.push(WasiLowering {
+                    component_import_name: import_name.clone(),
+                    module_short_name: module_short.clone(),
+                    method: format!("[resource-drop]{type_name}"),
+                    kind: ResourceDrop,
+                });
+            }
+        }
+
+        // Every function: methods, constructors, statics, and
+        // freestanding interface functions all lower via canon.lower.
+        // The map key is exactly the name wasm-ld emits as the core
+        // import (`[method]x.y`, `[constructor]x`, `[static]x.y`,
+        // `get-stdin`, …).
+        for func_name in iface.functions.keys() {
+            out.push(WasiLowering {
+                component_import_name: import_name.clone(),
+                module_short_name: module_short.clone(),
+                method: func_name.clone(),
+                kind: Method,
+            });
+        }
+    }
+    out
+}
 
 /// Strips the `[resource-drop]` prefix from a method name and returns
 /// the underlying resource type name. Returns None for non-drop methods.
@@ -342,24 +365,21 @@ struct WasiSig {
     results: Vec<ValType>,
 }
 
-/// Walks the pre-component's embedded WIT custom sections, finds each
-/// wasi interface referenced by [`WASI_LOWERED_METHODS`], looks up the
-/// method's wit_parser::Function, and runs the canonical ABI lowering
-/// (`Resolve::wasm_signature(GuestImport, func)`) to get the core
-/// wasm signature canon.lower will produce.
+/// For each entry in `lowered`, runs the canonical ABI lowering
+/// (`Resolve::wasm_signature(GuestImport, func)`) to get the core wasm
+/// signature canon.lower will produce, so the inject module declares
+/// each import with the exact shape it'll get at the component layer.
 ///
 /// `[resource-drop]X` entries don't go through wit lookup — the
 /// canonical ABI fixes their signature at `(i32) → ()`.
 ///
-/// Returns a Vec aligned with `WASI_LOWERED_METHODS`. `None` for any
-/// entry whose interface or method isn't found in the resolve (caller
-/// can skip those — typically means the .so doesn't reference that
-/// method, which is OK).
-fn compute_wasi_signatures(bytes: &[u8]) -> Result<Vec<Option<WasiSig>>> {
-    let decoded = wit_parser::decoding::decode(bytes)
-        .context("decoding pre-component WIT for wasi-lowering")?;
-    let resolve = decoded.resolve();
-
+/// Returns a Vec aligned 1:1 with `lowered`. `None` only if an entry's
+/// interface/method somehow isn't in the resolve; since `lowered` is
+/// itself enumerated from this same resolve, that shouldn't happen.
+fn compute_wasi_signatures(
+    resolve: &wit_parser::Resolve,
+    lowered: &[WasiLowering],
+) -> Vec<Option<WasiSig>> {
     // Build an InterfaceId-by-canonical-id index once.
     let mut by_id: HashMap<String, wit_parser::InterfaceId> = HashMap::new();
     for (id, _iface) in resolve.interfaces.iter() {
@@ -368,8 +388,8 @@ fn compute_wasi_signatures(bytes: &[u8]) -> Result<Vec<Option<WasiSig>>> {
         }
     }
 
-    let mut out: Vec<Option<WasiSig>> = Vec::with_capacity(WASI_LOWERED_METHODS.len());
-    for m in WASI_LOWERED_METHODS {
+    let mut out: Vec<Option<WasiSig>> = Vec::with_capacity(lowered.len());
+    for m in lowered {
         match m.kind {
             WasiLoweringKind::ResourceDrop => {
                 out.push(Some(WasiSig {
@@ -378,12 +398,12 @@ fn compute_wasi_signatures(bytes: &[u8]) -> Result<Vec<Option<WasiSig>>> {
                 }));
             }
             WasiLoweringKind::Method => {
-                let Some(&iface_id) = by_id.get(m.component_import_name) else {
+                let Some(&iface_id) = by_id.get(m.component_import_name.as_str()) else {
                     out.push(None);
                     continue;
                 };
                 let iface = &resolve.interfaces[iface_id];
-                let Some(func) = iface.functions.get(m.method) else {
+                let Some(func) = iface.functions.get(&m.method) else {
                     out.push(None);
                     continue;
                 };
@@ -396,7 +416,7 @@ fn compute_wasi_signatures(bytes: &[u8]) -> Result<Vec<Option<WasiSig>>> {
             }
         }
     }
-    Ok(out)
+    out
 }
 
 fn wasm_type_to_val_type(t: &wit_parser::abi::WasmType) -> ValType {
@@ -441,7 +461,10 @@ fn analyze(bytes: &[u8]) -> Result<Analysis> {
     // assigned to the wasi:* instance imports to alias methods out of
     // them in the rewrite step.
     let mut next_component_instance_idx: u32 = 0;
-    let mut wasi_instance_indices: HashMap<&'static str, u32> = HashMap::new();
+    let mut wasi_instance_indices: HashMap<String, u32> = HashMap::new();
+    // `wasi:*` instance import names in component-import order — drives
+    // deterministic enumeration of the lowering set below.
+    let mut wasi_import_names: Vec<String> = Vec::new();
 
 
     for payload in Parser::new(0).parse_all(bytes) {
@@ -505,14 +528,15 @@ fn analyze(bytes: &[u8]) -> Result<Analysis> {
                     if let ComponentTypeRef::Instance(_) = imp.ty {
                         let idx = next_component_instance_idx;
                         next_component_instance_idx += 1;
-                        if let Some(name_match) = WASI_LOWERED_METHODS
-                            .iter()
-                            .find(|m| m.component_import_name == imp.name.name)
-                            .map(|m| m.component_import_name)
-                        {
-                            wasi_instance_indices
-                                .entry(name_match)
-                                .or_insert(idx);
+                        // Record every `wasi:*` instance import: these are
+                        // exactly the interfaces the host exposes to a
+                        // dlopen'd .so, and the full set we lower.
+                        if imp.name.name.starts_with("wasi:") {
+                            let name = imp.name.name.to_string();
+                            if !wasi_instance_indices.contains_key(&name) {
+                                wasi_instance_indices.insert(name.clone(), idx);
+                                wasi_import_names.push(name);
+                            }
                         }
                     }
                 }
@@ -602,7 +626,15 @@ fn analyze(bytes: &[u8]) -> Result<Analysis> {
             )
         })?;
 
-    let wasi_signatures = compute_wasi_signatures(bytes)?;
+    // Decode the embedded WIT once: enumerate the lowering set (every
+    // function + resource-drop of every wasi interface the host exposes)
+    // and compute each entry's lowered core signature from the same
+    // resolve.
+    let decoded = wit_parser::decoding::decode(bytes)
+        .context("decoding pre-component WIT for wasi-lowering")?;
+    let resolve = decoded.resolve();
+    let lowered = enumerate_wasi_lowerings(resolve, &wasi_import_names);
+    let wasi_signatures = compute_wasi_signatures(resolve, &lowered);
 
     Ok(Analysis {
         main_core_instance_idx,
@@ -610,6 +642,7 @@ fn analyze(bytes: &[u8]) -> Result<Analysis> {
         init_dyld_core_instance_idx,
         libraries,
         wasi_instance_indices,
+        lowered,
         wasi_signatures,
     })
 }
@@ -1062,19 +1095,22 @@ fn rewrite(bytes: &[u8], analysis: &Analysis) -> Result<Vec<u8>> {
     //   * `wasi_drop_comp_type_idx[i]` — for entries with kind ResourceDrop,
     //     the component type index produced by Alias::InstanceExport.
     //
-    // Indices into WASI_LOWERED_METHODS for which the table's
-    // component_import_name didn't match any pre-component import are
-    // recorded so the canon-section pass can skip them. (Should not
-    // happen for our composition today, but defensive.)
+    // Indices into `analysis.lowered` whose interface didn't match a
+    // pre-component import (or whose signature lookup failed) are left
+    // None so the canon-section pass skips them. Both are defensive —
+    // the lowering set is enumerated from the same imports/WIT, so every
+    // entry should resolve.
     let mut next_comp_func_idx = count_pre_existing_component_funcs(bytes)?;
     let mut next_comp_type_idx = count_pre_existing_component_types(bytes)?;
     let mut wasi_method_comp_func_idx: Vec<Option<u32>> =
-        vec![None; WASI_LOWERED_METHODS.len()];
+        vec![None; analysis.lowered.len()];
     let mut wasi_drop_comp_type_idx: Vec<Option<u32>> =
-        vec![None; WASI_LOWERED_METHODS.len()];
+        vec![None; analysis.lowered.len()];
 
-    for (i, m) in WASI_LOWERED_METHODS.iter().enumerate() {
-        let Some(&inst_idx) = analysis.wasi_instance_indices.get(m.component_import_name)
+    for (i, m) in analysis.lowered.iter().enumerate() {
+        let Some(&inst_idx) = analysis
+            .wasi_instance_indices
+            .get(m.component_import_name.as_str())
         else {
             eprintln!(
                 "inject-capture: wasi-lowering: import {:?} not present in component, skipping {}",
@@ -1097,13 +1133,13 @@ fn rewrite(bytes: &[u8], analysis: &Analysis) -> Result<Vec<u8>> {
                 wiring_aliases.alias(Alias::InstanceExport {
                     instance: inst_idx,
                     kind: wasm_encoder::ComponentExportKind::Func,
-                    name: m.method,
+                    name: &m.method,
                 });
                 wasi_method_comp_func_idx[i] = Some(next_comp_func_idx);
                 next_comp_func_idx += 1;
             }
             WasiLoweringKind::ResourceDrop => {
-                let ty_name = resource_drop_type_name(m.method).unwrap_or(m.method);
+                let ty_name = resource_drop_type_name(&m.method).unwrap_or(&m.method);
                 wiring_aliases.alias(Alias::InstanceExport {
                     instance: inst_idx,
                     kind: wasm_encoder::ComponentExportKind::Type,
@@ -1139,8 +1175,8 @@ fn rewrite(bytes: &[u8], analysis: &Analysis) -> Result<Vec<u8>> {
     // consume core function index slots starting at next_core_func.
     let mut canon = wasm_encoder::CanonicalFunctionSection::new();
     let mut wasi_lowered_core_func_idx: Vec<Option<u32>> =
-        vec![None; WASI_LOWERED_METHODS.len()];
-    for (i, m) in WASI_LOWERED_METHODS.iter().enumerate() {
+        vec![None; analysis.lowered.len()];
+    for (i, m) in analysis.lowered.iter().enumerate() {
         match m.kind {
             WasiLoweringKind::Method => {
                 let Some(comp_idx) = wasi_method_comp_func_idx[i] else {
@@ -1225,10 +1261,10 @@ fn rewrite(bytes: &[u8], analysis: &Analysis) -> Result<Vec<u8>> {
     )]);
 
     // "wasi-lowered" — exposes each canon-lowered core func under
-    // wasi-lowered:<module>#<method>. The names are stable strings owned
-    // by the WASI_LOWERED_METHODS table; allocate them here for
-    // export_items, which borrows the string slice.
-    let wasi_lowered_names: Vec<String> = WASI_LOWERED_METHODS
+    // wasi-lowered:<module>#<method>. Build the names here (owned) so
+    // export_items can borrow the string slices.
+    let wasi_lowered_names: Vec<String> = analysis
+        .lowered
         .iter()
         .enumerate()
         .filter_map(|(i, m)| wasi_lowered_core_func_idx[i].map(|idx| (i, m, idx)))
@@ -1237,7 +1273,7 @@ fn rewrite(bytes: &[u8], analysis: &Analysis) -> Result<Vec<u8>> {
     if wasi_lowered_instance_idx.is_some() {
         let mut wasi_lowered_items: Vec<(&str, ExportKind, u32)> = Vec::new();
         let mut name_cursor = 0usize;
-        for (i, _m) in WASI_LOWERED_METHODS.iter().enumerate() {
+        for (i, _m) in analysis.lowered.iter().enumerate() {
             if let Some(idx) = wasi_lowered_core_func_idx[i] {
                 wasi_lowered_items.push((
                     wasi_lowered_names[name_cursor].as_str(),
@@ -1434,9 +1470,9 @@ fn build_inject_module(analysis: &Analysis) -> Result<(Vec<u8>, Wiring)> {
     // embedded WIT (canonical-ABI-lowered via wit_parser); entries whose
     // interface/method isn't present in the pre-component get `None` and
     // are skipped here AND by the matching loops below + rewrite()'s
-    // canon section. Aligned 1:1 with WASI_LOWERED_METHODS.
+    // canon section. Aligned 1:1 with `analysis.lowered`.
     let mut wasi_type_indices: Vec<Option<u32>> =
-        Vec::with_capacity(WASI_LOWERED_METHODS.len());
+        Vec::with_capacity(analysis.lowered.len());
     for sig in &analysis.wasi_signatures {
         match sig {
             Some(s) => {
@@ -1519,19 +1555,20 @@ fn build_inject_module(analysis: &Analysis) -> Result<(Vec<u8>, Wiring)> {
     new_func_idx += 1;
     // Don't re-export host.initialize.
 
-    // wasi-lowering imports: one entry per WASI_LOWERED_METHODS row
-    // whose signature was resolvable from the pre-component's embedded
-    // WIT, imported under module `wasi-lowered` with the canon.lower'd
-    // core signature. dyld looks the export up under the same
+    // wasi-lowering imports: one entry per `analysis.lowered` row whose
+    // signature was resolvable from the pre-component's embedded WIT,
+    // imported under module `wasi-lowered` with the canon.lower'd core
+    // signature. dyld looks the export up under the same
     // `wasi-lowered:<module>#<method>` name on the captured module at
     // .so-load time. The actual lowered core funcs are supplied by
     // rewrite()'s wasi-lowered synth instance via this module's
     // instantiation `with` args.
-    let wasi_export_names: Vec<String> = WASI_LOWERED_METHODS
+    let wasi_export_names: Vec<String> = analysis
+        .lowered
         .iter()
         .map(|m| format!("wasi-lowered:{}#{}", m.module_short_name, m.method))
         .collect();
-    for (i, _m) in WASI_LOWERED_METHODS.iter().enumerate() {
+    for (i, _m) in analysis.lowered.iter().enumerate() {
         let Some(ty_idx) = wasi_type_indices[i] else {
             continue;
         };

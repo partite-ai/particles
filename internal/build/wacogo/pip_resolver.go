@@ -5,16 +5,30 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	wc "github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/wasi"
+	"github.com/partite-ai/wacogo/wasi/filesystem/preopens"
 )
 
 // pipInstallerInterface is the canonical id of the exported instance
 // the pip-resolve component publishes — see
 // components/pip-resolve/wit/world.wit.
 const pipInstallerInterface = "particle:build/pip-installer@0.1.0"
+
+const (
+	// localWheelDirEnv names a host directory of local .whl files. When
+	// set, the resolver looks there first — ahead of PyPI and the
+	// particle wheels index — which is useful for private/locally-built
+	// wheels and offline builds.
+	localWheelDirEnv = "PARTICLES_PY_WHEEL_DIR"
+	// localWheelGuestDir is where that directory is preopened (read-only)
+	// inside the pip-resolve component. The component probes this exact
+	// path; mirrored in components/pip-resolve/src/local_index.rs.
+	localWheelGuestDir = "/wheels"
+)
 
 // PipResolvedWheel is one entry in a PipResolveResult.
 type PipResolvedWheel struct {
@@ -75,14 +89,40 @@ func (c *Components) PipResolveAndFetch(ctx context.Context, reqs []string, pyth
 	}
 
 	stderrBuf := &bytes.Buffer{}
-	w, err := wasi.NewWorld(ctx, c.engine, &wasi.Config{
+	cfg := &wasi.Config{
 		Args: []string{"pip-resolve"},
-		// No Preopens: the component reads no host filesystem; it
-		// talks to PyPI over wasi:http (just like deno-npm).
+		// Preopens defaults empty: the component talks to PyPI over
+		// wasi:http (like deno-npm) and reads no host filesystem —
+		// unless PARTICLES_PY_WHEEL_DIR is set below.
 		Stdin:  strings.NewReader(""),
 		Stdout: io.Discard,
 		Stderr: stderrBuf,
-	})
+	}
+	// When PARTICLES_PY_WHEEL_DIR is set, preopen it read-only at
+	// /wheels. Its presence is the whole signal: the component probes
+	// /wheels and, when mounted, resolves from those wheels first. Unset
+	// → no preopen, and the component behaves exactly as before.
+	if dir := os.Getenv(localWheelDirEnv); dir != "" {
+		// os.OpenRoot (not os.DirFS): resolution is openat-rooted at the
+		// dir's fd, so a symlink inside the dir can't escape it — the
+		// right confinement when handing a host dir to the sandboxed
+		// component. Kept open for the duration of the resolve.
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			return nil, fmt.Errorf("open %s=%q: %w", localWheelDirEnv, dir, err)
+		}
+		defer root.Close()
+		// ImmutableFS adapts the fs.FS into the read-only
+		// OpenAt/ReadDir/Stat capabilities the component needs to
+		// enumerate the dir; a bare *os.File doesn't implement them, so
+		// the guest's read_dir would get ErrorCodeUnsupported. The dir
+		// is read once per resolve, so the snapshot's TOCTOU caveat
+		// doesn't apply.
+		cfg.Preopens = preopens.NewMultiFSPreopens([]*preopens.PreopenEntry{
+			{Path: localWheelGuestDir, Root: ".", FS: preopens.ImmutableFS{FS: root.FS()}},
+		})
+	}
+	w, err := wasi.NewWorld(ctx, c.engine, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("build wasi world: %w", err)
 	}

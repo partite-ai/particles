@@ -171,10 +171,10 @@ type Particle struct {
 	// hides the actual diagnostic. Reset by readStderr.
 	stderr *bytes.Buffer
 
-	// schemas holds one compiled validator per tool, populated
-	// lazily on first CallTool / first ListTools cache. Per
-	// design doc §6, all input validation runs in Go before
-	// entering wasm; this map is what enforces it.
+	// schemas holds one compiled validator per tool, compiled
+	// lazily from the manifest on first CallTool. Per design
+	// doc §6, all input validation runs in Go before entering
+	// wasm; this map is what enforces it.
 	schemasOnce sync.Once
 	schemas     map[string]*jsonschema.Resolved
 	schemasErr  error
@@ -579,20 +579,16 @@ func (p *Particle) Close(ctx context.Context) error {
 // -----------------------------------------------------------------------------
 
 // ensureSchemas lazily compiles each tool's input schema on first
-// CallTool. Compilation runs through ListTools, so it pays the
-// cost of one round-trip into wasm — but only once per Particle.
-// Subsequent calls reuse the cached map.
+// CallTool from the manifest — no round-trip into wasm, since the
+// manifest already carries every tool's input schema. Compiled once
+// per Particle; subsequent calls reuse the cached map.
 //
-// A failure here is sticky (cached in schemasErr) — if the wasm
-// can't even produce the tool list, every CallTool will surface
-// the same error rather than retrying.
-func (p *Particle) ensureSchemas(ctx context.Context) (map[string]*jsonschema.Resolved, error) {
+// A failure here is sticky (cached in schemasErr) — if a manifest
+// schema can't be compiled, every CallTool will surface the same
+// error rather than retrying.
+func (p *Particle) ensureSchemas() (map[string]*jsonschema.Resolved, error) {
 	p.schemasOnce.Do(func() {
-		tools, err := p.ListTools(ctx)
-		if err != nil {
-			p.schemasErr = fmt.Errorf("list tools: %w", err)
-			return
-		}
+		tools := p.manifest.ToolDefs()
 		m := make(map[string]*jsonschema.Resolved, len(tools))
 		for _, td := range tools {
 			s, err := compileToolSchema(td.InputSchemaJSON)
@@ -611,9 +607,10 @@ func (p *Particle) ensureSchemas(ctx context.Context) (map[string]*jsonschema.Re
 
 // ListTools returns the metadata for every tool the particle's
 // default export declares. Enters wasm to call the runtime's
-// list-tools export — the live JS is the source of truth for
-// the schema, so a stale manifest.json never silently overrides
-// what the bundle actually exposes.
+// list-tools export — the live bundle is the source of truth.
+// This feeds manifest generation at build time; at run time,
+// callers (CallTool, `particle run`, MCP serving) read the
+// declared tools from the manifest instead — see [Manifest.ToolDefs].
 func (p *Particle) ListTools(ctx context.Context, opts ...CallOption) ([]ToolDef, error) {
 	iface := p.inst.ExportedInstance(toolsInterface)
 	if iface == nil {
@@ -667,7 +664,7 @@ func (p *Particle) ListTools(ctx context.Context, opts ...CallOption) ([]ToolDef
 // error is *ToolError with Kind == ToolErrorKindInvalidArguments.
 // Returns the tool's JSON-encoded result on success.
 func (p *Particle) CallTool(ctx context.Context, name string, argumentsJSON []byte, opts ...CallOption) ([]byte, error) {
-	schemas, err := p.ensureSchemas(ctx)
+	schemas, err := p.ensureSchemas()
 	if err != nil {
 		return nil, fmt.Errorf("runtime: prepare tool schemas: %w", err)
 	}
