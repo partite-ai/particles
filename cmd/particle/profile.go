@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/pprof"
+	"runtime/trace"
 )
 
 // startProfile begins a CPU profile written to <prefix>.cpu and
@@ -32,7 +33,26 @@ func startProfile(prefix string, log io.Writer) (stop func(), err error) {
 		return nil, fmt.Errorf("start CPU profile: %w", err)
 	}
 
+	// Create the output file for trace data
+	tracePath := prefix + ".trace"
+	traceFile, err := os.Create(tracePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create trace file: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Start tracing - all runtime events will be recorded from this point
+	if err := trace.Start(traceFile); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to start trace: %v\n", err)
+		os.Exit(1)
+	}
+
 	return func() {
+		trace.Stop()
+		if err := traceFile.Close(); err != nil && log != nil {
+			fmt.Fprintf(log, "profile: close trace: %v\n", err)
+		}
+
 		pprof.StopCPUProfile()
 		if err := cpuFile.Close(); err != nil && log != nil {
 			fmt.Fprintf(log, "profile: close cpu: %v\n", err)
@@ -56,8 +76,9 @@ func startProfile(prefix string, log io.Writer) (stop func(), err error) {
 		if err := heapFile.Close(); err != nil && log != nil {
 			fmt.Fprintf(log, "profile: close heap: %v\n", err)
 		}
+
 		if log != nil {
-			fmt.Fprintf(log, "profile: wrote %s and %s\n", cpuPath, heapPath)
+			fmt.Fprintf(log, "profile: wrote %s, %s and %s\n", cpuPath, heapPath, tracePath)
 		}
 	}, nil
 }

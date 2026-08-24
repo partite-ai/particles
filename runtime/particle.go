@@ -22,6 +22,7 @@ import (
 	"github.com/partite-ai/particles/internal/hostmeter"
 	"github.com/partite-ai/particles/internal/runtime/dyld"
 	"github.com/partite-ai/particles/internal/runtime/libffi"
+	"github.com/partite-ai/particles/internal/trace"
 	"github.com/partite-ai/particles/kv"
 )
 
@@ -493,7 +494,7 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 			closeAll()
 			return nil, fmt.Errorf("runtime: init dyld factory: %w", err)
 		}
-		dyldInst, err := dyldFac.NewInstance(ctx, dyldAdapter, nil)
+		dyldInst, err := dyldFac.NewInstance(ctx, dyldAdapter, nil, host.WithCallListener(listener))
 		if err != nil {
 			closeAll()
 			return nil, fmt.Errorf("runtime: build dyld host instance: %w", err)
@@ -511,7 +512,7 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 			closeAll()
 			return nil, fmt.Errorf("runtime: init libffi factory: %w", err)
 		}
-		libffiInst, err := libffiFac.NewInstance(ctx, libffiAdapter, nil)
+		libffiInst, err := libffiFac.NewInstance(ctx, libffiAdapter, nil, host.WithCallListener(listener))
 		if err != nil {
 			closeAll()
 			return nil, fmt.Errorf("runtime: build libffi host instance: %w", err)
@@ -622,7 +623,7 @@ func (p *Particle) ListTools(ctx context.Context, opts ...CallOption) ([]ToolDef
 	}
 	ctx, lim, stop := armLimit(ctx, opts)
 	defer stop()
-	results, err := fn.Call(ctx)
+	results, err := trace.TracedCall(ctx, "list-tools", fn)
 	if lim != nil && lim.Tripped() {
 		return nil, &BudgetExceededError{Op: "list-tools", Budget: lim.budget, Used: lim.Used()}
 	}
@@ -690,7 +691,7 @@ func (p *Particle) CallTool(ctx context.Context, name string, argumentsJSON []by
 	}
 	ctx, lim, stop := armLimit(ctx, opts)
 	defer stop()
-	results, err := fn.Call(ctx, wc.ValString(name), wc.ValString(string(argumentsJSON)))
+	results, err := trace.TracedCall(ctx, "call-tool-"+name, fn, wc.ValString(name), wc.ValString(string(argumentsJSON)))
 	if lim != nil && lim.Tripped() {
 		return nil, &BudgetExceededError{Op: "call-tool", Budget: lim.budget, Used: lim.Used()}
 	}
@@ -794,7 +795,7 @@ func (p *Particle) GetManifest(ctx context.Context, opts ...CallOption) (*Manife
 	}
 	ctx, lim, stop := armLimit(ctx, opts)
 	defer stop()
-	results, err := fn.Call(ctx)
+	results, err := trace.TracedCall(ctx, "get-manifest", fn)
 	if lim != nil && lim.Tripped() {
 		return nil, &BudgetExceededError{Op: "get-manifest", Budget: lim.budget, Used: lim.Used()}
 	}
@@ -876,7 +877,7 @@ func (p *Particle) Ping(ctx context.Context, opts ...CallOption) (*PingResult, e
 	}
 	ctx, lim, stop := armLimit(ctx, opts)
 	defer stop()
-	results, err := fn.Call(ctx)
+	results, err := trace.TracedCall(ctx, "ping", fn)
 	if lim != nil && lim.Tripped() {
 		return nil, &BudgetExceededError{Op: "ping", Budget: lim.budget, Used: lim.Used()}
 	}

@@ -21,6 +21,7 @@ package hostmeter
 import (
 	"context"
 
+	"github.com/partite-ai/particles/internal/trace"
 	"github.com/partite-ai/wacogo/host"
 )
 
@@ -70,16 +71,18 @@ var _ host.CallListener = Listener{}
 
 // BeforeCall pauses the per-call meter (if any) as control
 // crosses from wasm into a host function or resource destructor.
-func (Listener) BeforeCall(ctx context.Context, _ *host.ComponentInstance, _ host.CallKind, _ string, _ []uint64) {
+func (Listener) BeforeCall(ctx context.Context, _ *host.ComponentInstance, _ host.CallKind, name string, _ []uint64) {
 	if m := MeterFromContext(ctx); m != nil {
 		m.Pause()
 	}
+	trace.StartHostCall(ctx, name)
 }
 
 // AfterCall resumes the per-call meter (if any) as control
 // returns to wasm. wacogo guarantees AfterCall fires for every
 // BeforeCall, including on panic — so Pause/Resume always pair up.
 func (Listener) AfterCall(ctx context.Context, _ *host.ComponentInstance, _ host.CallKind, _ string, _ []uint64, _ error) {
+	trace.EndHostCall(ctx)
 	if m := MeterFromContext(ctx); m != nil {
 		m.Resume()
 	}
