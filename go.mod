@@ -39,4 +39,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/tetratelabs/wazero => github.com/mpoindexter/wazero v0.0.0-20260617063526-bbc9660d0749
+replace github.com/tetratelabs/wazero => github.com/mpoindexter/wazero v0.0.0-20260824195113-bbffa6a24693

@@ -33,8 +33,8 @@ github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWE
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/modelcontextprotocol/go-sdk v1.6.0 h1:PPLS3kn7WtOEnR+Af4X5H96SG0qSab8R/ZQT/HkhPkY=
 github.com/modelcontextprotocol/go-sdk v1.6.0/go.mod h1:kzm3kzFL1/+AziGOE0nUs3gvPoNxMCvkxokMkuFapXQ=
-github.com/mpoindexter/wazero v0.0.0-20260617063526-bbc9660d0749 h1:cdsJ3r9SJLxUzT2CJyqdu/JF8BNNAKOtgoEocZ+WK8E=
-github.com/mpoindexter/wazero v0.0.0-20260617063526-bbc9660d0749/go.mod h1:LvKtzl2RqO4gyF27BiXU+nKAjcV8f38U+kP/q2vgxh0=
+github.com/mpoindexter/wazero v0.0.0-20260824195113-bbffa6a24693 h1:A2kgl+F6ttr0E6Fe1FPlDacjoL84wUEfQzrzqIvGo9I=
+github.com/mpoindexter/wazero v0.0.0-20260824195113-bbffa6a24693/go.mod h1:LvKtzl2RqO4gyF27BiXU+nKAjcV8f38U+kP/q2vgxh0=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
 github.com/partite-ai/wacogo v0.0.0-20260617023329-3de16a61796c h1:WAxQQFk9xW0jy0cu1Ql4JaaUJTUMo0GsK5TNn5Nliiw=
