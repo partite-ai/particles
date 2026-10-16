@@ -614,6 +614,7 @@ impl ToolsGuest for Component {
                     name: "__particle_load_error__".into(),
                     description: e,
                     input_schema_json: "{}".into(),
+                    output_schema_json: None,
                 }]
             }
         }
@@ -648,10 +649,12 @@ unsafe fn do_list_tools() -> Result<Vec<ToolDef>, String> {
         let description = get_string_attr(item, "description").unwrap_or_default();
         let input_schema_json =
             get_string_attr(item, "input_schema_json").unwrap_or_else(|| "{}".into());
+        let output_schema_json = get_optional_string_attr(item, "output_schema_json");
         out.push(ToolDef {
             name,
             description,
             input_schema_json,
+            output_schema_json,
         });
     }
     pyo3_ffi::Py_DecRef(py_list);
@@ -1007,6 +1010,7 @@ unsafe fn marshal_tool_entry(obj: *mut pyo3_ffi::PyObject) -> Result<ToolEntry, 
         description: get_string_attr(obj, "description").unwrap_or_default(),
         input_schema_json: get_string_attr(obj, "input_schema_json")
             .unwrap_or_else(|| "{}".into()),
+        output_schema_json: get_optional_string_attr(obj, "output_schema_json"),
     })
 }
 

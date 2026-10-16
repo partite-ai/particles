@@ -602,3 +602,61 @@ func TestRuntime_NewParticle_RejectsBadFS(t *testing.T) {
 		t.Error("expected error for FS without manifest.json")
 	}
 }
+
+// A tool that declares outputSchema has its handler result
+// validated host-side. A mismatch surfaces as a HandlerError (the
+// fault is the handler's); a conforming result passes through.
+func TestRuntime_CallTool_ValidatesOutputSchema(t *testing.T) {
+	ctx := context.Background()
+	src := `export default {
+  name: "p", description: "p", version: "0.1.0", capabilities: {},
+  tools: {
+    typed: {
+      description: "Returns a sum, or lies about it",
+      inputSchema: {
+        type: "object",
+        properties: { lie: { type: "boolean" } },
+      },
+      outputSchema: {
+        type: "object",
+        properties: { sum: { type: "number" } },
+        required: ["sum"],
+      },
+      handler: async ({ lie }: { lie?: boolean }) => (lie ? { sum: "five" } : { sum: 5 }),
+    },
+  },
+};`
+	res := buildParticle(t, src)
+	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
+	defer cleanup()
+	p, _ := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
+	defer p.Close(ctx)
+
+	t.Run("manifest carries outputSchema", func(t *testing.T) {
+		defs := p.Manifest().ToolDefs()
+		if len(defs) != 1 || !strings.Contains(string(defs[0].OutputSchemaJSON), `"sum"`) {
+			t.Fatalf("ToolDefs = %+v, want typed tool with outputSchema", defs)
+		}
+	})
+
+	t.Run("conforming result passes", func(t *testing.T) {
+		got, err := p.CallTool(ctx, "typed", []byte(`{}`))
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if !strings.Contains(string(got), `"sum":5`) {
+			t.Errorf("result = %s", got)
+		}
+	})
+
+	t.Run("non-conforming result is a HandlerError", func(t *testing.T) {
+		_, err := p.CallTool(ctx, "typed", []byte(`{"lie":true}`))
+		var te *runtime.ToolError
+		if !errors.As(err, &te) || te.Kind != runtime.ToolErrorKindHandlerError {
+			t.Fatalf("err = %v (%T), want HandlerError ToolError", err, err)
+		}
+		if !strings.Contains(te.Message, "output") {
+			t.Errorf("message = %q, want it to name the output schema", te.Message)
+		}
+	})
+}

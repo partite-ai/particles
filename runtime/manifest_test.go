@@ -330,3 +330,37 @@ func TestCredentialHostBindings_SkipsHostless(t *testing.T) {
 		t.Error("hostless signing credential should not appear in bindings")
 	}
 }
+
+// outputSchema is optional per tool. When present it must survive
+// parse → ToolDefs and parse → Marshal; when absent it must be
+// omitted from the marshalled manifest so existing manifests stay
+// byte-identical.
+func TestParseManifest_OutputSchema(t *testing.T) {
+	src := `{"name":"p","version":"0.1.0","capabilities":{},"tools":[
+		{"name":"typed","description":"d","inputSchema":{"type":"object"},
+		 "outputSchema":{"type":"object","properties":{"sum":{"type":"number"}}}},
+		{"name":"untyped","description":"d","inputSchema":{"type":"object"}}
+	]}`
+	m, err := ParseManifest(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	defs := m.ToolDefs()
+	if len(defs) != 2 {
+		t.Fatalf("ToolDefs len = %d, want 2", len(defs))
+	}
+	if !strings.Contains(string(defs[0].OutputSchemaJSON), `"sum"`) {
+		t.Errorf("typed OutputSchemaJSON = %q, want the declared schema", defs[0].OutputSchemaJSON)
+	}
+	if len(defs[1].OutputSchemaJSON) != 0 {
+		t.Errorf("untyped OutputSchemaJSON = %q, want empty", defs[1].OutputSchemaJSON)
+	}
+
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if n := strings.Count(string(out), `"outputSchema"`); n != 1 {
+		t.Errorf("marshalled manifest has %d outputSchema keys, want 1 (omitted when unset):\n%s", n, out)
+	}
+}

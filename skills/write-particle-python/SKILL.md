@@ -95,6 +95,11 @@ particle = Particle(
 - `input_schema`: JSON Schema Draft 2020-12, object-rooted. The host
   validates arguments against it *before* calling your handler, so
   you can trust the dict shape inside.
+- `output_schema` (optional): JSON Schema Draft 2020-12, object-rooted,
+  for the handler's return value. The host validates the result
+  against it after the handler runs; a mismatch is a handler error.
+  MCP clients see it as the tool's `outputSchema` and get the result
+  as `structuredContent`.
 - `handler`: a plain callable taking one positional dict and returning
   any JSON-serializable value. May be `def` or `async def`; async
   handlers run on a one-shot poll loop. Raise to surface an error.

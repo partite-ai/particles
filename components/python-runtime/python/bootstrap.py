@@ -77,17 +77,34 @@ class NotImplementedHealth(Exception):
 
 # -- types the Rust side reads via getattr ---------------------------------
 
+def _output_schema_json(name, tool):
+    """Serialize a tool's optional `output_schema`. None when unset.
+    Rejects a non-object-rooted schema here, at build time, since the
+    MCP server refuses to advertise one."""
+    schema = getattr(tool, "output_schema", None)
+    if schema is None:
+        return None
+    if not isinstance(schema, dict):
+        raise TypeError(f"tools[{name!r}].output_schema must be a dict")
+    if schema.get("type") != "object":
+        raise ValueError(f"tools[{name!r}].output_schema must have root type \"object\"")
+    return json.dumps(schema)
+
+
 class ToolDef:
     """The Rust shim reads `.name`, `.description`, `.input_schema_json`
-    off whatever objects list_tools returns. Using a plain class with
-    three str attributes is enough — no dataclass, no typing import."""
+    and `.output_schema_json` (str or None) off whatever objects
+    list_tools returns. Using a plain class with str attributes is
+    enough — no dataclass, no typing import."""
 
-    __slots__ = ("name", "description", "input_schema_json")
+    __slots__ = ("name", "description", "input_schema_json", "output_schema_json")
 
-    def __init__(self, name: str, description: str, input_schema_json: str) -> None:
+    def __init__(self, name: str, description: str, input_schema_json: str,
+                 output_schema_json=None) -> None:
         self.name = name
         self.description = description
         self.input_schema_json = input_schema_json
+        self.output_schema_json = output_schema_json
 
 
 class PingResult:
@@ -230,12 +247,14 @@ class CredentialEntry:
 
 
 class ToolEntry:
-    __slots__ = ("name", "description", "input_schema_json")
+    __slots__ = ("name", "description", "input_schema_json", "output_schema_json")
 
-    def __init__(self, name: str, description: str, input_schema_json: str) -> None:
+    def __init__(self, name: str, description: str, input_schema_json: str,
+                 output_schema_json=None) -> None:
         self.name = name
         self.description = description
         self.input_schema_json = input_schema_json
+        self.output_schema_json = output_schema_json
 
 
 class ParticleManifest:
@@ -363,6 +382,7 @@ class Tools:
                 name=name,
                 description=getattr(tool, "description", "") or "",
                 input_schema_json=json.dumps(getattr(tool, "input_schema", {}) or {}),
+                output_schema_json=_output_schema_json(name, tool),
             ))
         return out
 
@@ -529,6 +549,7 @@ def _build_manifest_record(p) -> ParticleManifest:
             name=tname,
             description=getattr(tool, "description", "") or "",
             input_schema_json=json.dumps(getattr(tool, "input_schema", {}) or {}),
+            output_schema_json=_output_schema_json(tname, tool),
         ))
 
     return ParticleManifest(

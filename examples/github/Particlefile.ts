@@ -90,6 +90,20 @@ export default {
         },
         required: ["owner", "repo"],
       },
+      // The host validates the handler's result against this and
+      // MCP clients receive it as structured content.
+      outputSchema: {
+        type: "object",
+        properties: {
+          full_name:      { type: "string" },
+          description:    { anyOf: [{ type: "string" }, { type: "null" }] },
+          stars:          { type: "integer" },
+          open_issues:    { type: "integer" },
+          default_branch: { type: "string" },
+          url:            { type: "string" },
+        },
+        required: ["full_name", "stars", "open_issues", "default_branch", "url"],
+      },
       handler: async ({ owner, repo }: { owner: string; repo: string }) => {
         const r = (await gh(`/repos/${owner}/${repo}`)) as Record<string, unknown>;
         return {
@@ -156,6 +170,14 @@ export default {
           body:  { type: "string", description: "Issue body in GitHub-flavored Markdown." },
         },
         required: ["owner", "repo", "title"],
+      },
+      outputSchema: {
+        type: "object",
+        properties: {
+          number: { type: "integer" },
+          url:    { type: "string" },
+        },
+        required: ["number", "url"],
       },
       handler: async (
         { owner, repo, title, body }:

@@ -115,6 +115,15 @@ export interface ToolDef {
   inputSchema: JSONSchema;
 
   /**
+   * Optional JSON-Schema (Draft 2020-12) describing the handler's
+   * return value. Must have root `type: "object"`. When set, the
+   * host validates the result against it after the handler runs
+   * and a mismatch surfaces to the caller as a handler error. MCP
+   * clients receive it as the tool's `outputSchema`.
+   */
+  outputSchema?: JSONSchema;
+
+  /**
    * The tool body. Receives the validated argument object; returns
    * any JSON-serializable value (or a Promise of one). Throwing
    * surfaces to the caller as a handler error.
