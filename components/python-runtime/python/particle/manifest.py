@@ -216,10 +216,13 @@ class Tool:
     (Draft 2020-12, object-rooted) the host validates against before
     invoking `handler`. The handler receives the parsed arguments
     dict and returns a JSON-serializable value (or raises to surface
-    a `handler-error` to the caller)."""
+    a `handler-error` to the caller). `output_schema`, when set, is an
+    object-rooted JSON Schema the host validates the return value
+    against; a mismatch surfaces as a `handler-error`."""
     description: str
     input_schema: dict[str, Any]
     handler: Callable[..., Any]
+    output_schema: Optional[dict[str, Any]] = None
 
 
 # ---- Top-level particle -----------------------------------------------------

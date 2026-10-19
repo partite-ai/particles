@@ -273,9 +273,9 @@ const (
 )
 
 // ManifestTool is one entry in the manifest's `tools` array.
-// InputSchema is kept as raw JSON: it's the author's JSON Schema
-// and the runtime compiles it on the host side at the WIT
-// boundary.
+// InputSchema and OutputSchema are kept as raw JSON: they're the
+// author's JSON Schema and the runtime compiles them on the host
+// side at the WIT boundary. OutputSchema is optional.
 //
 // Distinct from [ToolDef] (the live wasm-side `list-tools`
 // result), which is what callers should use when they want what
@@ -283,9 +283,10 @@ const (
 // declaration, the wasm export is the source of truth at run
 // time.
 type ManifestTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"inputSchema"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	InputSchema  json.RawMessage `json:"inputSchema"`
+	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
 }
 
 // ToolDefs projects the manifest's declared tools into [ToolDef]
@@ -298,9 +299,10 @@ func (m Manifest) ToolDefs() []ToolDef {
 	out := make([]ToolDef, len(m.Tools))
 	for i, t := range m.Tools {
 		out[i] = ToolDef{
-			Name:            t.Name,
-			Description:     t.Description,
-			InputSchemaJSON: []byte(t.InputSchema),
+			Name:             t.Name,
+			Description:      t.Description,
+			InputSchemaJSON:  []byte(t.InputSchema),
+			OutputSchemaJSON: []byte(t.OutputSchema),
 		}
 	}
 	return out

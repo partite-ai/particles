@@ -57,12 +57,17 @@ ENV LIBCLANG_PATH=/usr/lib/llvm-19/lib
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
+# 1.96.0 builds the python-runtime crates; see PYTHON_RUNTIME_RUST in
+# the Makefile.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --no-modify-path --profile minimal --default-toolchain ${RUST_VERSION} \
-  && rustup target add wasm32-wasip2
+  && rustup target add wasm32-wasip2 \
+  && rustup toolchain install 1.96.0 --profile minimal --target wasm32-wasip2
 
-# Install wasm-tools (uses the rustup toolchain installed above)
-RUN cargo install --locked --root /usr/local wasm-tools
+# Install wasm-tools (uses the rustup toolchain installed above).
+# 1.257.0+ rejects the hand-written init_dyld.wat at `component link`:
+# direct WIT imports now need component-type metadata.
+RUN cargo install --locked --root /usr/local wasm-tools --version 1.256.0
 
 # Install wasi-sdk for cross-compiling C/C++ to wasm32-wasip2. Used by the
 # python-runtime build to produce libpython3.14.so + its dependencies (zlib,

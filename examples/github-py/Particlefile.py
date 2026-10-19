@@ -167,6 +167,20 @@ particle = Particle(
                 },
                 "required": ["owner", "repo"],
             },
+            # The host validates the handler's result against this and
+            # MCP clients receive it as structured content.
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "full_name":      {"type": "string"},
+                    "description":    {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                    "stars":          {"type": "integer"},
+                    "open_issues":    {"type": "integer"},
+                    "default_branch": {"type": "string"},
+                    "url":            {"type": "string"},
+                },
+                "required": ["full_name", "stars", "open_issues", "default_branch", "url"],
+            },
             handler=_get_repo,
         ),
 
@@ -205,6 +219,14 @@ particle = Particle(
                     "body":  {"type": "string", "description": "Issue body in GitHub-flavored Markdown."},
                 },
                 "required": ["owner", "repo", "title"],
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "number": {"type": "integer"},
+                    "url":    {"type": "string"},
+                },
+                "required": ["number", "url"],
             },
             handler=_create_issue,
         ),
