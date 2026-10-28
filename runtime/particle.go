@@ -66,6 +66,11 @@ type ToolDef struct {
 	// `inputSchema` was serialized to at build time. Object-
 	// rooted Draft 2020-12.
 	InputSchemaJSON []byte
+	// OutputSchemaJSON is the JSON-Schema bytes the tool's
+	// optional `outputSchema` was serialized to. Empty when the
+	// tool declares no output schema. Object-rooted Draft
+	// 2020-12; CallTool validates the handler's result against it.
+	OutputSchemaJSON []byte
 }
 
 // ToolError is a typed error returned by [Particle.CallTool]. The
@@ -176,9 +181,10 @@ type Particle struct {
 	// lazily from the manifest on first CallTool. Per design
 	// doc §6, all input validation runs in Go before entering
 	// wasm; this map is what enforces it.
-	schemasOnce sync.Once
-	schemas     map[string]*jsonschema.Resolved
-	schemasErr  error
+	schemasOnce   sync.Once
+	schemas       map[string]*jsonschema.Resolved
+	outputSchemas map[string]*jsonschema.Resolved
+	schemasErr    error
 }
 
 // NewParticle loads a particle's artifact (the fs.FS produced by
@@ -579,18 +585,21 @@ func (p *Particle) Close(ctx context.Context) error {
 // ListTools / CallTool / Ping
 // -----------------------------------------------------------------------------
 
-// ensureSchemas lazily compiles each tool's input schema on first
-// CallTool from the manifest — no round-trip into wasm, since the
-// manifest already carries every tool's input schema. Compiled once
-// per Particle; subsequent calls reuse the cached map.
+// ensureSchemas lazily compiles each tool's input and output
+// schemas on first CallTool from the manifest — no round-trip into
+// wasm, since the manifest already carries every tool's schemas.
+// Compiled once per Particle; subsequent calls reuse the cached
+// maps. Tools without an outputSchema have no entry in the output
+// map.
 //
 // A failure here is sticky (cached in schemasErr) — if a manifest
 // schema can't be compiled, every CallTool will surface the same
 // error rather than retrying.
-func (p *Particle) ensureSchemas() (map[string]*jsonschema.Resolved, error) {
+func (p *Particle) ensureSchemas() (inputs, outputs map[string]*jsonschema.Resolved, err error) {
 	p.schemasOnce.Do(func() {
 		tools := p.manifest.ToolDefs()
-		m := make(map[string]*jsonschema.Resolved, len(tools))
+		in := make(map[string]*jsonschema.Resolved, len(tools))
+		out := make(map[string]*jsonschema.Resolved)
 		for _, td := range tools {
 			s, err := compileToolSchema(td.InputSchemaJSON)
 			if err != nil {
@@ -598,12 +607,21 @@ func (p *Particle) ensureSchemas() (map[string]*jsonschema.Resolved, error) {
 				return
 			}
 			if s != nil {
-				m[td.Name] = s
+				in[td.Name] = s
+			}
+			o, err := compileToolSchema(td.OutputSchemaJSON)
+			if err != nil {
+				p.schemasErr = fmt.Errorf("tool %q: output schema: %w", td.Name, err)
+				return
+			}
+			if o != nil {
+				out[td.Name] = o
 			}
 		}
-		p.schemas = m
+		p.schemas = in
+		p.outputSchemas = out
 	})
-	return p.schemas, p.schemasErr
+	return p.schemas, p.outputSchemas, p.schemasErr
 }
 
 // ListTools returns the metadata for every tool the particle's
@@ -653,6 +671,11 @@ func (p *Particle) ListTools(ctx context.Context, opts ...CallOption) ([]ToolDef
 		if v, _ := rec.Field("input-schema-json").(wc.ValString); v != "" {
 			td.InputSchemaJSON = []byte(v)
 		}
+		if opt, ok := rec.Field("output-schema-json").(*wc.ValOption); ok && !opt.IsNone() {
+			if v, ok := opt.Val().(wc.ValString); ok && v != "" {
+				td.OutputSchemaJSON = []byte(v)
+			}
+		}
 		out = append(out, td)
 	}
 	return out, nil
@@ -663,9 +686,12 @@ func (p *Particle) ListTools(ctx context.Context, opts ...CallOption) ([]ToolDef
 // schema (design doc §6 "Argument validation: host-side only")
 // before the call enters wasm; if validation fails, the returned
 // error is *ToolError with Kind == ToolErrorKindInvalidArguments.
-// Returns the tool's JSON-encoded result on success.
+// Returns the tool's JSON-encoded result on success. If the tool
+// declares an output schema, the result is validated against it
+// and a mismatch is returned as *ToolError with Kind ==
+// ToolErrorKindHandlerError.
 func (p *Particle) CallTool(ctx context.Context, name string, argumentsJSON []byte, opts ...CallOption) ([]byte, error) {
-	schemas, err := p.ensureSchemas()
+	schemas, outputSchemas, err := p.ensureSchemas()
 	if err != nil {
 		return nil, fmt.Errorf("runtime: prepare tool schemas: %w", err)
 	}
@@ -709,6 +735,13 @@ func (p *Particle) CallTool(ctx context.Context, name string, argumentsJSON []by
 		s, ok := res.Ok().(wc.ValString)
 		if !ok {
 			return nil, fmt.Errorf("call-tool ok payload is %T, want ValString", res.Ok())
+		}
+		if vErr := validateToolOutput(outputSchemas[name], []byte(s)); vErr != nil {
+			return nil, &ToolError{
+				Kind:    ToolErrorKindHandlerError,
+				Message: fmt.Sprintf("result does not match output schema: %v", vErr),
+				Stderr:  stderrSinkBytes(p.stderr),
+			}
 		}
 		return []byte(s), nil
 	}

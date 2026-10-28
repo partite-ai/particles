@@ -227,9 +227,13 @@ typecheck:
 	cd components/typecheck && node build-particle-globals.mjs
 	cd components/typecheck && node build-lib-bundle.mjs
 	@echo '[2/4] esbuild  src/typecheck.ts  →  build/typecheck.js  (bundles typescript)'
+	# typescript.js is CommonJS and calls require("fs") at load time.
+	# wasm-rquickjs shadows `require` with `var require;` in any ESM
+	# bundle that does not declare it, so the banner declares one.
 	cd components/typecheck && esbuild src/typecheck.ts \
 	  --bundle --format=esm --platform=node --target=es2022 \
 	  '--external:wasi:*' '--external:particle:*' \
+	  '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
 	  --outfile=build/typecheck.js
 	@echo '[3/4] wasm-rquickjs generate-wrapper-crate'
 	rm -rf components/typecheck/build/crate
@@ -504,14 +508,17 @@ PYTHON_RUNTIME_LIBFFI_DISPATCH_O   := $(PYTHON_RUNTIME_LIBFFI_CARGO_TARGET)/libf
 # means and why we need it (no host Python to introspect against).
 PYO3_CONFIG_FILE_ABS := $(abspath components/python-runtime/pyo3-wasm-cpython314.txt)
 
+# From 1.97.0, libstd's wit-bindgen for wasm32-wasip2 includes
+# rt::async_support. --whole-archive + --export-dynamic in the main.wasm
+# link keep it live, and wacogo cannot parse its `waitable-*` imports.
+PYTHON_RUNTIME_RUST := 1.96.0
+
 python-runtime: $(DIST_DIR)/particle-python-runtime.wasm
 
 # ---- Step 1: staticlib (Rust crate → libpython_runtime.a) ----
 # Stages wit/  (runtime.wit + python-runtime.wit + shared deps/) so
-# wit_bindgen::generate!() in lib.rs can read it. cargo +stable with
-# RUSTFLAGS=PIC: stable's prebuilt wasm32-wasip2 rlibs are
-# PIC-compatible and don't transitively pull in wasip3's async_support
-# imports.
+# wit_bindgen::generate!() in lib.rs can read it. RUSTFLAGS=PIC: the
+# prebuilt wasm32-wasip2 rlibs are PIC-compatible.
 
 $(PYTHON_RUNTIME_STATICLIB): $(PYTHON_LIB_SO) \
     components/python-runtime/Cargo.toml \
@@ -527,7 +534,7 @@ $(PYTHON_RUNTIME_STATICLIB): $(PYTHON_LIB_SO) \
 	CARGO_TARGET_DIR=$(PYTHON_RUNTIME_CARGO_TARGET) \
 	PYO3_CONFIG_FILE=$(PYO3_CONFIG_FILE_ABS) \
 	WASI_SDK_PATH=$(WASI_SDK_PATH) \
-	  cargo +stable build \
+	  cargo +$(PYTHON_RUNTIME_RUST) build \
 	    --manifest-path components/python-runtime/Cargo.toml \
 	    --target wasm32-wasip2 --release -j 1
 	@printf '✓  staticlib: '; ls -lh $@ | awk '{print $$5"  "$$NF}'
@@ -546,7 +553,7 @@ $(PYTHON_RUNTIME_DYLD_LIBDL_STATICLIB): \
 	cp -R wit/deps/* components/dyld-libdl/wit/deps/ 2>/dev/null || true
 	RUSTFLAGS='-C relocation-model=pic' \
 	CARGO_TARGET_DIR=$(PYTHON_RUNTIME_DYLD_LIBDL_CARGO_TARGET) \
-	  cargo +stable build \
+	  cargo +$(PYTHON_RUNTIME_RUST) build \
 	    --manifest-path components/dyld-libdl/Cargo.toml \
 	    --features canonical-dyld \
 	    --target wasm32-wasip2 --release -j 1
@@ -591,7 +598,7 @@ $(PYTHON_RUNTIME_LIBFFI_STATICLIB): \
 	cp -R wit/deps/* components/libffi-wasi-bridge/wit/deps/ 2>/dev/null || true
 	RUSTFLAGS='-C relocation-model=pic' \
 	CARGO_TARGET_DIR=$(PYTHON_RUNTIME_LIBFFI_CARGO_TARGET) \
-	  cargo +stable build \
+	  cargo +$(PYTHON_RUNTIME_RUST) build \
 	    --manifest-path components/libffi-wasi-bridge/Cargo.toml \
 	    --target wasm32-wasip2 --release -j 1
 

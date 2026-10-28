@@ -106,16 +106,19 @@ func runServeMCP(cmd *cobra.Command, target, dbPath string, includes, excludes, 
 
 	for _, td := range tools {
 		// Register each particle tool with its raw JSON-Schema
-		// input definition. The runtime already validated the
-		// schema during build (Phase 5: introspect.wasm
-		// extracted it from the particle source), so we hand it
-		// to the MCP SDK as-is via json.RawMessage.
+		// input (and optional output) definition. The runtime
+		// already validated the schemas during build (Phase 5:
+		// introspect.wasm extracted them from the particle
+		// source), so we hand them to the MCP SDK as-is via
+		// json.RawMessage.
 		mcpTool := &mcp.Tool{
 			Name:        td.Name,
 			Description: td.Description,
 			InputSchema: json.RawMessage(td.InputSchemaJSON),
 		}
-		toolName := td.Name // capture into closure
+		if len(td.OutputSchemaJSON) > 0 {
+			mcpTool.OutputSchema = json.RawMessage(td.OutputSchemaJSON)
+		}
 		server.AddTool(mcpTool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args := []byte(req.Params.Arguments)
 			if len(args) == 0 {
@@ -124,7 +127,7 @@ func runServeMCP(cmd *cobra.Command, target, dbPath string, includes, excludes, 
 				// expects a JSON object.
 				args = []byte("{}")
 			}
-			out, err := p.CallTool(ctx, toolName, args)
+			out, err := p.CallTool(ctx, td.Name, args)
 			if err != nil {
 				// Tool-side error: pack into the result
 				// with IsError, not as a protocol error,
@@ -135,9 +138,17 @@ func runServeMCP(cmd *cobra.Command, target, dbPath string, includes, excludes, 
 					IsError: true,
 				}, nil
 			}
-			return &mcp.CallToolResult{
+			res := &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: string(out)}},
-			}, nil
+			}
+			if len(td.OutputSchemaJSON) > 0 {
+				// The MCP spec requires structuredContent
+				// for tools that declare an outputSchema.
+				// The runtime already validated out
+				// against it.
+				res.StructuredContent = json.RawMessage(out)
+			}
+			return res, nil
 		})
 	}
 
@@ -159,4 +170,5 @@ var _ = func(td runtime.ToolDef) {
 	_ = td.Name
 	_ = td.Description
 	_ = td.InputSchemaJSON
+	_ = td.OutputSchemaJSON
 }

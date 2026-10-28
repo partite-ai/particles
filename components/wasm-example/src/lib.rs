@@ -32,11 +32,13 @@ impl ToolsGuest for Component {
                 name: "echo".into(),
                 description: "Echo the input string back.".into(),
                 input_schema_json: r#"{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}"#.into(),
+                output_schema_json: None,
             },
             ToolDef {
                 name: "add".into(),
                 description: "Add two numbers and return the sum.".into(),
                 input_schema_json: r#"{"type":"object","properties":{"a":{"type":"number"},"b":{"type":"number"}},"required":["a","b"]}"#.into(),
+                output_schema_json: None,
             },
         ]
     }
@@ -86,11 +88,13 @@ impl ManifestGuest for Component {
                     name: "echo".into(),
                     description: "Echo the input string back.".into(),
                     input_schema_json: r#"{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}"#.into(),
+                    output_schema_json: None,
                 },
                 ToolEntry {
                     name: "add".into(),
                     description: "Add two numbers and return the sum.".into(),
                     input_schema_json: r#"{"type":"object","properties":{"a":{"type":"number"},"b":{"type":"number"}},"required":["a","b"]}"#.into(),
+                    output_schema_json: None,
                 },
             ],
         })

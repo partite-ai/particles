@@ -52,6 +52,10 @@ interface tools {
     description: string,
     /// JSON Schema, encoded as UTF-8 JSON. Object-rooted.
     input-schema-json: string,
+    /// Optional JSON Schema for the handler's result, encoded as
+    /// UTF-8 JSON. Object-rooted. The host validates the result
+    /// of call-tool against it when present.
+    output-schema-json: option<string>,
   }
 
   variant tool-error {
@@ -233,11 +237,13 @@ interface manifest {
   /// We keep it as a string because: (a) the host validates with a
   /// JSON Schema library that already parses JSON; (b) WIT can't
   /// express arbitrary recursive schemas without a code-gen
-  /// nightmare.
+  /// nightmare. `output-schema-json` is the same for the optional
+  /// result schema.
   record tool-entry {
     name: string,
     description: string,
     input-schema-json: string,
+    output-schema-json: option<string>,
   }
 
   /// The complete typed manifest record returned by get-manifest.

@@ -81,6 +81,11 @@ export default {
   validates arguments against it *before* calling your handler, so
   you can trust the input shape inside the handler. Use `required`
   to mark mandatory fields; supply `default` for optionals.
+- `outputSchema` (optional): JSON Schema Draft 2020-12, object-rooted,
+  for the handler's return value. The host validates the result
+  against it after the handler runs; a mismatch is a handler error.
+  MCP clients see it as the tool's `outputSchema` and get the result
+  as `structuredContent`.
 - `handler`: sync or async. Return any JSON-serializable value.
   Throw to surface an error to the caller — the thrown message is
   what they see.

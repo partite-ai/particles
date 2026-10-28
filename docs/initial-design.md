@@ -520,6 +520,7 @@ type Particle = {
 type ToolDef = {
   description: string;
   inputSchema: object;                   // JSON Schema (object root)
+  outputSchema?: object;                 // optional JSON Schema (object root) for the result
   handler: (args: unknown) => unknown | Promise<unknown>;
 };
 
@@ -568,6 +569,8 @@ No bare specifiers. The `npm:` prefix is mandatory.
 ### JSON Schema for tool params
 
 `inputSchema` is JSON Schema Draft 2020-12, root being `type: "object"`. The build pipeline validates the schema itself at build time. The host validates incoming arguments against `inputSchema` before invoking the handler.
+
+`outputSchema` is optional and has the same form. When present, the host validates the handler's result against it after the call returns; a mismatch is a `handler-error`. `particle serve-mcp` advertises it as the MCP tool's `outputSchema` and returns results as `structuredContent` alongside the text block.
 
 **Why JSON Schema (not Zod or similar):**
 - It's the lingua franca of LLM tool calling — what MCP, OpenAI, and Anthropic SDKs already speak.

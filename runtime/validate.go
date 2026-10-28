@@ -50,3 +50,20 @@ func validateToolInput(schema *jsonschema.Resolved, argumentsJSON []byte) error 
 	}
 	return schema.Validate(instance)
 }
+
+// validateToolOutput checks a handler's JSON result against the
+// resolved output schema. Unlike inputs, an empty result is not
+// defaulted to the empty object: the handler returned nothing
+// parseable and that is a mismatch.
+//
+// nil schema → nil error (the tool declares no output schema).
+func validateToolOutput(schema *jsonschema.Resolved, resultJSON []byte) error {
+	if schema == nil {
+		return nil
+	}
+	var instance any
+	if err := json.Unmarshal(resultJSON, &instance); err != nil {
+		return fmt.Errorf("parse result: %w", err)
+	}
+	return schema.Validate(instance)
+}

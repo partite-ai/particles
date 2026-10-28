@@ -271,11 +271,17 @@ func decodeToolList(list *wc.ValList) ([]ManifestTool, error) {
 		if !ok {
 			return nil, fmt.Errorf("tools[%d] is %T, want *wacogo.ValRecord", i, list.Get(i))
 		}
-		out = append(out, ManifestTool{
+		mt := ManifestTool{
 			Name:        stringField(rec, "name"),
 			Description: stringField(rec, "description"),
 			InputSchema: json.RawMessage(stringField(rec, "input-schema-json")),
-		})
+		}
+		if opt, ok := rec.Field("output-schema-json").(*wc.ValOption); ok && !opt.IsNone() {
+			if s, ok := opt.Val().(wc.ValString); ok && s != "" {
+				mt.OutputSchema = json.RawMessage(s)
+			}
+		}
+		out = append(out, mt)
 	}
 	return out, nil
 }

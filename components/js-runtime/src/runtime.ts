@@ -31,6 +31,8 @@ type ToolDef = {
   name: string;
   description: string;
   inputSchemaJson: string;
+  // `undefined` ↔ WIT `none`.
+  outputSchemaJson: string | undefined;
 };
 
 // Shared diagnostic payload — mirrors WIT `diagnostics.error-detail`.
@@ -87,6 +89,7 @@ type Handler = (args: unknown) => unknown | Promise<unknown>;
 type UserToolDef = {
   description: string;
   inputSchema: object;
+  outputSchema?: object;
   handler: Handler;
 };
 
@@ -234,6 +237,7 @@ export const tools = {
       name,
       description: def.description,
       inputSchemaJson: JSON.stringify(def.inputSchema),
+      outputSchemaJson: def.outputSchema === undefined ? undefined : JSON.stringify(def.outputSchema),
     }));
   },
 
@@ -379,6 +383,7 @@ type ToolEntry = {
   name: string;
   description: string;
   inputSchemaJson: string;
+  outputSchemaJson: string | undefined;
 };
 
 type ParticleManifestRecord = {
@@ -592,6 +597,14 @@ function buildTools(raw: Record<string, UserToolDef>): ToolEntry[] {
     if (!def.inputSchema || typeof def.inputSchema !== "object") {
       throw new Error(`tools.${name}.inputSchema must be an object`);
     }
+    if (def.outputSchema !== undefined) {
+      if (!def.outputSchema || typeof def.outputSchema !== "object") {
+        throw new Error(`tools.${name}.outputSchema must be an object`);
+      }
+      if ((def.outputSchema as { type?: unknown }).type !== "object") {
+        throw new Error(`tools.${name}.outputSchema must have root type "object"`);
+      }
+    }
     if (typeof def.handler !== "function") {
       throw new Error(`tools.${name}.handler must be a function`);
     }
@@ -599,6 +612,7 @@ function buildTools(raw: Record<string, UserToolDef>): ToolEntry[] {
       name,
       description: def.description,
       inputSchemaJson: JSON.stringify(def.inputSchema),
+      outputSchemaJson: def.outputSchema === undefined ? undefined : JSON.stringify(def.outputSchema),
     });
   }
   return out;
