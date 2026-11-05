@@ -298,11 +298,12 @@ func (l *libraryImpl) Symbol(ctx context.Context, name string) (gen.ResultU32Str
 //
 // Pre-loaded entries are not refcounted — they belong to the
 // component image, so Drop on them is a no-op.
-func (l *libraryImpl) Drop() {
+func (l *libraryImpl) Drop(_ context.Context) error {
 	if l.lib.isPreloaded() {
-		return
+		return nil
 	}
 	l.a.unref(l.lib)
+	return nil
 }
 
 // unref is the refcount decrement path shared by libraryImpl.Drop

@@ -20,7 +20,6 @@ package dyld
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/host"
@@ -51,13 +50,15 @@ func WrapInstance(caller *host.ComponentInstance, callee *wacogo.ComponentInstan
 func (w *dyldWrapper) Initialize(ctx context.Context) error {
 	{
 		callErr_ := w.fnInitialize.CallRaw(ctx, w.callerInst,
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
+				return nil
 			},
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
+				return nil
 			},
 		)
 		if callErr_ != nil {
-			return fmt.Errorf("wacogo/witgen: CallRaw failed: %w", callErr_)
+			return callErr_
 		}
 	}
 	return nil
@@ -65,30 +66,26 @@ func (w *dyldWrapper) Initialize(ctx context.Context) error {
 
 func (w *dyldWrapper) Load(ctx context.Context, name string) (ResultLibraryDyldError, error) {
 	var resVal_ ResultLibraryDyldError
-	var resErr_ error
 	arg0_ := name
 	{
 		callErr_ := w.fnLoad.CallRaw(ctx, w.callerInst,
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnLoad.ParamType(0), stack[0:2], arg0_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
+				return nil
 			},
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if v_, err_ := liftMemResultLibraryDyldError(ctx, caller, callee, w.callerInst, w.fnLoad.ResultType(0), uint32(stack[0])); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				} else {
 					resVal_ = v_
 				}
+				return nil
 			},
 		)
 		if callErr_ != nil {
-			return nil, fmt.Errorf("wacogo/witgen: CallRaw failed: %w", callErr_)
-		}
-		if resErr_ != nil {
-			return nil, resErr_
+			return nil, callErr_
 		}
 	}
 	return resVal_, nil
@@ -96,30 +93,26 @@ func (w *dyldWrapper) Load(ctx context.Context, name string) (ResultLibraryDyldE
 
 func (w *dyldWrapper) SetLibraries(ctx context.Context, libraries []PreloadedLibrary) (Result_String, error) {
 	var resVal_ Result_String
-	var resErr_ error
 	arg0_ := libraries
 	{
 		callErr_ := w.fnSetLibraries.CallRaw(ctx, w.callerInst,
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if err_ := lowerFlatListPreloadedLibrary(ctx, caller, callee, w.callerInst, w.fnSetLibraries.ParamType(0), stack[0:2], arg0_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
+				return nil
 			},
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if v_, err_ := liftMemResult_String(ctx, caller, callee, w.callerInst, w.fnSetLibraries.ResultType(0), uint32(stack[0])); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				} else {
 					resVal_ = v_
 				}
+				return nil
 			},
 		)
 		if callErr_ != nil {
-			return nil, fmt.Errorf("wacogo/witgen: CallRaw failed: %w", callErr_)
-		}
-		if resErr_ != nil {
-			return nil, resErr_
+			return nil, callErr_
 		}
 	}
 	return resVal_, nil

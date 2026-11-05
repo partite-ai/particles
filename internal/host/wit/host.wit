@@ -227,8 +227,24 @@ interface libffi {
   // the result at *rvalue.
   prep-trampoline: func(sig: list<u8>) -> result<u32, libffi-error>;
 
-  // Build a closure trampoline at a pre-allocated table slot.
-  // closure-ptr layout (libffi convention): u32@0 ftramp (slot),
-  // u32@4 cif, u32@8 fun (table idx), u32@12 user_data.
+  // Build a closure trampoline at a pre-allocated table slot. The
+  // trampoline has the target's wasm signature (so C callers can
+  // call_indirect via the slot with the natural calling convention);
+  // its body reads cif / fun / user_data from the closure struct
+  // and invokes `closure->fun(cif, rvalue, avalue, user_data)`.
+  //
+  // The Rust libffi shim does __grow_table(1) itself to get the
+  // slot (so it can store it in closure->ftramp before we wire the
+  // trampoline body). closure-ptr is the closure struct address;
+  // its layout is the upstream-libffi convention:
+  //
+  //   offset 0..4   ftramp  (slot, set by the shim)
+  //   offset 4..8   cif*
+  //   offset 8..12  fun*    (table index of the user callback)
+  //   offset 12..16 user_data
+  //
+  // Each prep-closure call generates a fresh wasm module — closure
+  // trampolines are not cached because the closure pointer is baked
+  // into the trampoline body and each closure has a distinct one.
   prep-closure: func(closure-ptr: u32, slot: u32, sig: list<u8>) -> result<_, libffi-error>;
 }

@@ -5,7 +5,6 @@ package credentials
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/host"
@@ -33,30 +32,26 @@ func WrapInstance(caller *host.ComponentInstance, callee *wacogo.ComponentInstan
 }
 func (w *credentialsWrapper) GetConfiguredMethod(ctx context.Context, name string) (ResultOptionStringCredentialError, error) {
 	var resVal_ ResultOptionStringCredentialError
-	var resErr_ error
 	arg0_ := name
 	{
 		callErr_ := w.fnGetConfiguredMethod.CallRaw(ctx, w.callerInst,
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnGetConfiguredMethod.ParamType(0), stack[0:2], arg0_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
+				return nil
 			},
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if v_, err_ := liftMemResultOptionStringCredentialError(ctx, caller, callee, w.callerInst, w.fnGetConfiguredMethod.ResultType(0), uint32(stack[0])); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				} else {
 					resVal_ = v_
 				}
+				return nil
 			},
 		)
 		if callErr_ != nil {
-			return nil, fmt.Errorf("wacogo/witgen: CallRaw failed: %w", callErr_)
-		}
-		if resErr_ != nil {
-			return nil, resErr_
+			return nil, callErr_
 		}
 	}
 	return resVal_, nil
@@ -64,30 +59,26 @@ func (w *credentialsWrapper) GetConfiguredMethod(ctx context.Context, name strin
 
 func (w *credentialsWrapper) GetPlaceholder(ctx context.Context, name string) (ResultPlaceholderInfoCredentialError, error) {
 	var resVal_ ResultPlaceholderInfoCredentialError
-	var resErr_ error
 	arg0_ := name
 	{
 		callErr_ := w.fnGetPlaceholder.CallRaw(ctx, w.callerInst,
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnGetPlaceholder.ParamType(0), stack[0:2], arg0_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
+				return nil
 			},
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if v_, err_ := liftMemResultPlaceholderInfoCredentialError(ctx, caller, callee, w.callerInst, w.fnGetPlaceholder.ResultType(0), uint32(stack[0])); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				} else {
 					resVal_ = v_
 				}
+				return nil
 			},
 		)
 		if callErr_ != nil {
-			return nil, fmt.Errorf("wacogo/witgen: CallRaw failed: %w", callErr_)
-		}
-		if resErr_ != nil {
-			return nil, resErr_
+			return nil, callErr_
 		}
 	}
 	return resVal_, nil
@@ -95,30 +86,26 @@ func (w *credentialsWrapper) GetPlaceholder(ctx context.Context, name string) (R
 
 func (w *credentialsWrapper) GetRaw(ctx context.Context, name string) (ResultStringCredentialError, error) {
 	var resVal_ ResultStringCredentialError
-	var resErr_ error
 	arg0_ := name
 	{
 		callErr_ := w.fnGetRaw.CallRaw(ctx, w.callerInst,
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnGetRaw.ParamType(0), stack[0:2], arg0_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
+				return nil
 			},
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if v_, err_ := liftMemResultStringCredentialError(ctx, caller, callee, w.callerInst, w.fnGetRaw.ResultType(0), uint32(stack[0])); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				} else {
 					resVal_ = v_
 				}
+				return nil
 			},
 		)
 		if callErr_ != nil {
-			return nil, fmt.Errorf("wacogo/witgen: CallRaw failed: %w", callErr_)
-		}
-		if resErr_ != nil {
-			return nil, resErr_
+			return nil, callErr_
 		}
 	}
 	return resVal_, nil

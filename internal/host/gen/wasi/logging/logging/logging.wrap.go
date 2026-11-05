@@ -5,7 +5,6 @@ package logging
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/host"
@@ -28,31 +27,27 @@ func WrapInstance(caller *host.ComponentInstance, callee *wacogo.ComponentInstan
 	return w_
 }
 func (w *loggingWrapper) Log(ctx context.Context, level Level, context string, message string) error {
-	var resErr_ error
 	arg0_ := level
 	arg1_ := context
 	arg2_ := message
 	{
 		callErr_ := w.fnLog.CallRaw(ctx, w.callerInst,
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				stack[0] = uint64(arg0_)
 				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnLog.ParamType(1), stack[1:3], arg1_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
 				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnLog.ParamType(2), stack[3:5], arg2_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
+				return nil
 			},
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
+				return nil
 			},
 		)
 		if callErr_ != nil {
-			return fmt.Errorf("wacogo/witgen: CallRaw failed: %w", callErr_)
-		}
-		if resErr_ != nil {
-			return resErr_
+			return callErr_
 		}
 	}
 	return nil

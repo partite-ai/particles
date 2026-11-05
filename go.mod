@@ -9,7 +9,7 @@ require (
 	github.com/google/jsonschema-go v0.4.3
 	github.com/klauspost/compress v1.18.6
 	github.com/modelcontextprotocol/go-sdk v1.6.0
-	github.com/partite-ai/wacogo v0.0.0-20260617023329-3de16a61796c
+	github.com/partite-ai/wacogo v0.0.0-20261102224619-9d468855680f
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	github.com/tetratelabs/wazero v1.12.1-0.20260529094615-5500f5c25288

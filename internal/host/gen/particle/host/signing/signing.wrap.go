@@ -5,7 +5,6 @@ package signing
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/host"
@@ -31,35 +30,30 @@ func WrapInstance(caller *host.ComponentInstance, callee *wacogo.ComponentInstan
 }
 func (w *signingWrapper) Sign(ctx context.Context, name string, data []uint8) (ResultListU8SigningError, error) {
 	var resVal_ ResultListU8SigningError
-	var resErr_ error
 	arg0_ := name
 	arg1_ := data
 	{
 		callErr_ := w.fnSign.CallRaw(ctx, w.callerInst,
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnSign.ParamType(0), stack[0:2], arg0_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
 				if err_ := lowerFlatListU8(ctx, caller, callee, w.callerInst, w.fnSign.ParamType(1), stack[2:4], arg1_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
+				return nil
 			},
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if v_, err_ := liftMemResultListU8SigningError(ctx, caller, callee, w.callerInst, w.fnSign.ResultType(0), uint32(stack[0])); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				} else {
 					resVal_ = v_
 				}
+				return nil
 			},
 		)
 		if callErr_ != nil {
-			return nil, fmt.Errorf("wacogo/witgen: CallRaw failed: %w", callErr_)
-		}
-		if resErr_ != nil {
-			return nil, resErr_
+			return nil, callErr_
 		}
 	}
 	return resVal_, nil
@@ -67,40 +61,34 @@ func (w *signingWrapper) Sign(ctx context.Context, name string, data []uint8) (R
 
 func (w *signingWrapper) Verify(ctx context.Context, name string, data []uint8, signature []uint8) (ResultBoolSigningError, error) {
 	var resVal_ ResultBoolSigningError
-	var resErr_ error
 	arg0_ := name
 	arg1_ := data
 	arg2_ := signature
 	{
 		callErr_ := w.fnVerify.CallRaw(ctx, w.callerInst,
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnVerify.ParamType(0), stack[0:2], arg0_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
 				if err_ := lowerFlatListU8(ctx, caller, callee, w.callerInst, w.fnVerify.ParamType(1), stack[2:4], arg1_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
 				if err_ := lowerFlatListU8(ctx, caller, callee, w.callerInst, w.fnVerify.ParamType(2), stack[4:6], arg2_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
+				return nil
 			},
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if v_, err_ := liftMemResultBoolSigningError(ctx, caller, callee, w.callerInst, w.fnVerify.ResultType(0), uint32(stack[0])); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				} else {
 					resVal_ = v_
 				}
+				return nil
 			},
 		)
 		if callErr_ != nil {
-			return nil, fmt.Errorf("wacogo/witgen: CallRaw failed: %w", callErr_)
-		}
-		if resErr_ != nil {
-			return nil, resErr_
+			return nil, callErr_
 		}
 	}
 	return resVal_, nil

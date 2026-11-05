@@ -21,6 +21,7 @@ package dyld
 import (
 	"context"
 	"fmt"
+	"unsafe"
 
 	"github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/host"
@@ -110,10 +111,11 @@ func (f *Factory) Close(ctx context.Context) error { return f.comp.Close(ctx) }
 
 // resourceDtor is the generic destructor invoked when canon orchestrates
 // terminal-drop on a host-defined resource handle. Type-asserts the
-// underlying Go object for an optional Drop() method and calls it.
-func resourceDtor(_ context.Context, _ *host.ComponentInstance, obj any) error {
-	if d_, ok_ := obj.(interface{ Drop() }); ok_ {
-		d_.Drop()
+// underlying Go object for an optional Drop(ctx) error method and
+// calls it.
+func resourceDtor(ctx context.Context, _ *host.ComponentInstance, obj any) error {
+	if d_, ok_ := obj.(interface{ Drop(context.Context) error }); ok_ {
+		return d_.Drop(ctx)
 	}
 	return nil
 }
@@ -289,6 +291,10 @@ func toGoFlatListPreloadedLibrary(ctx context.Context, cc *host.CallContext, h *
 	_ = lstT_
 	ptr_ := uint32(stack[0])
 	ln_ := uint32(stack[1])
+	lb_ := uint64(ln_) * 16
+	if uint64(ptr_)+lb_ > uint64(cc.Memory().Size()) {
+		return nil, fmt.Errorf("wacogo/witgen: toGoFlatListPreloadedLibrary: list out of bounds")
+	}
 	out_ := make([]PreloadedLibrary, ln_)
 	for i_ := uint32(0); i_ < ln_; i_++ {
 		if tmp_, err_ := toGoMemPreloadedLibrary(ctx, cc, h, lstT_.Elem, ptr_+i_*16); err_ != nil {
@@ -314,6 +320,10 @@ func toGoMemListPreloadedLibrary(ctx context.Context, cc *host.CallContext, h *h
 		return nil, fmt.Errorf("wacogo/witgen: toGoMemListPreloadedLibrary: list len: bad memory read")
 	} else {
 		ln_ = tmp_
+	}
+	lb_ := uint64(ln_) * 16
+	if uint64(lptr_)+lb_ > uint64(cc.Memory().Size()) {
+		return nil, fmt.Errorf("wacogo/witgen: toGoMemListPreloadedLibrary: list out of bounds")
 	}
 	out_ := make([]PreloadedLibrary, ln_)
 	for i_ := uint32(0); i_ < ln_; i_++ {
@@ -367,6 +377,13 @@ func liftFlatListPreloadedLibrary(ctx context.Context, caller, callee *host.Call
 	_ = lstT_
 	ptr_ := uint32(stack[0])
 	ln_ := uint32(stack[1])
+	lb_ := uint64(ln_) * 16
+	if uint64(ptr_)+lb_ > uint64(callee.Memory().Size()) {
+		return nil, fmt.Errorf("wacogo/witgen: liftFlatListPreloadedLibrary: list out of bounds")
+	}
+	if err_ := callee.ChargeLift(uint64(ln_) * uint64(unsafe.Sizeof(*new(PreloadedLibrary)))); err_ != nil {
+		return nil, err_
+	}
 	out_ := make([]PreloadedLibrary, ln_)
 	for i_ := uint32(0); i_ < ln_; i_++ {
 		if tmp_, err_ := liftMemPreloadedLibrary(ctx, caller, callee, h, lstT_.Elem, ptr_+i_*16); err_ != nil {
@@ -392,6 +409,13 @@ func liftMemListPreloadedLibrary(ctx context.Context, caller, callee *host.CallC
 		return nil, fmt.Errorf("wacogo/witgen: liftMemListPreloadedLibrary: list len: bad memory read")
 	} else {
 		ln_ = tmp_
+	}
+	lb_ := uint64(ln_) * 16
+	if uint64(lptr_)+lb_ > uint64(callee.Memory().Size()) {
+		return nil, fmt.Errorf("wacogo/witgen: liftMemListPreloadedLibrary: list out of bounds")
+	}
+	if err_ := callee.ChargeLift(uint64(ln_) * uint64(unsafe.Sizeof(*new(PreloadedLibrary)))); err_ != nil {
+		return nil, err_
 	}
 	out_ := make([]PreloadedLibrary, ln_)
 	for i_ := uint32(0); i_ < ln_; i_++ {
@@ -449,6 +473,10 @@ func toGoFlatListPreloadedSymbol(ctx context.Context, cc *host.CallContext, h *h
 	_ = lstT_
 	ptr_ := uint32(stack[0])
 	ln_ := uint32(stack[1])
+	lb_ := uint64(ln_) * 12
+	if uint64(ptr_)+lb_ > uint64(cc.Memory().Size()) {
+		return nil, fmt.Errorf("wacogo/witgen: toGoFlatListPreloadedSymbol: list out of bounds")
+	}
 	out_ := make([]PreloadedSymbol, ln_)
 	for i_ := uint32(0); i_ < ln_; i_++ {
 		if tmp_, err_ := toGoMemPreloadedSymbol(ctx, cc, h, lstT_.Elem, ptr_+i_*12); err_ != nil {
@@ -474,6 +502,10 @@ func toGoMemListPreloadedSymbol(ctx context.Context, cc *host.CallContext, h *ho
 		return nil, fmt.Errorf("wacogo/witgen: toGoMemListPreloadedSymbol: list len: bad memory read")
 	} else {
 		ln_ = tmp_
+	}
+	lb_ := uint64(ln_) * 12
+	if uint64(lptr_)+lb_ > uint64(cc.Memory().Size()) {
+		return nil, fmt.Errorf("wacogo/witgen: toGoMemListPreloadedSymbol: list out of bounds")
 	}
 	out_ := make([]PreloadedSymbol, ln_)
 	for i_ := uint32(0); i_ < ln_; i_++ {
@@ -527,6 +559,13 @@ func liftFlatListPreloadedSymbol(ctx context.Context, caller, callee *host.CallC
 	_ = lstT_
 	ptr_ := uint32(stack[0])
 	ln_ := uint32(stack[1])
+	lb_ := uint64(ln_) * 12
+	if uint64(ptr_)+lb_ > uint64(callee.Memory().Size()) {
+		return nil, fmt.Errorf("wacogo/witgen: liftFlatListPreloadedSymbol: list out of bounds")
+	}
+	if err_ := callee.ChargeLift(uint64(ln_) * uint64(unsafe.Sizeof(*new(PreloadedSymbol)))); err_ != nil {
+		return nil, err_
+	}
 	out_ := make([]PreloadedSymbol, ln_)
 	for i_ := uint32(0); i_ < ln_; i_++ {
 		if tmp_, err_ := liftMemPreloadedSymbol(ctx, caller, callee, h, lstT_.Elem, ptr_+i_*12); err_ != nil {
@@ -552,6 +591,13 @@ func liftMemListPreloadedSymbol(ctx context.Context, caller, callee *host.CallCo
 		return nil, fmt.Errorf("wacogo/witgen: liftMemListPreloadedSymbol: list len: bad memory read")
 	} else {
 		ln_ = tmp_
+	}
+	lb_ := uint64(ln_) * 12
+	if uint64(lptr_)+lb_ > uint64(callee.Memory().Size()) {
+		return nil, fmt.Errorf("wacogo/witgen: liftMemListPreloadedSymbol: list out of bounds")
+	}
+	if err_ := callee.ChargeLift(uint64(ln_) * uint64(unsafe.Sizeof(*new(PreloadedSymbol)))); err_ != nil {
+		return nil, err_
 	}
 	out_ := make([]PreloadedSymbol, ln_)
 	for i_ := uint32(0); i_ < ln_; i_++ {
@@ -1495,6 +1541,9 @@ func fromGoMemString(ctx context.Context, cc *host.CallContext, h *host.Componen
 func liftFlatString(ctx context.Context, caller, callee *host.CallContext, h *host.ComponentInstance, ty wacogo.Type, stack []uint64) (string, error) {
 	ptr_ := uint32(stack[0])
 	ln_ := uint32(stack[1])
+	if err_ := callee.ChargeLift(uint64(ln_)); err_ != nil {
+		return "", err_
+	}
 	bs_, ok_ := callee.Memory().Read(ptr_, ln_)
 	if !ok_ {
 		return "", fmt.Errorf("wacogo/witgen: liftFlatString: bad memory read")
@@ -1514,6 +1563,9 @@ func liftMemString(ctx context.Context, caller, callee *host.CallContext, h *hos
 		return "", fmt.Errorf("wacogo/witgen: liftMemString: string len: bad memory read")
 	} else {
 		ln_ = tmp_
+	}
+	if err_ := callee.ChargeLift(uint64(ln_)); err_ != nil {
+		return "", err_
 	}
 	bs_, ok_ := callee.Memory().Read(sptr_, ln_)
 	if !ok_ {

@@ -5,7 +5,6 @@ package kv
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/partite-ai/wacogo"
 	"github.com/partite-ai/wacogo/host"
@@ -35,30 +34,26 @@ func WrapInstance(caller *host.ComponentInstance, callee *wacogo.ComponentInstan
 }
 func (w *kvWrapper) Delete(ctx context.Context, key string) (Result_KvError, error) {
 	var resVal_ Result_KvError
-	var resErr_ error
 	arg0_ := key
 	{
 		callErr_ := w.fnDelete.CallRaw(ctx, w.callerInst,
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnDelete.ParamType(0), stack[0:2], arg0_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
+				return nil
 			},
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if v_, err_ := liftMemResult_KvError(ctx, caller, callee, w.callerInst, w.fnDelete.ResultType(0), uint32(stack[0])); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				} else {
 					resVal_ = v_
 				}
+				return nil
 			},
 		)
 		if callErr_ != nil {
-			return nil, fmt.Errorf("wacogo/witgen: CallRaw failed: %w", callErr_)
-		}
-		if resErr_ != nil {
-			return nil, resErr_
+			return nil, callErr_
 		}
 	}
 	return resVal_, nil
@@ -66,30 +61,26 @@ func (w *kvWrapper) Delete(ctx context.Context, key string) (Result_KvError, err
 
 func (w *kvWrapper) Get(ctx context.Context, key string) (ResultOptionStringKvError, error) {
 	var resVal_ ResultOptionStringKvError
-	var resErr_ error
 	arg0_ := key
 	{
 		callErr_ := w.fnGet.CallRaw(ctx, w.callerInst,
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnGet.ParamType(0), stack[0:2], arg0_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
+				return nil
 			},
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if v_, err_ := liftMemResultOptionStringKvError(ctx, caller, callee, w.callerInst, w.fnGet.ResultType(0), uint32(stack[0])); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				} else {
 					resVal_ = v_
 				}
+				return nil
 			},
 		)
 		if callErr_ != nil {
-			return nil, fmt.Errorf("wacogo/witgen: CallRaw failed: %w", callErr_)
-		}
-		if resErr_ != nil {
-			return nil, resErr_
+			return nil, callErr_
 		}
 	}
 	return resVal_, nil
@@ -97,30 +88,26 @@ func (w *kvWrapper) Get(ctx context.Context, key string) (ResultOptionStringKvEr
 
 func (w *kvWrapper) List(ctx context.Context, prefix string) (ResultListStringKvError, error) {
 	var resVal_ ResultListStringKvError
-	var resErr_ error
 	arg0_ := prefix
 	{
 		callErr_ := w.fnList.CallRaw(ctx, w.callerInst,
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnList.ParamType(0), stack[0:2], arg0_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
+				return nil
 			},
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if v_, err_ := liftMemResultListStringKvError(ctx, caller, callee, w.callerInst, w.fnList.ResultType(0), uint32(stack[0])); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				} else {
 					resVal_ = v_
 				}
+				return nil
 			},
 		)
 		if callErr_ != nil {
-			return nil, fmt.Errorf("wacogo/witgen: CallRaw failed: %w", callErr_)
-		}
-		if resErr_ != nil {
-			return nil, resErr_
+			return nil, callErr_
 		}
 	}
 	return resVal_, nil
@@ -128,35 +115,30 @@ func (w *kvWrapper) List(ctx context.Context, prefix string) (ResultListStringKv
 
 func (w *kvWrapper) Set(ctx context.Context, key string, value string) (Result_KvError, error) {
 	var resVal_ Result_KvError
-	var resErr_ error
 	arg0_ := key
 	arg1_ := value
 	{
 		callErr_ := w.fnSet.CallRaw(ctx, w.callerInst,
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnSet.ParamType(0), stack[0:2], arg0_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
 				if err_ := lowerFlatString(ctx, caller, callee, w.callerInst, w.fnSet.ParamType(1), stack[2:4], arg1_); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				}
+				return nil
 			},
-			func(caller, callee *host.CallContext, stack []uint64) {
+			func(caller, callee *host.CallContext, stack []uint64) error {
 				if v_, err_ := liftMemResult_KvError(ctx, caller, callee, w.callerInst, w.fnSet.ResultType(0), uint32(stack[0])); err_ != nil {
-					resErr_ = err_
-					return
+					return err_
 				} else {
 					resVal_ = v_
 				}
+				return nil
 			},
 		)
 		if callErr_ != nil {
-			return nil, fmt.Errorf("wacogo/witgen: CallRaw failed: %w", callErr_)
-		}
-		if resErr_ != nil {
-			return nil, resErr_
+			return nil, callErr_
 		}
 	}
 	return resVal_, nil
