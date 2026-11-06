@@ -41,6 +41,8 @@ github.com/partite-ai/wacogo v0.0.0-20260617023329-3de16a61796c h1:WAxQQFk9xW0jy
 github.com/partite-ai/wacogo v0.0.0-20260617023329-3de16a61796c/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
 github.com/partite-ai/wacogo v0.0.0-20261102224619-9d468855680f h1:hSwWuO2I2tKgNzu61+C0fgnY6bHtoCVeKj/nZdMmQ1k=
 github.com/partite-ai/wacogo v0.0.0-20261102224619-9d468855680f/go.mod h1:YTz1qE4ayxyF9Kk+raydxoXJ8RBJtIsTo3Is796dV6E=
+github.com/partite-ai/wacogo v0.0.0-20261105003651-4e0b89b31748 h1:eX53pd7skdtxRIer5J8ZtmRniwiECLLiS2KOmMG0ens=
+github.com/partite-ai/wacogo v0.0.0-20261105003651-4e0b89b31748/go.mod h1:+oaZU20OpuFVhWVZYx80mW92qF/CJQt5GlzPWaNx3zE=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
