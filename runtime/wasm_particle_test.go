@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"strings"
@@ -10,7 +11,66 @@ import (
 
 	"github.com/partite-ai/particles/internal/build"
 	"github.com/partite-ai/particles/runtime"
+	"github.com/partite-ai/wacogo"
 )
+
+// buildWasmExample builds the wasm-example fixture into an artifact, and
+// returns the fixture's bytes too. The fixture is the one `make
+// wasm-example` builds, or the component named by WASM_EXAMPLE_COMPONENT;
+// the test is skipped without it.
+func buildWasmExample(t *testing.T) (*build.Result, []byte) {
+	t.Helper()
+	wasmFixture := os.Getenv("WASM_EXAMPLE_COMPONENT")
+	if wasmFixture == "" {
+		wasmFixture = "/home/node/cargo-target/wasm-example/wasm32-wasip2/release/wasm_example_component.wasm"
+	}
+	wasmBytes, err := os.ReadFile(wasmFixture)
+	if err != nil {
+		t.Skipf("wasm-example fixture missing (%v) — build it under components/wasm-example first", err)
+	}
+	res, err := build.Build(context.Background(), build.Options{
+		Source:    fstest.MapFS{"component.wasm": &fstest.MapFile{Data: wasmBytes}},
+		Component: "component.wasm",
+	})
+	if err != nil {
+		t.Fatalf("build.Build: %v", err)
+	}
+	return res, wasmBytes
+}
+
+// A wasm particle owns the component it loads, and closing the particle
+// releases the component's compiled code. Another particle of the same
+// artifact loads its own.
+func TestAWasmParticleReleasesItsComponentWhenClosed(t *testing.T) {
+	res, _ := buildWasmExample(t)
+	ctx := context.Background()
+	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)
+	defer cleanup()
+
+	first, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
+	if err != nil {
+		t.Fatalf("NewParticle: %v", err)
+	}
+	comp := runtime.OwnComponentOf(first)
+	if comp == nil {
+		t.Fatal("a wasm particle holds no component of its own")
+	}
+	if err := first.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := comp.Instantiate(ctx); !errors.Is(err, wacogo.ErrComponentClosed) {
+		t.Errorf("after Close, instantiating the component gives %v, want it closed", err)
+	}
+
+	second, err := rt.NewParticle(ctx, res.Particle, credStore, kvStore, nil)
+	if err != nil {
+		t.Fatalf("NewParticle after the first closed: %v", err)
+	}
+	defer second.Close(ctx)
+	if _, err := second.CallTool(ctx, "echo", []byte(`{"input":"again"}`)); err != nil {
+		t.Errorf("CallTool on the second particle: %v", err)
+	}
+}
 
 // Full source-to-tool-call exercise on a native-WASM particle:
 //
@@ -23,22 +83,7 @@ import (
 //
 // Skipped when the fixture isn't built.
 func TestWasmParticle_EndToEnd(t *testing.T) {
-	const wasmFixture = "/home/node/cargo-target/wasm-example/wasm32-wasip2/release/wasm_example_component.wasm"
-
-	wasmBytes, err := os.ReadFile(wasmFixture)
-	if err != nil {
-		t.Skipf("wasm-example fixture missing (%v) — build it under components/wasm-example first", err)
-	}
-
-	src := fstest.MapFS{"component.wasm": &fstest.MapFile{Data: wasmBytes}}
-
-	res, err := build.Build(context.Background(), build.Options{
-		Source:    src,
-		Component: "component.wasm",
-	})
-	if err != nil {
-		t.Fatalf("build.Build: %v", err)
-	}
+	res, wasmBytes := buildWasmExample(t)
 
 	ctx := context.Background()
 	rt, credStore, kvStore, cleanup := newRuntime(t, ctx)

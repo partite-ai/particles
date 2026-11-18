@@ -173,6 +173,12 @@ type Particle struct {
 	// layer's resources release cleanly.
 	hostInsts []*host.ComponentInstance
 
+	// ownComp is the component a wasm particle loaded for itself,
+	// which Close releases, or nil for a particle on a shared runtime
+	// image. Without the release, the engine keeps every wasm
+	// particle's compiled code until it closes.
+	ownComp *wc.Component
+
 	// Captured wasi:cli/stderr — surfaced when a wasm trap
 	// hides the actual diagnostic. Reset by readStderr.
 	stderr *bytes.Buffer
@@ -252,11 +258,21 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	if err != nil {
 		return nil, fmt.Errorf("runtime: NewParticle: %w", err)
 	}
+	// ownComp is the component a wasm particle loads for itself. The
+	// particle owns it, and Close releases its compiled code; until
+	// NewParticle hands the particle back, a failure releases it here.
+	var ownComp *wc.Component
 	if selectedRuntime == RuntimeWasm {
 		comp, err = r.loadWasmComponent(ctx, particleFS)
 		if err != nil {
 			return nil, fmt.Errorf("runtime: NewParticle: %w", err)
 		}
+		ownComp = comp
+		defer func() {
+			if ownComp != nil {
+				_ = ownComp.Close(ctx)
+			}
+		}()
 	}
 	bundleFilename, _, err := runtimeBundleLayout(selectedRuntime)
 	if err != nil {
@@ -541,21 +557,24 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 	// first export call. Calling wizer-initialize again post-snapshot
 	// is unsafe.
 
-	return &Particle{
+	p := &Particle{
 		manifest:  manifest,
 		inst:      inst,
 		wasi:      w,
 		hostInsts: hostInsts,
 		stderr:    stderr,
-	}, nil
+		ownComp:   ownComp,
+	}
+	ownComp = nil
+	return p, nil
 }
 
 // Manifest returns the particle's parsed manifest (read-only).
 func (p *Particle) Manifest() Manifest { return p.manifest }
 
 // Close releases the per-particle wasm instance, the per-particle
-// host instances (logging, credentials, oauth, signing, kv), and
-// the wasi world. Safe to call once.
+// host instances (logging, credentials, oauth, signing, kv), the
+// wasi world, and a wasm particle's own component. Safe to call once.
 func (p *Particle) Close(ctx context.Context) error {
 	var first error
 	if p.inst != nil {
@@ -577,6 +596,12 @@ func (p *Particle) Close(ctx context.Context) error {
 			first = err
 		}
 		p.wasi = nil
+	}
+	if p.ownComp != nil {
+		if err := p.ownComp.Close(ctx); err != nil && first == nil {
+			first = err
+		}
+		p.ownComp = nil
 	}
 	return first
 }
