@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -181,7 +180,7 @@ type Particle struct {
 
 	// Captured wasi:cli/stderr — surfaced when a wasm trap
 	// hides the actual diagnostic. Reset by readStderr.
-	stderr *bytes.Buffer
+	stderr *stderrTail
 
 	// schemas holds one compiled validator per tool, compiled
 	// lazily from the manifest on first CallTool. Per design
@@ -376,7 +375,7 @@ func (r *Runtime) newParticleInternal(ctx context.Context, particleFS fs.FS, cre
 		)
 	}
 
-	stderr := &bytes.Buffer{}
+	stderr := &stderrTail{}
 	w, err := wasi.NewWorld(ctx, r.cfg.Engine, &wasi.Config{
 		Args:         []string{"particle-runtime"},
 		Env:          wasiEnv,

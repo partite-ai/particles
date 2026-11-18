@@ -206,7 +206,7 @@ func (r *Runtime) Close(_ context.Context) error { return nil }
 // captured, formatted for inclusion in error messages. Used by the
 // adapter wrappers when a wasm trap surfaces — without the captured
 // stderr the user sees only "wasm error: unreachable".
-func stderrSinkBytes(buf *bytes.Buffer) string {
+func stderrSinkBytes(buf *stderrTail) string {
 	if buf == nil {
 		return ""
 	}
